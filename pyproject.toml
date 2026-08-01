@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pcli"
+version = "0.1.0"
+description = "An opencode-style AI coding agent CLI/TUI for Python, with a Python discovery tool and an OS/software toolbox."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "textual>=0.58",
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.2",
+    "typer>=0.12",
+    "platformdirs>=4.2",
+    "tenacity>=8.2",
+    "jsonschema>=4.21",
+    "psutil>=5.9",
+]
+
+[project.optional-dependencies]
+# Docker sandbox backend shells out to the `docker` CLI directly, no SDK dependency needed.
+win = ["pywin32>=306; sys_platform == 'win32'"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+pcli = "pcli.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pcli"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
