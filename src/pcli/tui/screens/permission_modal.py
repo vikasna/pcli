@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from textual.app import App, ComposeResult
-from textual.containers import Vertical
+from textual.containers import Grid, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
@@ -18,6 +18,20 @@ _BUTTONS: list[tuple[str, str, PermissionModalResult, str]] = [
     ("deny", "Deny", ("deny", None), "error"),
 ]
 
+# Tool arguments can carry arbitrarily long content (e.g. write_file's full
+# text) — shown uncapped, that could otherwise dominate the whole dialog.
+# Truncating keeps the common case compact; the modal is scrollable as a
+# safety net regardless of terminal size (see #permission-modal).
+_MAX_ARG_PREVIEW_CHARS = 800
+
+
+def _format_arguments(arguments: dict[str, Any]) -> str:
+    text = str(arguments)
+    if len(text) > _MAX_ARG_PREVIEW_CHARS:
+        omitted = len(text) - _MAX_ARG_PREVIEW_CHARS
+        text = f"{text[:_MAX_ARG_PREVIEW_CHARS]}\n... [{omitted} more chars truncated]"
+    return text
+
 
 class PermissionPromptModal(ModalScreen[PermissionModalResult]):
     def __init__(
@@ -29,13 +43,18 @@ class PermissionPromptModal(ModalScreen[PermissionModalResult]):
         self._risk_description = risk_description
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="permission-modal"):
+        # The whole dialog is one scrollable region (not just the info text)
+        # so the Allow/Deny buttons are always reachable — via mouse wheel,
+        # or Tab, which Textual auto-scrolls into view — no matter how small
+        # the terminal window is, instead of silently overflowing past it.
+        with VerticalScroll(id="permission-modal"):
             yield Static(f"Tool wants to run: {self._tool_name}", id="permission-title")
-            yield Static(str(self._arguments), id="permission-args")
+            yield Static(_format_arguments(self._arguments), id="permission-args")
             if self._risk_description:
                 yield Static(self._risk_description, id="permission-risk")
-            for button_id, label, _result, variant in _BUTTONS:
-                yield Button(label, id=button_id, variant=variant)  # type: ignore[arg-type]
+            with Grid(id="permission-buttons"):
+                for button_id, label, _result, variant in _BUTTONS:
+                    yield Button(label, id=button_id, variant=variant)  # type: ignore[arg-type]
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         for button_id, _label, result, _variant in _BUTTONS:

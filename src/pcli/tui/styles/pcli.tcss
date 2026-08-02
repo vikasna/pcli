@@ -60,8 +60,19 @@ PermissionPromptModal, ImportPathModal, ModelListScreen {
     padding: 1 2;
 }
 
-#permission-modal Button, #import-modal Button {
+#import-modal Button {
     margin-top: 1;
+    width: 100%;
+}
+
+#permission-buttons {
+    height: auto;
+    grid-size: 2;
+    grid-gutter: 1;
+    margin-top: 1;
+}
+
+#permission-buttons Button {
     width: 100%;
 }
 
