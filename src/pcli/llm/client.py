@@ -26,10 +26,11 @@ class GatewayClient:
             raise GatewayError("Gateway URL and API key must be configured before use.")
         self._settings = settings
         headers = {"Content-Type": "application/json"}
-        if settings.gateway_auth_header.lower() == "authorization":
-            headers["Authorization"] = f"Bearer {settings.gateway_api_key}"
-        else:
-            headers[settings.gateway_auth_header] = settings.gateway_api_key
+        if settings.gateway_api_key:
+            if settings.gateway_auth_header.lower() == "authorization":
+                headers["Authorization"] = f"Bearer {settings.gateway_api_key}"
+            else:
+                headers[settings.gateway_auth_header] = settings.gateway_api_key
         self._client = httpx.AsyncClient(
             base_url=settings.gateway_base_url.rstrip("/"),
             headers=headers,
@@ -157,3 +158,17 @@ class GatewayClient:
         """Best-effort reachability probe against the gateway's models endpoint."""
         response = await self._client.get("/models")
         return response.status_code < 500
+
+    async def list_models(self) -> list[str]:
+        """Fetches available model IDs from the gateway's OpenAI-compatible
+        `GET /models` endpoint (`{"data": [{"id": "..."}, ...]}`)."""
+        try:
+            response = await self._client.get("/models")
+        except httpx.HTTPError as exc:
+            raise GatewayError.from_network_error(str(exc)) from exc
+        if response.status_code >= 400:
+            raise GatewayError.from_http_status(response.status_code, response.text)
+        payload = response.json()
+        entries = payload.get("data", []) if isinstance(payload, dict) else []
+        ids = [entry["id"] for entry in entries if isinstance(entry, dict) and "id" in entry]
+        return sorted(ids)

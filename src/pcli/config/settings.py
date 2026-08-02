@@ -105,7 +105,10 @@ class Settings(BaseSettings):
         )
 
     def is_configured(self) -> bool:
-        return bool(self.gateway_base_url and self.gateway_api_key)
+        # gateway_api_key is intentionally not required here: local,
+        # unauthenticated OpenAI-compatible servers (LM Studio, Ollama, ...)
+        # don't need one, and a blank key must not block startup.
+        return bool(self.gateway_base_url)
 
 
 _settings: Settings | None = None

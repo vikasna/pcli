@@ -142,3 +142,54 @@ async def test_retryable_error_then_success(monkeypatch):
 
     assert message.content == "ok"
     assert route.call_count == 2
+
+
+def test_is_configured_does_not_require_api_key():
+    settings = _settings(gateway_api_key="")
+    assert settings.is_configured()
+
+
+def test_is_configured_requires_base_url():
+    settings = _settings(gateway_base_url="")
+    assert not settings.is_configured()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_no_auth_header_sent_when_api_key_blank():
+    route = respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200, content=_sse({"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]})
+        )
+    )
+
+    async with GatewayClient(_settings(gateway_api_key="")) as client:
+        await client.collect([ChatMessage(role="user", content="hi")])
+
+    assert "authorization" not in {k.lower() for k in route.calls.last.request.headers}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_list_models_parses_openai_style_response():
+    respx.get("http://fake-gateway.test/v1/models").mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": [{"id": "model-b"}, {"id": "model-a"}], "object": "list"},
+        )
+    )
+
+    async with GatewayClient(_settings()) as client:
+        models = await client.list_models()
+
+    assert models == ["model-a", "model-b"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_list_models_raises_gateway_error_on_failure():
+    respx.get("http://fake-gateway.test/v1/models").mock(return_value=httpx.Response(500, text="boom"))
+
+    async with GatewayClient(_settings()) as client:
+        with pytest.raises(GatewayError):
+            await client.list_models()

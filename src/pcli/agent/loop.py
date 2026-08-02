@@ -84,6 +84,13 @@ class AgentLoop:
         self._max_tool_iterations = max_tool_iterations
         self._artifact_threshold_chars = artifact_threshold_chars
 
+    @property
+    def model(self) -> str | None:
+        return self._model
+
+    def set_model(self, model: str | None) -> None:
+        self._model = model
+
     async def run_turn(
         self, messages: list[ChatMessage], *, ask: AskCallback | None = None
     ) -> AsyncIterator[AgentEvent]:

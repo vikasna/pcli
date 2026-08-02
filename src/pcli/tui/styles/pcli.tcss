@@ -47,13 +47,14 @@ Screen {
     margin: 0 1 1 1;
 }
 
-PermissionPromptModal, ImportPathModal {
+PermissionPromptModal, ImportPathModal, ModelListScreen {
     align: center middle;
 }
 
-#permission-modal, #import-modal {
+#permission-modal, #import-modal, #model-list-modal {
     width: 70%;
     height: auto;
+    max-height: 80%;
     background: $panel;
     border: thick $primary;
     padding: 1 2;
@@ -62,6 +63,11 @@ PermissionPromptModal, ImportPathModal {
 #permission-modal Button, #import-modal Button {
     margin-top: 1;
     width: 100%;
+}
+
+#model-list-modal ListView {
+    height: auto;
+    max-height: 20;
 }
 
 #sessions-title {

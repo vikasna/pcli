@@ -83,7 +83,7 @@ class ChatScreen(Screen):
             yield MessageView(id="message-view")
             yield StatusBar(id="status-bar")
             yield Input(
-                placeholder="Ask pcli... (/sessions, /export, /toolbox, !shell, !!quiet-shell)",
+                placeholder="Ask pcli... (/sessions, /export, /toolbox, /models, !shell, !!quiet-shell)",
                 id="input-box",
             )
 
@@ -126,8 +126,8 @@ class ChatScreen(Screen):
         if not self._settings.is_configured():
             message_view.add_message(
                 "system",
-                "Gateway not configured. Set `PCLI_GATEWAY_URL` and `PCLI_GATEWAY_API_KEY` "
-                "(or edit the config file) and restart pcli.",
+                "Gateway not configured. Set `PCLI_GATEWAY_URL` (and `PCLI_GATEWAY_API_KEY` if "
+                "your gateway requires auth) or edit the config file, then restart pcli.",
             )
             return
 
@@ -243,6 +243,8 @@ class ChatScreen(Screen):
             self._export_current(rest or None)
         elif command == "toolbox":
             self._handle_toolbox_command(rest)
+        elif command == "models":
+            self._handle_models_command(rest or None)
         else:
             message_view.add_message("system", f"Unknown command: /{command}")
 
@@ -307,6 +309,54 @@ class ChatScreen(Screen):
             return
         self._toolbox_manager.remove(name)
         message_view.add_message("system", f"Removed '{name}' from the toolbox.")
+
+    @work(exclusive=True)
+    async def _handle_models_command(self, arg: str | None) -> None:
+        message_view = self.query_one(MessageView)
+
+        if arg:
+            self._set_model(arg)
+            message_view.add_message("system", f"Model set to '{arg}'.")
+            return
+
+        if not self._settings.gateway_base_url:
+            message_view.add_message(
+                "system", "No gateway URL configured. Set PCLI_GATEWAY_URL and restart pcli."
+            )
+            return
+
+        client = self._client
+        owns_client = client is None
+        if client is None:
+            client = GatewayClient(self._settings)
+
+        try:
+            models = await client.list_models()
+        except GatewayError as exc:
+            message_view.add_message("system", f"Failed to list models: {exc.message}")
+            return
+        finally:
+            if owns_client:
+                await client.aclose()
+
+        if not models:
+            message_view.add_message("system", "Gateway returned no models.")
+            return
+
+        from pcli.tui.screens.models import ModelListScreen
+
+        current = self._settings.default_model or self._session.model or None
+        selected = await self.app.push_screen_wait(ModelListScreen(models, current))
+        if selected:
+            self._set_model(selected)
+            message_view.add_message("system", f"Model set to '{selected}'.")
+
+    def _set_model(self, model: str) -> None:
+        self._settings.default_model = model
+        self._session.model = model
+        if self._agent_loop is not None:
+            self._agent_loop.set_model(model)
+        self.query_one(StatusBar).model = model
 
     @work(exclusive=True)
     async def _export_current(self, out_path_arg: str | None) -> None:
