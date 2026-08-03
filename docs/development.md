@@ -3,7 +3,7 @@
 ## Setup
 
 ```
-pip install -e ".[dev,win]"
+pip install -e ".[dev,docker,win]"
 pcli
 ```
 
@@ -11,13 +11,11 @@ pcli
   `ruff`, `mypy`.
 - `win` pulls in `pywin32` (only installs on Windows, via `sys_platform ==
   'win32'` marker).
-- The top-level `README.md` also mentions a `docker` extra
-  (`pip install -e ".[dev,docker,win]"`) — as of this codebase,
-  `pyproject.toml`'s `[project.optional-dependencies]` only defines `win` and
-  `dev`; there is no `docker` extra. The Docker sandbox backend
-  (`DockerSandbox`) doesn't need one anyway — it shells out to the `docker`
-  CLI binary directly rather than depending on the `docker` Python SDK, so
-  installing that extra wouldn't add anything even if it existed.
+- `docker` is intentionally empty — the Docker sandbox backend
+  (`DockerSandbox`) shells out to the `docker` CLI binary directly rather than
+  depending on a Python `docker` SDK, so there's nothing to install. The extra
+  exists purely so `pip install -e ".[dev,docker,win]"` (as documented in
+  `README.md`) is valid instead of erroring on an undefined extra name.
 - Requires Python >= 3.11 (`requires-python` in `pyproject.toml`).
 
 `pcli` with no subcommand launches the TUI; run it from a project directory

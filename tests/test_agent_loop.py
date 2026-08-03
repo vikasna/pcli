@@ -325,3 +325,112 @@ async def test_agent_loop_invalid_arguments_reported_as_error(tmp_path: Path):
     tool_results = [e for e in events if isinstance(e, ToolResultEvent)]
     assert tool_results[0].is_error is True
     assert "schema validation" in tool_results[0].output
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_agent_loop_enforces_max_tool_calls_per_turn(tmp_path: Path):
+    """A guardrail limit of 1 tool call per turn: the model requests two in
+    one batch, only the first should actually execute — the rest of the
+    batch still gets a (denied) tool response each, per protocol, and the
+    loop stops without a further LLM round-trip."""
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(
+            200,
+            content=_sse(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_1",
+                                        "function": {"name": "echo_tool", "arguments": '{"text": "a"}'},
+                                    },
+                                    {
+                                        "index": 1,
+                                        "id": "call_2",
+                                        "function": {"name": "echo_tool", "arguments": '{"text": "b"}'},
+                                    },
+                                ]
+                            },
+                            "finish_reason": None,
+                        }
+                    ]
+                },
+                {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+            ),
+        ),
+    ]
+
+    registry = ToolRegistry()
+    registry.register(ECHO_TOOL)
+    guardrails = GuardrailsConfig(max_tool_calls_per_turn=1)
+    permission_manager = PermissionManager(
+        guardrails=guardrails, policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    sandbox = FakeSandbox()
+
+    async with GatewayClient(_settings()) as client:
+        loop = AgentLoop(
+            client,
+            tool_registry=registry,
+            permission_manager=permission_manager,
+            tool_context_factory=lambda: ToolContext(
+                sandbox=sandbox, guardrails=guardrails, cwd=tmp_path
+            ),
+        )
+        events = []
+        async for event in loop.run_turn([ChatMessage(role="user", content="use the tool twice")]):
+            events.append(event)
+
+    tool_results = [e for e in events if isinstance(e, ToolResultEvent)]
+    assert len(tool_results) == 2
+    assert tool_results[0].is_error is False
+    assert tool_results[0].output == "echoed: a"
+    assert tool_results[1].is_error is True
+    assert "guardrail limit" in tool_results[1].output
+
+    turn_complete = next(e for e in events if isinstance(e, TurnCompleteEvent))
+    assert [m.role for m in turn_complete.new_messages] == ["assistant", "tool", "tool", "assistant"]
+    assert "Reached the guardrail limit" in turn_complete.new_messages[-1].content
+    assert route.call_count == 1  # stopped after this batch, no further chat_stream call
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_agent_loop_truncates_output_over_guardrail_max_output_bytes(tmp_path: Path):
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(200, content=_sse(*_first_two_tool_call_chunks())),
+        httpx.Response(200, content=_sse(*_final_text_chunks("done"))),
+    ]
+
+    registry = ToolRegistry()
+    registry.register(ECHO_TOOL)
+    guardrails = GuardrailsConfig(max_output_bytes=5)
+    permission_manager = PermissionManager(
+        guardrails=guardrails, policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    sandbox = FakeSandbox()
+
+    async with GatewayClient(_settings()) as client:
+        loop = AgentLoop(
+            client,
+            tool_registry=registry,
+            permission_manager=permission_manager,
+            tool_context_factory=lambda: ToolContext(
+                sandbox=sandbox, guardrails=guardrails, cwd=tmp_path
+            ),
+        )
+        events = []
+        async for event in loop.run_turn([ChatMessage(role="user", content="use the tool")]):
+            events.append(event)
+
+    tool_results = [e for e in events if isinstance(e, ToolResultEvent)]
+    assert len(tool_results) == 1
+    # "echoed: hi" is 10 chars; guardrail caps it to 5.
+    assert tool_results[0].output.startswith("echoe")
+    assert "output truncated to the guardrail limit" in tool_results[0].output

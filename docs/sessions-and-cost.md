@@ -30,13 +30,13 @@ All writes are atomic (`_atomic_write`: write to a `.tmp` sibling, then
   the untruncated result when one was archived (see "Blob storage" below).
 - `cost: SessionCost` — list of `TurnCost` entries plus running totals (see
   Cost tracking below).
-- `permission_grants: list[PermissionGrant]` — a model field for recording
-  grants against the session. **Note:** nothing in the codebase currently
-  appends to it during normal operation — remembered permission grants
-  actually live in `PermissionPolicy`'s separate `permissions.json` (see
-  [`sandbox-and-permissions.md`](sandbox-and-permissions.md)), not on the
-  `Session` object. The field exists and round-trips through export/import,
-  but stays empty in practice today.
+- `permission_grants: list[PermissionGrant]` — appended to by
+  `PermissionManager.check` whenever a `"session"` or `"always"` grant is
+  remembered during this session (see
+  [`sandbox-and-permissions.md`](sandbox-and-permissions.md)). This is a
+  historical/audit trail that travels with the session, not the enforcement
+  store — remembered grants are still enforced via `PermissionPolicy`'s
+  separate `permissions.json`, independent of this field.
 - `todos: list[TodoItem]` — the `write_todos` tool's task list.
 - `metadata: dict` — free-form; used by the importer to stash
   `imported_from_id` / `imported_from_file`.
@@ -85,8 +85,11 @@ magic bytes regardless of extension). The gateway API key is never part of
   overwrite an existing local session.
 - **Drops `permission_grants` unless `--restore-grants` is passed** — so an
   imported session can't silently carry "always allow shell"-type grants onto
-  a new machine. (In practice this field is normally empty anyway per the
-  note above.)
+  a new machine. Even with `--restore-grants`, this only restores the
+  historical record on the `Session` object itself; it deliberately does not
+  re-apply those grants into the importing machine's own
+  `PermissionPolicy`/`permissions.json`, to avoid double-recording an
+  "always" grant that's already persisted separately there.
 - Restores each referenced blob under its original blob name before saving
   the session.
 

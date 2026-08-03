@@ -22,7 +22,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Docker sandbox backend shells out to the `docker` CLI directly, no SDK dependency needed.
+# Docker sandbox backend shells out to the `docker` CLI directly, no SDK
+# dependency needed — this extra is intentionally empty, just so
+# `pip install -e ".[docker]"` (as documented in README.md) is valid instead
+# of erroring on an undefined extra. Requires `docker` on PATH at runtime.
+docker = []
 win = ["pywin32>=306; sys_platform == 'win32'"]
 dev = [
     "pytest>=8.0",

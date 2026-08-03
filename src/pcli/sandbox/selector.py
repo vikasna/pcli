@@ -10,6 +10,7 @@ from pathlib import Path
 
 from pcli.sandbox.base import Sandbox
 from pcli.sandbox.docker_backend import DockerSandbox
+from pcli.sandbox.null_backend import NullSandbox
 from pcli.sandbox.subprocess_backend import RestrictedSubprocessSandbox
 
 
@@ -38,6 +39,8 @@ async def select_sandbox(
         return DockerSandbox()
     if backend_override == "subprocess":
         return RestrictedSubprocessSandbox(allowed_roots=allowed_roots)
+    if backend_override == "none":
+        return NullSandbox()
     if backend_override not in ("auto", ""):
         raise ValueError(f"Unknown sandbox_backend '{backend_override}'")
 

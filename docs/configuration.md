@@ -43,19 +43,24 @@ to `table_key` when reading back, so both shapes round-trip.
 | `request_timeout_s` | `PCLI_REQUEST_TIMEOUT_S` | *(none)* | `request_timeout_s` | `120.0` | HTTP client timeout (`httpx.AsyncClient(timeout=...)`) for gateway requests. |
 | `max_retries` | `PCLI_MAX_RETRIES` | *(none)* | `max_retries` | `4` | Max attempts for `GatewayClient.chat_stream` on retryable failures (network errors, HTTP 429/5xx) — retried only if no stream data has been yielded yet. |
 | `max_tool_iterations` | `PCLI_MAX_TOOL_ITERATIONS` | *(none)* | `max_tool_iterations` | `25` | Cap on tool-call round-trips within a single `AgentLoop.run_turn`; beyond this the loop appends a "reached the max tool-call iteration limit" note and stops. |
-| `sandbox_backend` | `PCLI_SANDBOX_BACKEND` | *(none)* | `sandbox_backend` | `"auto"` | `auto` \| `docker` \| `subprocess` (see note below). |
+| `sandbox_backend` | `PCLI_SANDBOX_BACKEND` | *(none)* | `sandbox_backend` | `"auto"` | `auto` \| `docker` \| `subprocess` \| `none` (see note below). |
 | `artifact_threshold_chars` | `PCLI_ARTIFACT_THRESHOLD_CHARS` | `--artifact-threshold` | `artifact_threshold_chars` | `4000` | Tool results longer than this (in characters) are truncated out of the live conversation and archived; see [`tools.md`](tools.md#artifact-archiving). |
 
 `Settings.is_configured()` returns `bool(gateway_base_url)` — the API key is
 deliberately *not* required, so a blank key never blocks startup against an
 unauthenticated local gateway.
 
-**Note on `sandbox_backend`:** the field's docstring says the accepted values
-are `auto | docker | subprocess | none`, but `pcli.sandbox.selector.select_sandbox`
-only special-cases `"docker"` and `"subprocess"`; any other non-`"auto"`/empty
-value — including the documented `"none"` — raises `ValueError: Unknown
-sandbox_backend`. There is currently no way to fully disable the sandbox via
-this setting.
+**Note on `sandbox_backend`:** `"none"` selects `NullSandbox`
+(`src/pcli/sandbox/null_backend.py`) — it runs commands directly, with none of
+`RestrictedSubprocessSandbox`'s containment (no cwd jail, no env scrubbing, no
+resource limits) or Docker's isolation. This is an explicit, documented
+opt-out for environments you already trust fully (e.g. pcli running inside
+its own disposable container/VM) — it is never the default and should not be
+used against an untrusted project. Guardrails and the permission system still
+gate every tool call as usual above it; `"none"` only removes the *execution*
+containment layer underneath them. See
+[`sandbox-and-permissions.md`](sandbox-and-permissions.md#nullsandbox) for
+details.
 
 ## CLI flags
 

@@ -5,6 +5,7 @@ import pytest
 from pcli.permissions.guardrails import GuardrailsConfig
 from pcli.permissions.manager import PermissionManager
 from pcli.permissions.policy import PermissionPolicy
+from pcli.session.models import Session
 
 
 def _guardrails(**overrides) -> GuardrailsConfig:
@@ -125,3 +126,74 @@ async def test_permission_manager_allow_once_does_not_remember(tmp_path: Path):
     decision = await manager.check("run_shell", {"command": "git status"}, ask=ask)
     assert decision == "allow"
     assert manager.policy.check("run_shell") is None
+
+
+@pytest.mark.asyncio
+async def test_permission_manager_records_grant_on_session(tmp_path: Path):
+    manager = PermissionManager(
+        guardrails=_guardrails(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    session = Session()
+    assert session.permission_grants == []
+
+    async def ask(tool_name, arguments, risk_description):
+        return ("allow", "always")
+
+    decision = await manager.check(
+        "run_shell", {"command": "git status"}, ask=ask, session=session
+    )
+
+    assert decision == "allow"
+    assert len(session.permission_grants) == 1
+    grant = session.permission_grants[0]
+    assert grant.tool_name == "run_shell"
+    assert grant.scope == "always"
+    assert grant.decision == "allow"
+
+
+@pytest.mark.asyncio
+async def test_permission_manager_does_not_record_grant_for_allow_once(tmp_path: Path):
+    manager = PermissionManager(
+        guardrails=_guardrails(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    session = Session()
+
+    async def ask(tool_name, arguments, risk_description):
+        return ("allow", "once")
+
+    await manager.check("run_shell", {"command": "git status"}, ask=ask, session=session)
+    assert session.permission_grants == []
+
+
+@pytest.mark.asyncio
+async def test_permission_manager_enforces_rate_limit(tmp_path: Path):
+    manager = PermissionManager(
+        guardrails=_guardrails(max_tool_calls_per_minute=2),
+        policy=PermissionPolicy(persist_path=tmp_path / "p.json"),
+    )
+
+    async def ask(tool_name, arguments, risk_description):
+        return ("allow", "once")
+
+    first = await manager.check("run_shell", {"command": "git status"}, ask=ask)
+    second = await manager.check("run_shell", {"command": "git status"}, ask=ask)
+    third = await manager.check("run_shell", {"command": "git status"}, ask=ask)
+
+    assert first == "allow"
+    assert second == "allow"
+    assert third == "deny"  # third call within the same 60s window exceeds the limit of 2
+
+
+@pytest.mark.asyncio
+async def test_permission_manager_rate_limit_disabled_when_zero(tmp_path: Path):
+    manager = PermissionManager(
+        guardrails=_guardrails(max_tool_calls_per_minute=0),
+        policy=PermissionPolicy(persist_path=tmp_path / "p.json"),
+    )
+
+    async def ask(tool_name, arguments, risk_description):
+        return ("allow", "once")
+
+    for _ in range(5):
+        decision = await manager.check("run_shell", {"command": "git status"}, ask=ask)
+        assert decision == "allow"

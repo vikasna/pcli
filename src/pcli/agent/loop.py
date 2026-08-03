@@ -98,6 +98,12 @@ class AgentLoop:
         working_messages = list(messages)
         original_len = len(working_messages)
         iterations = 0
+        tool_calls_dispatched = 0
+        max_tool_calls_per_turn = (
+            self._permission_manager.guardrails.max_tool_calls_per_turn
+            if self._permission_manager is not None
+            else None
+        )
 
         while True:
             iterations += 1
@@ -128,11 +134,26 @@ class AgentLoop:
                 ChatMessage(role="assistant", content=assistant_text, tool_calls=tool_calls_collected)
             )
 
+            limit_hit = False
             for call in tool_calls_collected:
                 yield ToolStartEvent(tool_call=call)
-                output, is_error, extra_usage, artifact_id = await self._dispatch_tool_call(
-                    call, ask=ask
-                )
+                if (
+                    max_tool_calls_per_turn is not None
+                    and tool_calls_dispatched >= max_tool_calls_per_turn
+                ):
+                    # Still respond to every tool_call_id in this batch (required
+                    # by the chat-completions protocol) rather than executing it.
+                    denial = (
+                        f"Denied: reached the guardrail limit of {max_tool_calls_per_turn} "
+                        "tool call(s) for this turn."
+                    )
+                    output, is_error, extra_usage, artifact_id = denial, True, [], None
+                    limit_hit = True
+                else:
+                    output, is_error, extra_usage, artifact_id = await self._dispatch_tool_call(
+                        call, ask=ask
+                    )
+                    tool_calls_dispatched += 1
                 working_messages.append(
                     ChatMessage(
                         role="tool", tool_call_id=call.id, name=call.function.name, content=output
@@ -145,6 +166,15 @@ class AgentLoop:
                     extra_usage=extra_usage,
                     artifact_id=artifact_id,
                 )
+
+            if limit_hit:
+                note = (
+                    f"\n[pcli] Reached the guardrail limit of {max_tool_calls_per_turn} tool "
+                    "call(s) for this turn."
+                )
+                yield TextDelta(text=note)
+                working_messages.append(ChatMessage(role="assistant", content=note))
+                break
 
         yield TurnCompleteEvent(new_messages=working_messages[original_len:])
 
@@ -184,6 +214,13 @@ class AgentLoop:
         if self._permission_manager is None:
             return "No permission manager configured; tool execution is disabled.", True, [], None
 
+        if self._tool_context_factory is None:
+            return "No tool execution context configured.", True, [], None
+        # Built before the permission check (constructing it is side-effect
+        # free) so check() can attach a PermissionGrant to ctx.session when
+        # the user picks "remember for session/always".
+        ctx = self._tool_context_factory()
+
         command = arguments.get(tool.guardrail_command_arg) if tool.guardrail_command_arg else None
         path = arguments.get(tool.guardrail_path_arg) if tool.guardrail_path_arg else None
         python_module = (
@@ -200,18 +237,26 @@ class AgentLoop:
             ask=ask,
             risk_description=tool.risk_description,
             default_allow=not tool.needs_permission,
+            session=ctx.session,
         )
         if decision == "deny":
             return "Permission denied.", True, [], None
-
-        if self._tool_context_factory is None:
-            return "No tool execution context configured.", True, [], None
-        ctx = self._tool_context_factory()
 
         try:
             result = await tool.handler(arguments, ctx)
         except Exception as exc:  # noqa: BLE001 - surface any tool failure to the model
             return f"Tool raised an exception: {exc}", True, [], None
 
-        output, artifact_id = self._archive_if_large(result.output, ctx)
+        # Global backstop on top of each tool's own (smaller) internal cap —
+        # guardrails.max_output_bytes is meant to bound every tool uniformly,
+        # not just the ones that happen to implement their own limit.
+        raw_output = result.output
+        max_output_bytes = self._permission_manager.guardrails.max_output_bytes
+        if len(raw_output) > max_output_bytes:
+            raw_output = (
+                f"{raw_output[:max_output_bytes]}\n"
+                f"[...output truncated to the guardrail limit of {max_output_bytes} chars...]"
+            )
+
+        output, artifact_id = self._archive_if_large(raw_output, ctx)
         return output, result.is_error, result.extra_usage, artifact_id

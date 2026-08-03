@@ -14,9 +14,9 @@ containment the selected sandbox backend provides.
 
 ## Sandbox backends
 
-Both backends implement the abstract `Sandbox` interface (`sandbox/base.py`):
-`execute(ExecRequest) -> ExecResult` and `capabilities() ->
-SandboxCapabilities` (network isolation / memory limit / CPU limit support
+All three backends implement the abstract `Sandbox` interface
+(`sandbox/base.py`): `execute(ExecRequest) -> ExecResult` and `capabilities()
+-> SandboxCapabilities` (network isolation / memory limit / CPU limit support
 flags). `ExecRequest.command` can be an argv list (run directly, no shell) or
 a string (run through the platform shell, needed for pipes/redirection in
 free-form shell commands).
@@ -28,15 +28,17 @@ called once at `ChatScreen` startup:
 
 - `"docker"` -> always `DockerSandbox`.
 - `"subprocess"` -> always `RestrictedSubprocessSandbox`.
+- `"none"` -> always `NullSandbox` (see below) — an explicit opt-out, never
+  chosen automatically.
 - `"auto"` (the default) -> probes `docker version --format
   '{{.Server.Version}}'` with a 1.5s timeout; uses `DockerSandbox` if it
-  succeeds, else falls back to `RestrictedSubprocessSandbox`.
-- Anything else (including the `sandbox_backend` field's own documented
-  `"none"` value — see [`configuration.md`](configuration.md)) raises
-  `ValueError`.
+  succeeds, else falls back to `RestrictedSubprocessSandbox`. `auto` never
+  selects `NullSandbox` — that requires an explicit `sandbox_backend = "none"`.
+- Any other value (not `"auto"`/`""`/`"docker"`/`"subprocess"`/`"none"`)
+  raises `ValueError: Unknown sandbox_backend`.
 
-The resolved backend name (`docker` or `subprocess`) is shown in the status
-bar so you always know the isolation level in effect.
+The resolved backend name (`docker`, `subprocess`, or `none`) is shown in the
+status bar so you always know the isolation level in effect.
 
 ### DockerSandbox
 
@@ -77,6 +79,28 @@ version/`--help` probes always use a dedicated
 `RestrictedSubprocessSandbox(allowed_roots=[cwd])` directly — never
 `ctx.sandbox` — because they need the *host* interpreter and its installed
 packages, which a bare Docker image wouldn't have.
+
+### NullSandbox
+
+Selected only via explicit `sandbox_backend = "none"`
+(`src/pcli/sandbox/null_backend.py`, `name = "none"`) — runs the command
+directly with `asyncio.create_subprocess_exec`/`_shell` and *none* of
+`RestrictedSubprocessSandbox`'s containment: no cwd jail (runs at
+`request.cwd` unchecked), no env scrubbing (full inherited `os.environ` plus
+any extra vars the caller passed, layered on top — "no sandbox" means no
+restriction, not no environment), and no resource limits.
+`capabilities()` reports `supports_network_isolation=False`,
+`supports_memory_limit=False`, `supports_cpu_limit=False` — nothing is
+contained. Output is still truncated at 2,000,000 bytes
+(`max_output_bytes` constructor default) and a timeout still kills the
+process and returns `timed_out=True`, same as the other backends.
+
+This is an intentional, documented opt-out for trusted environments only
+(e.g. pcli already running inside its own disposable container/VM) — never
+pick it against an untrusted project. Guardrails and the permission manager
+still gate every tool call exactly as usual regardless of which sandbox
+backend is active; `"none"` only removes the *execution* containment layer
+underneath that gate, not the gate itself.
 
 ## Guardrails
 
@@ -122,11 +146,37 @@ Three checks, each tied to a specific tool argument via `ToolSpec`'s
   dedicated fs/shell tools, so letting the LLM reach them indirectly via
   arbitrary Python calls would be a redundant, higher-risk escape hatch).
 
-Note: `max_output_bytes`, `max_tool_calls_per_turn`, and
-`max_tool_calls_per_minute` are parsed into `GuardrailsConfig` but are not
-currently read/enforced anywhere in the codebase outside the config loader
-itself (the actual per-request output caps live in each sandbox backend and
-`run_shell`/`grep`/etc.'s own `_MAX_*` constants instead).
+All three `[limits]` values are actively enforced, each at a different layer:
+
+- **`max_output_bytes`** — enforced in `AgentLoop._dispatch_tool_call`
+  (`src/pcli/agent/loop.py`) as a global backstop applied to *every* tool's
+  raw output, regardless of whether that tool has its own smaller internal
+  cap (e.g. `run_shell`'s 100,000-char `_MAX_OUTPUT_CHARS`, each sandbox
+  backend's own 2,000,000-byte cap). It runs after the handler returns and
+  before the separate artifact-archiving truncation
+  ([`tools.md`](tools.md#artifact-archiving)) — so a huge result is first
+  clipped to `max_output_bytes`, then (if still over
+  `artifact_threshold_chars`) archived and previewed. When it truncates, it
+  appends: `\n[...output truncated to the guardrail limit of {max_output_bytes}
+  chars...]`.
+- **`max_tool_calls_per_turn`** — enforced in `AgentLoop.run_turn`: a counter
+  of tool calls actually dispatched is tracked across the *whole turn* (not
+  reset per LLM round-trip/iteration). Once the counter reaches the limit,
+  every remaining `tool_call` in the current batch still gets a `"Denied:
+  reached the guardrail limit of {N} tool call(s) for this turn."` tool-role
+  response each (every `tool_call_id` from the model must be answered per the
+  chat-completions protocol) rather than being executed; the loop then
+  appends a `[pcli] Reached the guardrail limit of {N} tool call(s) for this
+  turn.` note and stops — no further LLM round-trip happens that turn.
+- **`max_tool_calls_per_minute`** — enforced in
+  `PermissionManager._within_rate_limit` (`src/pcli/permissions/manager.py`)
+  as a sliding 60-second window (a `deque` of call timestamps, pruned against
+  `now - 60.0`), checked as the very first thing in `check()` — before the
+  guardrail command/path/module checks even run. It's shared across every
+  call gated by that one `PermissionManager` instance, which notably includes
+  a subagent's tool calls too, since a subagent is handed the same
+  `PermissionManager` instance as its parent. A limit of `0` or less disables
+  the check entirely (always allowed).
 
 ## Permission manager
 
@@ -162,8 +212,20 @@ always grants, but since both single-branch on tool name with no pattern in
 practice, the order rarely matters. Persistence uses an atomic write (temp
 file + `os.replace`).
 
-`Session.permission_grants` also exists as a model field
-(`src/pcli/session/models.py`) for recording grants alongside a session's
-history, but the export/import path deliberately drops it by default (see
-[`sessions-and-cost.md`](sessions-and-cost.md)) — it is not the same store as
-`PermissionPolicy`'s `permissions.json`.
+`PermissionManager.check(...)` also takes an optional `session: Session |
+None = None` kwarg. Whenever the user's choice remembers a `"session"` or
+`"always"` grant via `self.policy.remember(...)`, a matching
+`PermissionGrant` (`src/pcli/session/models.py`) is now also appended to
+`session.permission_grants` if a session was passed —
+`AgentLoop._dispatch_tool_call` builds `ctx` (and so `ctx.session`) *before*
+calling `check()` specifically so this can happen, then passes
+`session=ctx.session`.
+
+This is a historical/audit record that travels with the session, not a
+second enforcement path: "always" grants are still enforced solely via
+`self.policy`/`permissions.json`, and `permission_grants` is deliberately
+**not** auto-re-applied into a fresh `PermissionPolicy`/`permissions.json` on
+import — doing so would duplicate-write "always" grants that are already
+persisted separately. See
+[`sessions-and-cost.md`](sessions-and-cost.md) for the export/import
+`--restore-grants` behavior this feeds.
