@@ -45,11 +45,16 @@ async def _spawn_subagent(arguments: dict, ctx: ToolContext) -> ToolResult:
     task = arguments["task"]
     allowed_tool_names = arguments.get("allowed_tools")
     requested_max_iterations = arguments.get("max_iterations")
-    max_iterations = (
-        min(int(requested_max_iterations), _DEFAULT_MAX_ITERATIONS)
-        if requested_max_iterations
-        else min(ctx.max_tool_iterations, _DEFAULT_MAX_ITERATIONS)
-    )
+    # Subagents keep this structural safety cap even in local-api mode
+    # (ctx.max_tool_iterations may be None there, meaning "unlimited" for the
+    # parent) — nesting depth/iteration count is a distinct concern from
+    # turn/cost limiting, see spawn_subagent's module docstring.
+    if requested_max_iterations:
+        max_iterations = min(int(requested_max_iterations), _DEFAULT_MAX_ITERATIONS)
+    elif ctx.max_tool_iterations is None:
+        max_iterations = _DEFAULT_MAX_ITERATIONS
+    else:
+        max_iterations = min(ctx.max_tool_iterations, _DEFAULT_MAX_ITERATIONS)
 
     sub_registry = ToolRegistry()
     for tool in ctx.tool_registry:

@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from pcli.config import settings as settings_module
-from pcli.config.settings import Settings, update_config_file
+from pcli.config.settings import Settings, add_local_api_gateway, update_config_file
 
 
 @pytest.fixture
@@ -61,3 +61,58 @@ def test_settings_picks_up_persisted_gateway_and_model(
     settings = Settings()
     assert settings.gateway_base_url == "http://localhost:1234/v1"
     assert settings.default_model == "llama-3"
+
+
+def test_is_local_api_requires_gateway_to_be_in_the_list():
+    settings = Settings(
+        gateway_base_url="http://localhost:1234/v1",
+        local_api_gateways=["http://localhost:1234/v1"],
+    )
+    assert settings.is_local_api() is True
+
+    other = Settings(
+        gateway_base_url="http://other.test/v1",
+        local_api_gateways=["http://localhost:1234/v1"],
+    )
+    assert other.is_local_api() is False
+
+
+def test_add_local_api_gateway_appends_without_overwriting_other_keys(isolated_config: Path):
+    update_config_file(default_model="llama-3")
+    add_local_api_gateway("http://localhost:1234/v1")
+
+    data = tomllib.loads(isolated_config.read_text(encoding="utf-8"))
+    assert data["default_model"] == "llama-3"
+    assert data["local_api_gateways"] == ["http://localhost:1234/v1"]
+
+
+def test_add_local_api_gateway_accumulates_multiple_gateways_without_duplicates(
+    isolated_config: Path,
+):
+    add_local_api_gateway("http://localhost:1234/v1")
+    add_local_api_gateway("http://localhost:11434/v1")
+    add_local_api_gateway("http://localhost:1234/v1")  # duplicate, should not double up
+
+    data = tomllib.loads(isolated_config.read_text(encoding="utf-8"))
+    assert data["local_api_gateways"] == [
+        "http://localhost:1234/v1",
+        "http://localhost:11434/v1",
+    ]
+
+
+def test_add_local_api_gateway_noop_for_blank_url(isolated_config: Path):
+    add_local_api_gateway("")
+    assert not isolated_config.exists()
+
+
+def test_settings_picks_up_persisted_local_api_gateways(
+    isolated_config: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.delenv("PCLI_GATEWAY_URL", raising=False)
+    monkeypatch.delenv("PCLI_LOCAL_API_GATEWAYS", raising=False)
+
+    update_config_file(gateway_base_url="http://localhost:1234/v1")
+    add_local_api_gateway("http://localhost:1234/v1")
+
+    settings = Settings()
+    assert settings.is_local_api() is True

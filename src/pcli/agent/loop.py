@@ -73,9 +73,10 @@ class AgentLoop:
         tool_registry: ToolRegistry | None = None,
         permission_manager: PermissionManager | None = None,
         tool_context_factory: ToolContextFactory | None = None,
-        max_tool_iterations: int = 25,
+        max_tool_iterations: int | None = 25,
         artifact_threshold_chars: int = _DEFAULT_ARTIFACT_THRESHOLD_CHARS,
     ) -> None:
+        """`max_tool_iterations=None` means unlimited (local-api mode)."""
         self._client = gateway_client
         self._model = model
         self._tool_registry = tool_registry
@@ -107,7 +108,7 @@ class AgentLoop:
 
         while True:
             iterations += 1
-            if iterations > self._max_tool_iterations:
+            if self._max_tool_iterations is not None and iterations > self._max_tool_iterations:
                 note = "\n[pcli] Reached the max tool-call iteration limit for this turn."
                 yield TextDelta(text=note)
                 working_messages.append(ChatMessage(role="assistant", content=note))
@@ -139,6 +140,7 @@ class AgentLoop:
                 yield ToolStartEvent(tool_call=call)
                 if (
                     max_tool_calls_per_turn is not None
+                    and max_tool_calls_per_turn > 0  # <= 0 means unlimited (local-api mode)
                     and tool_calls_dispatched >= max_tool_calls_per_turn
                 ):
                     # Still respond to every tool_call_id in this batch (required

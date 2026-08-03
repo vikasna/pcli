@@ -116,6 +116,21 @@ plus an optional `[default]` table used for any model matching nothing else
 to an entry: **exact match wins**; otherwise the **longest matching
 `*`-suffixed prefix** pattern.
 
+**Local-API mode overrides all of this to $0.** When
+`Settings.is_local_api()` is true for the active gateway (`--local-api`, see
+[`configuration.md`](configuration.md#local-api-mode)), `ChatScreen` builds
+its `CostTracker` with a module-level `_FREE_PRICING_TABLE =
+PricingTable(entries={}, default=ModelPricing())` (`src/pcli/tui/screens/
+chat.py`) instead of the real `PricingTable.load()` — every model resolves to
+the zero `ModelPricing` default regardless of what's in `pricing.toml` or the
+built-ins. The motivation is that a local model's name can coincidentally
+match a paid builtin prefix pattern above (e.g. a locally-served model named
+`llama-3-8b-instruct` or `mistral-7b` would otherwise match `_BUILTIN_MODELS`'
+`"llama-3*"` (\$0.20/\$0.20 per 1M) or `"mistral*"` (\$0.25/\$0.75 per 1M) and
+show a fake nonzero cost for a free local server). Token/context tracking
+(below) is unaffected by local-api mode — only the `$` cost figure is
+zeroed.
+
 ### Recording cost
 
 `CostTracker.record_turn(model, usage)` (`src/pcli/cost/tracker.py`) is

@@ -45,6 +45,7 @@ to `table_key` when reading back, so both shapes round-trip.
 | `max_tool_iterations` | `PCLI_MAX_TOOL_ITERATIONS` | *(none)* | `max_tool_iterations` | `25` | Cap on tool-call round-trips within a single `AgentLoop.run_turn`; beyond this the loop appends a "reached the max tool-call iteration limit" note and stops. |
 | `sandbox_backend` | `PCLI_SANDBOX_BACKEND` | *(none)* | `sandbox_backend` | `"auto"` | `auto` \| `docker` \| `subprocess` \| `none` (see note below). |
 | `artifact_threshold_chars` | `PCLI_ARTIFACT_THRESHOLD_CHARS` | `--artifact-threshold` | `artifact_threshold_chars` | `4000` | Tool results longer than this (in characters) are truncated out of the live conversation and archived; see [`tools.md`](tools.md#artifact-archiving). |
+| `local_api_gateways` | `PCLI_LOCAL_API_GATEWAYS` | `--local-api` | `local_api_gateways` | `[]` | Gateway base URLs running in local-api mode (uncapped iterations/rate limits, $0 cost). Additive, not a direct override — see [Local-API mode](#local-api-mode) below. |
 
 `Settings.is_configured()` returns `bool(gateway_base_url)` — the API key is
 deliberately *not* required, so a blank key never blocks startup against an
@@ -64,11 +65,16 @@ details.
 
 ## CLI flags
 
-Only four settings have a dedicated CLI flag (`src/pcli/cli.py`, root
-callback): `--gateway-url`, `--api-key`, `--model`, `--artifact-threshold`.
-Everything else must be set via environment variable or `config.toml`. There's
-also `--verbose` / `-v`, which raises file logging (`~/.../pcli.log`, see
-`configure_logging`) to `DEBUG`; it isn't a `Settings` field.
+Five settings-related flags exist (`src/pcli/cli.py`, root callback):
+`--gateway-url`, `--api-key`, `--model`, `--artifact-threshold`, and
+`--local-api`. Everything else must be set via environment variable or
+`config.toml`. There's also `--verbose` / `-v`, which raises file logging
+(`~/.../pcli.log`, see `configure_logging`) to `DEBUG`; it isn't a `Settings`
+field.
+
+`--local-api` is different in kind from the other four: it's a boolean flag
+that doesn't set a scalar override, it *appends* the active gateway to a
+persisted list (see [Local-API mode](#local-api-mode) below).
 
 ## Auto-persisted settings
 
@@ -81,6 +87,58 @@ model with `/models <model-id>` in the TUI does the same for `default_model`.
 **The API key is never auto-persisted.** `update_config_file` is deliberately
 never called with `gateway_api_key` — pass `--api-key` (or set
 `PCLI_GATEWAY_API_KEY`) every time you start pcli if your gateway needs one.
+
+## Local-API mode
+
+`--local-api` doesn't fit the "overwrite this key" model above: passing it
+calls `add_local_api_gateway(settings.gateway_base_url)`
+(`src/pcli/config/settings.py`), which *appends* the currently active
+`gateway_base_url` to the persisted `local_api_gateways` array in
+`config.toml` rather than replacing it — unlike `update_config_file`, which
+overwrites whichever keys it's given. `Settings.is_local_api()` is just
+`gateway_base_url in local_api_gateways`, so the mode is paired to that one
+gateway URL, not a global switch: point pcli at a different, non-local-api
+gateway and normal limits/pricing apply again automatically. There's no
+`--no-local-api` flag — un-marking a gateway means hand-editing
+`local_api_gateways` out of `config.toml` yourself. If `--local-api` is
+passed with no gateway configured (no `--gateway-url` and none
+persisted/env-set), `cli.py` prints a warning to stderr and does nothing
+(doesn't crash).
+
+When `is_local_api()` is true for the active gateway, `ChatScreen.__init__`
+(`src/pcli/tui/screens/chat.py`) changes three things for that session, all
+verified in-code rather than toggled via `Settings` fields:
+
+1. **`max_tool_iterations` becomes unlimited.** `AgentLoop`'s per-turn
+   LLM<->tool round-trip cap (default 25, see the settings table above)
+   becomes `None` via `ChatScreen._effective_max_tool_iterations()`.
+2. **The guardrails' turn/rate limits become unlimited.**
+   `max_tool_calls_per_turn` and `max_tool_calls_per_minute` (defaults 25 and
+   60, see [`sandbox-and-permissions.md`](sandbox-and-permissions.md)) are
+   both forced to `0` on a `.model_copy()` of the loaded `GuardrailsConfig`
+   used for that screen's `PermissionManager` — a `0` there already means
+   "unlimited" in both enforcement points. The *security* guardrails (shell
+   denylist, fs `allowed_roots`/`deny_paths`, python `module_denylist`) are
+   untouched and still fully enforced.
+3. **Cost is forced to $0.** The `CostTracker` is built with a module-level
+   `_FREE_PRICING_TABLE` (`PricingTable(entries={}, default=ModelPricing())`)
+   instead of the real `PricingTable.load()` — see
+   [`sessions-and-cost.md`](sessions-and-cost.md#cost-tracking). Token/context
+   tracking is unaffected; only the `$` figure is zeroed.
+
+A subagent spawned via `spawn_subagent` keeps its own separate iteration cap
+(`_DEFAULT_MAX_ITERATIONS = 15`, `src/pcli/tools/builtin/subagent_tool.py`)
+regardless of local-api mode — nesting depth/runaway recursion is treated as
+a distinct, deliberately non-configurable structural safety cap, not the
+same concern as turn-count or cost limiting.
+
+`ChatScreen` also shows a one-time system message on mount when local-api
+mode is active for the session's gateway.
+
+The motivation is local/free OpenAI-compatible servers (LM Studio, Ollama,
+...): there's no real turn-count or cost concern against them, so the normal
+safety-oriented limits (sized for paid, rate-limited gateways) are just
+friction.
 
 ## Gateway protocol expectations
 

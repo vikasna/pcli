@@ -178,6 +178,19 @@ All three `[limits]` values are actively enforced, each at a different layer:
   `PermissionManager` instance as its parent. A limit of `0` or less disables
   the check entirely (always allowed).
 
+**Local-API mode disables both `max_tool_calls_per_turn` and
+`max_tool_calls_per_minute`, but only for the paired gateway.** When
+`Settings.is_local_api()` is true (see `--local-api` in
+[`configuration.md`](configuration.md#local-api-mode)), `ChatScreen.__init__`
+builds its `PermissionManager` from a `GuardrailsConfig.model_copy()` with
+both limits forced to `0` — i.e. unlimited, per the "disables the check
+entirely" behavior above and the equivalent `<= 0` check in
+`AgentLoop.run_turn` for `max_tool_calls_per_turn`. This is the *only* thing
+that disables these two guardrail limits; the security guardrails just above
+(`evaluate_command`, `evaluate_path`, `evaluate_python_module`) and
+`max_output_bytes` are untouched by local-api mode and still enforced exactly
+as normal.
+
 ## Permission manager
 
 `PermissionManager.check(...)` (`src/pcli/permissions/manager.py`) is the

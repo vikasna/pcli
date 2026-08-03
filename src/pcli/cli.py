@@ -9,7 +9,7 @@ from pathlib import Path
 import typer
 
 from pcli.config.paths import data_dir
-from pcli.config.settings import get_settings, update_config_file
+from pcli.config.settings import add_local_api_gateway, get_settings, update_config_file
 from pcli.cost.tracker import global_cost_report
 from pcli.session.export import export_session
 from pcli.session.importer import import_session
@@ -40,6 +40,14 @@ def _root(
         help="Override the artifact-archiving threshold, in characters "
         "(tool results longer than this get truncated + archived; see fetch_artifact).",
     ),
+    local_api: bool = typer.Option(
+        False,
+        "--local-api",
+        help="Mark the active gateway as local-api mode: uncaps max_tool_iterations and the "
+        "guardrails' max_tool_calls_per_turn/per_minute, and forces cost to $0 instead of "
+        "looking it up in the pricing table. Paired to (and persisted with) whichever "
+        "gateway is active for this invocation.",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging."),
 ) -> None:
     configure_logging(verbose=verbose)
@@ -62,6 +70,19 @@ def _root(
             artifact_threshold_chars=artifact_threshold,
         )
     settings = get_settings(**overrides)
+
+    if local_api:
+        if not settings.gateway_base_url:
+            typer.echo(
+                "--local-api needs a gateway to pair with; pass --gateway-url too "
+                "(or configure one first).",
+                err=True,
+            )
+        else:
+            add_local_api_gateway(settings.gateway_base_url)
+            if settings.gateway_base_url not in settings.local_api_gateways:
+                settings.local_api_gateways.append(settings.gateway_base_url)
+
     ctx.obj = settings
 
     if ctx.invoked_subcommand is None:

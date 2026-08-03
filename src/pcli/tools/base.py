@@ -35,7 +35,8 @@ class ToolContext:
     tool_registry: ToolRegistry | None = None
     permission_manager: PermissionManager | None = None
     ask: AskCallback | None = None
-    max_tool_iterations: int = 25
+    max_tool_iterations: int | None = 25
+    """None means unlimited (local-api mode)."""
     subagent_depth: int = 0
     session: Session | None = None
     """The live Session object, for tools that read/mutate session-level state

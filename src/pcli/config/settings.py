@@ -86,6 +86,15 @@ class Settings(BaseSettings):
         description="Tool results longer than this are truncated out of the live conversation "
         "and archived to the artifact library, retrievable via fetch_artifact.",
     )
+    local_api_gateways: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("PCLI_LOCAL_API_GATEWAYS", "local_api_gateways"),
+        description="Gateway base URLs running in local-api mode (set via --local-api, paired "
+        "to whichever gateway is active at the time): max_tool_iterations and the "
+        "guardrails' max_tool_calls_per_turn/per_minute are uncapped, and cost is forced to "
+        "$0 rather than looked up in the pricing table (avoids a local model's name "
+        "coincidentally matching a paid builtin pricing pattern, e.g. 'llama-3*').",
+    )
 
     @classmethod
     def settings_customise_sources(
@@ -110,6 +119,9 @@ class Settings(BaseSettings):
         # don't need one, and a blank key must not block startup.
         return bool(self.gateway_base_url)
 
+    def is_local_api(self) -> bool:
+        return bool(self.gateway_base_url) and self.gateway_base_url in self.local_api_gateways
+
 
 _settings: Settings | None = None
 
@@ -126,6 +138,8 @@ def _toml_scalar(value: Any) -> str:
         return "true" if value else "false"
     if isinstance(value, (int, float)):
         return str(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_scalar(item) for item in value) + "]"
     escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
 
@@ -163,4 +177,22 @@ def update_config_file(**updates: Any) -> None:
     if path.exists():
         data = dict(tomllib.loads(path.read_text(encoding="utf-8")))
     data.update({key: value for key, value in updates.items() if value})
+    path.write_text(_dump_toml(data), encoding="utf-8")
+
+
+def add_local_api_gateway(gateway_url: str) -> None:
+    """Appends `gateway_url` to the persisted `local_api_gateways` list
+    (rather than overwriting it, unlike update_config_file) — local-api mode
+    is opted into per-gateway, so enabling it for one gateway must not wipe
+    out any other gateway already marked local-api."""
+    if not gateway_url:
+        return
+    path = config_file()
+    data: dict[str, Any] = {}
+    if path.exists():
+        data = dict(tomllib.loads(path.read_text(encoding="utf-8")))
+    existing = list(data.get("local_api_gateways", []))
+    if gateway_url not in existing:
+        existing.append(gateway_url)
+    data["local_api_gateways"] = existing
     path.write_text(_dump_toml(data), encoding="utf-8")

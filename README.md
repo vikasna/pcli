@@ -42,6 +42,12 @@ the model calls `fetch_artifact` to page through the rest if it needs to.
 Raise this if your model keeps needing to re-fetch large outputs; lower it to
 keep context usage tighter.
 
+Pass `--local-api` when pointed at a local/free OpenAI-compatible server (LM
+Studio, Ollama, ...) to lift the tool-iteration and rate-limit guardrails and
+force cost to $0 for that gateway — it's paired to (and persisted with)
+whichever gateway is active, not a global switch. See
+[`docs/configuration.md`](docs/configuration.md#local-api-mode) for details.
+
 ### LM Studio
 
 1. In LM Studio, load a model and start the local server (Developer tab) — it

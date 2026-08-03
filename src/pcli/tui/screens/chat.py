@@ -20,10 +20,12 @@ from pcli.agent.loop import AgentLoop, ToolResultEvent
 from pcli.agent.prompt import build_system_prompt
 from pcli.config.settings import Settings, get_settings, update_config_file
 from pcli.cost.context import ContextLimitTable, current_context_usage
+from pcli.cost.pricing_table import ModelPricing, PricingTable
 from pcli.cost.tracker import CostTracker
 from pcli.llm.client import GatewayClient
 from pcli.llm.errors import GatewayError
 from pcli.llm.models import Usage
+from pcli.permissions.guardrails import GuardrailsConfig
 from pcli.permissions.manager import AskCallback, PermissionManager
 from pcli.sandbox.base import Sandbox
 from pcli.sandbox.selector import select_sandbox
@@ -41,6 +43,10 @@ from pcli.tui.widgets.status_bar import StatusBar
 from pcli.tui.widgets.status_pane import StatusPane
 
 _TOOL_RESULT_PREVIEW_CHARS = 2000
+# Used for local-api-mode sessions: always $0, regardless of pricing.toml or
+# the builtin table — a local model's name could otherwise coincidentally
+# match a paid pattern there (e.g. "llama-3*") and show a fake nonzero cost.
+_FREE_PRICING_TABLE = PricingTable(entries={}, default=ModelPricing())
 
 
 class ChatScreen(Screen):
@@ -58,7 +64,15 @@ class ChatScreen(Screen):
         self._store = store or SessionStore()
         self._client: GatewayClient | None = None
         self._agent_loop: AgentLoop | None = None
-        self._permission_manager = PermissionManager()
+        guardrails = GuardrailsConfig.load()
+        if self._settings.is_local_api():
+            # Local-api mode uncaps turn/rate limiting only — the security
+            # guardrails (shell denylist, fs roots, module denylist) are
+            # untouched.
+            guardrails = guardrails.model_copy(
+                update={"max_tool_calls_per_turn": 0, "max_tool_calls_per_minute": 0}
+            )
+        self._permission_manager = PermissionManager(guardrails=guardrails)
         self._sandbox: Sandbox | None = None
         self._tool_registry: ToolRegistry | None = None
         self._toolbox_manager: ToolboxManager | None = None
@@ -77,7 +91,8 @@ class ChatScreen(Screen):
                 Message(role="system", content=build_system_prompt())
             )
 
-        self._cost_tracker = CostTracker(self._session)
+        pricing_table = _FREE_PRICING_TABLE if self._settings.is_local_api() else None
+        self._cost_tracker = CostTracker(self._session, pricing_table=pricing_table)
         self._context_limit_table = ContextLimitTable.load()
         self._artifact_store = SessionArtifactStore(self._store, self._session.id)
 
@@ -106,6 +121,9 @@ class ChatScreen(Screen):
 
     def _refresh_todo_pane(self) -> None:
         self.query_one(StatusPane).todos = list(self._session.todos)
+
+    def _effective_max_tool_iterations(self) -> int | None:
+        return None if self._settings.is_local_api() else self._settings.max_tool_iterations
 
     def _on_activity_changed(self) -> None:
         pane = self.query_one(StatusPane)
@@ -147,6 +165,14 @@ class ChatScreen(Screen):
             )
             return
 
+        if self._settings.is_local_api():
+            message_view.add_message(
+                "system",
+                "Local-API mode active for this gateway: max_tool_iterations and the "
+                "guardrails' max_tool_calls_per_turn/per_minute are uncapped, and cost is "
+                "forced to $0.",
+            )
+
         try:
             self._sandbox = await select_sandbox(
                 backend_override=self._settings.sandbox_backend, allowed_roots=[self._cwd]
@@ -172,7 +198,7 @@ class ChatScreen(Screen):
             tool_registry=self._tool_registry,
             permission_manager=self._permission_manager,
             tool_context_factory=self._make_tool_context,
-            max_tool_iterations=self._settings.max_tool_iterations,
+            max_tool_iterations=self._effective_max_tool_iterations(),
             artifact_threshold_chars=self._settings.artifact_threshold_chars,
         )
 
@@ -187,7 +213,7 @@ class ChatScreen(Screen):
             tool_registry=self._tool_registry,
             permission_manager=self._permission_manager,
             ask=self._current_ask,
-            max_tool_iterations=self._settings.max_tool_iterations,
+            max_tool_iterations=self._effective_max_tool_iterations(),
             session=self._session,
             artifact_store=self._artifact_store,
             activity=self._activity,

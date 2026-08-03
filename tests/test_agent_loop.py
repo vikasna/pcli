@@ -93,6 +93,28 @@ def _final_text_chunks(text: str = "done") -> list[dict]:
     ]
 
 
+def _single_tool_call_round(call_id: str) -> list[dict]:
+    return [
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": call_id,
+                                "function": {"name": "echo_tool", "arguments": '{"text": "x"}'},
+                            }
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        },
+        {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+    ]
+
+
 @pytest.mark.asyncio
 @respx.mock
 async def test_agent_loop_dispatches_tool_and_continues(tmp_path: Path):
@@ -434,3 +456,81 @@ async def test_agent_loop_truncates_output_over_guardrail_max_output_bytes(tmp_p
     # "echoed: hi" is 10 chars; guardrail caps it to 5.
     assert tool_results[0].output.startswith("echoe")
     assert "output truncated to the guardrail limit" in tool_results[0].output
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_agent_loop_default_max_tool_iterations_stops_the_turn(tmp_path: Path):
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    rounds = [
+        httpx.Response(200, content=_sse(*_single_tool_call_round(f"call_{i}"))) for i in range(30)
+    ]
+    rounds.append(httpx.Response(200, content=_sse(*_final_text_chunks("done"))))
+    route.side_effect = rounds
+
+    registry = ToolRegistry()
+    registry.register(ECHO_TOOL)
+    # Isolate the iteration cap: disable the (separate) per-turn tool-call guardrail.
+    guardrails = GuardrailsConfig(max_tool_calls_per_turn=0)
+    permission_manager = PermissionManager(
+        guardrails=guardrails, policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    sandbox = FakeSandbox()
+
+    async with GatewayClient(_settings()) as client:
+        loop = AgentLoop(
+            client,
+            tool_registry=registry,
+            permission_manager=permission_manager,
+            tool_context_factory=lambda: ToolContext(
+                sandbox=sandbox, guardrails=guardrails, cwd=tmp_path
+            ),
+            max_tool_iterations=25,
+        )
+        events = []
+        async for event in loop.run_turn([ChatMessage(role="user", content="loop forever")]):
+            events.append(event)
+
+    turn_complete = next(e for e in events if isinstance(e, TurnCompleteEvent))
+    assert "Reached the max tool-call iteration limit" in turn_complete.new_messages[-1].content
+    # Stopped exactly at the cap: never reached the 26th round or the final one.
+    assert route.call_count == 25
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_agent_loop_max_tool_iterations_none_is_unlimited(tmp_path: Path):
+    """local-api mode passes max_tool_iterations=None: even far more rounds
+    than the historic default of 25 should run to completion uninterrupted."""
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    rounds = [
+        httpx.Response(200, content=_sse(*_single_tool_call_round(f"call_{i}"))) for i in range(30)
+    ]
+    rounds.append(httpx.Response(200, content=_sse(*_final_text_chunks("done"))))
+    route.side_effect = rounds
+
+    registry = ToolRegistry()
+    registry.register(ECHO_TOOL)
+    guardrails = GuardrailsConfig(max_tool_calls_per_turn=0)  # local-api disables this too
+    permission_manager = PermissionManager(
+        guardrails=guardrails, policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    sandbox = FakeSandbox()
+
+    async with GatewayClient(_settings()) as client:
+        loop = AgentLoop(
+            client,
+            tool_registry=registry,
+            permission_manager=permission_manager,
+            tool_context_factory=lambda: ToolContext(
+                sandbox=sandbox, guardrails=guardrails, cwd=tmp_path
+            ),
+            max_tool_iterations=None,
+        )
+        events = []
+        async for event in loop.run_turn([ChatMessage(role="user", content="loop a lot")]):
+            events.append(event)
+
+    turn_complete = next(e for e in events if isinstance(e, TurnCompleteEvent))
+    assert turn_complete.new_messages[-1].content == "done"
+    assert route.call_count == 31  # all 30 tool-call rounds plus the final text round
