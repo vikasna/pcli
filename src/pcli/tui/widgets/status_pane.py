@@ -1,80 +1,56 @@
-"""Compact, fixed-height pane showing live todo-list status and any running
-subagent's progress. Lives above the message history (not part of it) so it
-doesn't scroll away, and collapses to nothing when there's nothing to show."""
+"""Scrollable pane showing the live todo list. Lives above the message
+history (not part of it) so it doesn't scroll away with the conversation.
+3 lines tall by default but genuinely scrollable when there are more todos
+than that — and auto-scrolls to keep whichever task is 'in_progress'
+visible whenever the list changes. Collapses to nothing when there are no
+todos. (Subagent progress lives in StatusBar's second line, not here.)"""
 
 from __future__ import annotations
 
-from rich.console import Group
 from rich.text import Text
+from textual.containers import VerticalScroll
 from textual.reactive import reactive
 from textual.widgets import Static
 
 from pcli.session.models import TodoItem
+from pcli.tui.widgets.status_bar import truncate
 
-_PANE_HEIGHT = 3
 _STATUS_ICONS = {"pending": "○", "in_progress": "▶", "completed": "✓"}
 _STATUS_STYLES = {"pending": "", "in_progress": "bold", "completed": "dim"}
-_TODO_PRIORITY = {"in_progress": 0, "pending": 1, "completed": 2}
 
 
-def _truncate(text: str, limit: int) -> str:
-    text = text.replace("\n", " ").strip()
-    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
-
-
-def _todo_lines(todos: list[TodoItem], limit: int) -> list[Text]:
-    if limit <= 0 or not todos:
-        return []
-    done = sum(1 for t in todos if t.status == "completed")
-    ordered = sorted(todos, key=lambda t: _TODO_PRIORITY.get(t.status, 3))
-    visible = ordered[:limit]
-    hidden = len(todos) - len(visible)
-    lines = [
-        Text(
-            f"{_STATUS_ICONS.get(t.status, '?')} {_truncate(t.content, 76)}",
-            style=_STATUS_STYLES.get(t.status, ""),
-        )
-        for t in visible
-    ]
-    if hidden > 0:
-        lines[-1] = Text(f"… +{hidden} more todo(s)  ({done}/{len(todos)} done)", style="dim")
-    return lines
-
-
-class StatusPane(Static):
+class StatusPane(VerticalScroll):
     todos: reactive[list[TodoItem]] = reactive(list)
-    subagent_task: reactive[str | None] = reactive(None)
-    subagent_tool_calls: reactive[int] = reactive(0)
-    subagent_last_tool: reactive[str | None] = reactive(None)
 
     def on_mount(self) -> None:
         self._sync_visibility()
 
-    def render(self) -> Group | str:
-        lines: list[Text] = []
-
-        if self.subagent_task is not None:
-            detail = f", last: {self.subagent_last_tool}" if self.subagent_last_tool else ""
-            lines.append(
+    async def watch_todos(self, todos: list[TodoItem]) -> None:
+        await self.remove_children()
+        in_progress_widget: Static | None = None
+        for todo in todos:
+            widget = Static(
                 Text(
-                    f"⟳ Subagent: {_truncate(self.subagent_task, 60)} "
-                    f"— {self.subagent_tool_calls} tool call(s){detail}",
-                    style="italic",
-                )
+                    f"{_STATUS_ICONS.get(todo.status, '?')} {truncate(todo.content, 76)}",
+                    style=_STATUS_STYLES.get(todo.status, ""),
+                ),
+                classes="status-pane-todo",
             )
+            # Static.render() returns an internal RichVisual wrapper, not the
+            # raw Text — stash the source item directly for testability
+            # rather than fighting that (same workaround MessageView uses).
+            widget.todo = todo
+            await self.mount(widget)
+            if todo.status == "in_progress":
+                in_progress_widget = widget
 
-        lines.extend(_todo_lines(self.todos, _PANE_HEIGHT - len(lines)))
-
-        if not lines:
-            return ""
-        return Group(*lines)
-
-    def watch_todos(self, _todos: list[TodoItem]) -> None:
         self._sync_visibility()
-
-    def watch_subagent_task(self, _task: str | None) -> None:
-        self._sync_visibility()
+        # Deferred to after layout has settled, same pattern Textual's own
+        # Collapsible uses for its post-toggle auto-scroll.
+        if in_progress_widget is not None:
+            self.call_after_refresh(in_progress_widget.scroll_visible, animate=False)
+        else:
+            self.call_after_refresh(self.scroll_home, animate=False)
 
     def _sync_visibility(self) -> None:
-        has_content = bool(self.todos) or self.subagent_task is not None
-        self.styles.display = "block" if has_content else "none"
+        self.styles.display = "block" if self.todos else "none"

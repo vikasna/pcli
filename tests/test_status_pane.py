@@ -41,54 +41,71 @@ async def test_status_pane_hidden_when_nothing_to_show():
 
 
 @pytest.mark.asyncio
-async def test_status_pane_shows_todos_and_hides_completed_when_over_capacity():
+async def test_status_pane_shows_all_todos_as_individual_widgets_in_order():
     app = _PaneApp()
     async with app.run_test() as pilot:
         pane = app.query_one(StatusPane)
         pane.todos = [
-            TodoItem(content="done task", status="completed"),
-            TodoItem(content="active task", status="in_progress"),
-            TodoItem(content="next task", status="pending"),
-            TodoItem(content="later task", status="pending"),
+            TodoItem(content="task one", status="completed"),
+            TodoItem(content="task two", status="in_progress"),
+            TodoItem(content="task three", status="pending"),
+            TodoItem(content="task four", status="pending"),
         ]
         await pilot.pause()
 
         assert str(pane.styles.display) == "block"
-        rendered = pane.render()
-        text = "\n".join(segment.plain for segment in rendered.renderables)
-        # in_progress is prioritized to the top over pending/completed.
-        assert "active task" in text
-        assert "next task" in text
-        # Only 3 lines total; the 4th-ranked item is summarized, not listed.
-        assert "later task" not in text
-        assert "more todo(s)" in text
-        assert "1/4 done" in text
+        children = list(pane.query(".status-pane-todo"))
+        # All 4 present (not truncated to 3 with a "+N more" summary) —
+        # genuinely scrollable now instead.
+        assert len(children) == 4
+        # Original list order preserved (not reprioritized) — scrolling
+        # handles bringing the active task into view instead of reordering.
+        assert [w.todo.content for w in children] == [
+            "task one",
+            "task two",
+            "task three",
+            "task four",
+        ]
+        assert [w.todo.status for w in children] == [
+            "completed",
+            "in_progress",
+            "pending",
+            "pending",
+        ]
 
 
 @pytest.mark.asyncio
-async def test_status_pane_shows_subagent_progress_and_shrinks_todo_lines():
+async def test_status_pane_auto_scrolls_to_in_progress_task():
+    app = _PaneApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        pane = app.query_one(StatusPane)
+        pane.todos = [
+            *(TodoItem(content=f"done {i}", status="completed") for i in range(10)),
+            TodoItem(content="the active one", status="in_progress"),
+            TodoItem(content="upcoming", status="pending"),
+        ]
+        await pilot.pause()
+        await pilot.pause()  # let the deferred call_after_refresh scroll run
+
+        in_progress_widget = next(
+            w for w in pane.query(".status-pane-todo") if w.todo.status == "in_progress"
+        )
+        pane_region = pane.region
+        widget_region = in_progress_widget.region
+        assert widget_region.y >= pane_region.y
+        assert widget_region.y + widget_region.height <= pane_region.y + pane_region.height
+
+
+@pytest.mark.asyncio
+async def test_status_pane_scrolls_home_when_nothing_in_progress():
     app = _PaneApp()
     async with app.run_test() as pilot:
         pane = app.query_one(StatusPane)
-        pane.todos = [
-            TodoItem(content="task one", status="in_progress"),
-            TodoItem(content="task two", status="pending"),
-        ]
-        pane.subagent_task = "research something"
-        pane.subagent_tool_calls = 3
-        pane.subagent_last_tool = "grep"
+        pane.todos = [TodoItem(content=f"task {i}", status="pending") for i in range(10)]
+        await pilot.pause()
         await pilot.pause()
 
-        assert str(pane.styles.display) == "block"
-        rendered = pane.render()
-        text = "\n".join(segment.plain for segment in rendered.renderables)
-        assert "Subagent" in text
-        assert "research something" in text
-        assert "3 tool call(s)" in text
-        assert "grep" in text
-        # Only 2 lines left for todos once the subagent line is shown.
-        assert "task one" in text
-        assert "task two" in text
+        assert pane.scroll_offset.y == 0
 
 
 @pytest.mark.asyncio

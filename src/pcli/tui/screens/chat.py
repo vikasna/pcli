@@ -43,7 +43,6 @@ from pcli.tui.widgets.message_view import MessageView
 from pcli.tui.widgets.status_bar import StatusBar
 from pcli.tui.widgets.status_pane import StatusPane
 
-_TOOL_RESULT_PREVIEW_CHARS = 2000
 # Used for local-api-mode sessions: always $0, regardless of pricing.toml or
 # the builtin table — a local model's name could otherwise coincidentally
 # match a paid pattern there (e.g. "llama-3*") and show a fake nonzero cost.
@@ -128,11 +127,11 @@ class ChatScreen(Screen):
         return None if self._settings.is_local_api() else self._settings.max_tool_iterations
 
     def _on_activity_changed(self) -> None:
-        pane = self.query_one(StatusPane)
+        status_bar = self.query_one(StatusBar)
         sub = self._activity.subagent
-        pane.subagent_task = sub.task if sub else None
-        pane.subagent_tool_calls = sub.tool_calls if sub else 0
-        pane.subagent_last_tool = sub.last_tool if sub else None
+        status_bar.subagent_task = sub.task if sub else None
+        status_bar.subagent_tool_calls = sub.tool_calls if sub else 0
+        status_bar.subagent_last_tool = sub.last_tool if sub else None
 
     async def on_mount(self) -> None:
         self.query_one(Input).focus()
@@ -547,10 +546,9 @@ class ChatScreen(Screen):
                         )
                     if chunk.extra_usage:
                         self._refresh_cost_display(status_bar)
-                    preview = chunk.output[:_TOOL_RESULT_PREVIEW_CHARS]
-                    if len(chunk.output) > _TOOL_RESULT_PREVIEW_CHARS:
-                        preview += "\n[...truncated in view; full output saved to session...]"
-                    message_view.add_message("tool", ("[error] " if chunk.is_error else "") + preview)
+                    message_view.add_tool_result(
+                        chunk.tool_call.function.name, chunk.output, is_error=chunk.is_error
+                    )
                     message_view.finish_streaming()
                 elif chunk.kind == "turn_complete":
                     self._session.messages.extend(

@@ -1,9 +1,17 @@
 from pathlib import Path
 
+import pytest
+from textual.app import App, ComposeResult
+
 from pcli.cost.context import ContextLimitTable, ContextUsage, current_context_usage
 from pcli.llm.models import Usage
 from pcli.session.models import Session, TurnCost
 from pcli.tui.widgets.status_bar import StatusBar, format_token_count
+
+
+class _BarApp(App):
+    def compose(self) -> ComposeResult:
+        yield StatusBar(id="status-bar")
 
 
 def _fixture_limits() -> ContextLimitTable:
@@ -81,3 +89,40 @@ def test_status_bar_render_omits_context_when_no_limit():
     bar = StatusBar()
     text = bar.render()
     assert "ctx:" not in text
+
+
+def test_status_bar_renders_second_line_only_while_subagent_active():
+    bar = StatusBar()
+    bar.model = "gpt-4o"
+    assert "\n" not in bar.render()
+
+    bar.subagent_task = "investigate the bug"
+    bar.subagent_tool_calls = 2
+    bar.subagent_last_tool = "grep"
+    text = bar.render()
+    line1, line2 = text.split("\n")
+    assert "model: gpt-4o" in line1
+    assert "Subagent" in line2
+    assert "investigate the bug" in line2
+    assert "2 tool call(s)" in line2
+    assert "grep" in line2
+
+    bar.subagent_task = None
+    assert "\n" not in bar.render()
+
+
+@pytest.mark.asyncio
+async def test_status_bar_height_grows_and_shrinks_with_subagent_activity():
+    app = _BarApp()
+    async with app.run_test() as pilot:
+        bar = app.query_one(StatusBar)
+        await pilot.pause()
+        assert int(bar.styles.height.value) == 1
+
+        bar.subagent_task = "investigate the bug"
+        await pilot.pause()
+        assert int(bar.styles.height.value) == 2
+
+        bar.subagent_task = None
+        await pilot.pause()
+        assert int(bar.styles.height.value) == 1

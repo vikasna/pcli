@@ -66,7 +66,7 @@ All tests live flat under `tests/` (no subpackages), one file per concern:
 | `test_sandbox_subprocess.py` | POSIX `preexec_fn` not double-calling `setsid`; argv-list and shell-string execution; cwd-outside-allowed-roots rejection; env scrubbing hiding secrets. |
 | `test_session_roundtrip.py` | Export/import roundtrip (with and without `restore_grants`); rejecting a newer format version or wrong format; gzip export roundtrip; `SessionStore` list/delete. |
 | `test_shell_passthrough.py` | `!`/`!!` passthrough: stdout capture, stderr + nonzero exit, cwd, **no env scrubbing** (unlike the sandbox), timeout kill, output truncation. |
-| `test_status_pane.py` | `ActivityTracker` start/progress/finish; `StatusPane` hidden-when-empty, todo display with over-capacity truncation, subagent progress display, hiding again once cleared. |
+| `test_status_pane.py` | `ActivityTracker` start/progress/finish; `StatusPane` hidden-when-empty, all todos shown as individual widgets in order, auto-scroll to the `in_progress` item (or home when none), hiding again once cleared. |
 | `test_subagent_tool.py` | `spawn_subagent`: missing-context error, final text + usage, the registry never containing itself (no re-nesting), `allowed_tools` filtering, actually calling a tool, activity-progress reporting. |
 | `test_todo_tool.py` | `write_todos`: no-session error, setting todos, replace-not-append semantics, rejecting multiple `in_progress`, rejecting non-list/malformed entries. |
 | `test_toolbox_introspect.py` | Subcommand-guessing regex; `collect_help_corpus` walking guessed subcommands; `synthesize_tools` valid response, retry-once-then-succeed, give-up-after-two-invalid-attempts, schema-violation rejection. |

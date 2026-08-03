@@ -43,6 +43,20 @@ Screen {
     color: $text-muted;
 }
 
+.tool-result-collapsible {
+    margin-bottom: 1;
+    border-left: thick $warning;
+    background: transparent;
+}
+
+.tool-result-collapsible.error {
+    border-left: thick $error;
+}
+
+.tool-result-collapsible CollapsibleTitle {
+    color: $text-muted;
+}
+
 #status-bar {
     height: 1;
     background: $panel;

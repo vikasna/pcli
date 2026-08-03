@@ -7,11 +7,11 @@ Running `pcli` with no subcommand launches the Textual TUI (`PcliApp` ->
 
 Top to bottom (`ChatScreen.compose`):
 
-- **Status pane** (`StatusPane`) — todo list + subagent progress. Collapses
-  to zero height when there's nothing to show.
+- **Status pane** (`StatusPane`) — todo list only, ~3 lines, scrollable.
+  Collapses to zero height when there's nothing to show.
 - **Message view** (`MessageView`) — scrollable conversation history.
-- **Status bar** (`StatusBar`) — cost/context/tokens/sandbox/spinner, one
-  line.
+- **Status bar** (`StatusBar`) — cost/context/tokens/sandbox/spinner, plus a
+  second line with subagent progress while one is running.
 - **Input box** — where you type.
 
 ## Chat input
@@ -106,13 +106,47 @@ for the remainder of the granted scope. See
 [`sandbox-and-permissions.md`](sandbox-and-permissions.md) for the full
 decision flow (guardrails still apply and can override an "allow").
 
+## Tool results
+
+Each tool call's result (`MessageView.add_tool_result`,
+`src/pcli/tui/widgets/message_view.py`) renders as a Textual `Collapsible`,
+collapsed by default, titled:
+
+```
+✓ read_file — 1,234 char(s)
+```
+
+(`✗` in place of `✓` when `chunk.is_error`, which also adds an `error` CSS
+class giving the collapsible's left border the `$error` color instead of
+`$warning` — see `.tool-result-collapsible`/`.tool-result-collapsible.error`
+in `src/pcli/tui/styles/pcli.tcss`). Click the title (or focus it and press
+Enter/Space, standard Textual `Collapsible` interaction) to expand it and see
+the full output. This replaced the old fixed 2000-character view-layer
+preview, which used to cut the body short even when the result wasn't large
+enough to trigger the model-facing artifact archiving described in
+[`tools.md`](tools.md#artifact-archiving) — now the Collapsible always shows
+all of `chunk.output` (the same string the model itself received for that
+tool call, already-archived-and-truncated if it was over the artifact
+threshold).
+
+Body formatting (`_format_tool_output`) depends on the content: output that
+starts with `{`/`[` and parses as JSON is pretty-printed and
+syntax-highlighted via `rich.syntax.Syntax`; everything else is rendered
+verbatim as plain monospace text (`rich.text.Text`), deliberately *not*
+Markdown, since tool output routinely contains underscores/asterisks/etc.
+that Markdown would misinterpret.
+
 ## Status bar
 
-One line, live-updated (`StatusBar.render`):
+One line normally, growing to two while a subagent is running
+(`StatusBar._sync_height`, `src/pcli/tui/widgets/status_bar.py`):
 
 ```
 ⠋ Working...   model: gpt-4o   cost: $0.0123   ctx: 3.2k/128.0k (2%)   tokens: 4.1k   sandbox: docker
+⟳ Subagent: investigate failing test — 3 tool call(s), last: run_shell
 ```
+
+Line 1:
 
 - Spinner (braille frames, ticks at 10fps) — shown only while `busy` (set for
   the whole duration of a turn: waiting on the LLM, streaming, running tool
@@ -126,17 +160,21 @@ One line, live-updated (`StatusBar.render`):
 - `sandbox` — the backend actually selected at startup (`docker` or
   `subprocess`), so you always know the isolation level in effect.
 
+Line 2 appears only while `spawn_subagent` is running (`subagent_task` is
+non-`None`) and shows its task (truncated to 60 chars), tool-call count, and
+the last tool it called; it disappears and the bar shrinks back to one line
+once the subagent finishes.
+
 ## Status pane (top)
 
-`StatusPane` shows, in a fixed ~3-line region above the message history (so
-it never scrolls away):
+`StatusPane` is now todos-only — a genuinely scrollable region (mouse
+wheel/scrollbar), ~3 lines tall by default, with one child widget per todo
+item in original list order (no reprioritizing or "+N more" truncation).
+Each line reads `○/▶/✓ <content>` for pending/in-progress/completed. Whenever
+the list changes (`watch_todos`), it rebuilds all the child widgets and then
+auto-scrolls: if some todo is `in_progress`, that item is scrolled into view
+(`scroll_visible`, deferred to after layout settles); otherwise it scrolls
+back to the top (`scroll_home`).
 
-- **Subagent progress**, if one is currently running: `⟳ Subagent: <task
-  (truncated)> — N tool call(s), last: <tool name>`.
-- **Todo list**, sorted `in_progress` -> `pending` -> `completed`, each line
-  `○/▶/✓ <content>`, with a `… +N more todo(s) (X/Y done)` summary line if it
-  doesn't all fit.
-
-The pane collapses to zero height (`display: none`) whenever there's no
-subagent running *and* the todo list is empty — it only takes up space when
-there's something to show.
+The pane collapses to zero height (`display: none`) whenever the todo list is
+empty. Subagent progress no longer lives here — see the status bar above.

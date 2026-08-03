@@ -1,4 +1,6 @@
-"""Live cost/context/model/sandbox status line."""
+"""Live cost/context/model/sandbox status line. Grows to a second line only
+while a subagent is running (see spawn_subagent) — collapses back to one
+line once it finishes."""
 
 from __future__ import annotations
 
@@ -20,6 +22,11 @@ def format_token_count(n: int) -> str:
     return str(n)
 
 
+def truncate(text: str, limit: int) -> str:
+    text = text.replace("\n", " ").strip()
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
 class StatusBar(Static):
     model: reactive[str] = reactive("")
     session_cost_usd: reactive[float] = reactive(0.0)
@@ -31,6 +38,10 @@ class StatusBar(Static):
     # the LLM, streaming its reply, running tool calls, ...) — cleared only
     # once the response has been fully printed.
     busy: reactive[bool] = reactive(False)
+    # Second line, shown only while non-None: a running subagent's progress.
+    subagent_task: reactive[str | None] = reactive(None)
+    subagent_tool_calls: reactive[int] = reactive(0)
+    subagent_last_tool: reactive[str | None] = reactive(None)
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -38,6 +49,13 @@ class StatusBar(Static):
 
     def on_mount(self) -> None:
         self.set_interval(_SPINNER_INTERVAL_S, self._advance_spinner)
+        self._sync_height()
+
+    def watch_subagent_task(self, _task: str | None) -> None:
+        self._sync_height()
+
+    def _sync_height(self) -> None:
+        self.styles.height = 2 if self.subagent_task is not None else 1
 
     def _advance_spinner(self) -> None:
         if not self.busy:
@@ -45,7 +63,7 @@ class StatusBar(Static):
         self._spinner_index = (self._spinner_index + 1) % len(_SPINNER_FRAMES)
         self.refresh()
 
-    def render(self) -> str:
+    def _render_line1(self) -> str:
         context_part = ""
         if self.context_limit_tokens:
             pct = 100 * self.context_used_tokens / self.context_limit_tokens
@@ -62,3 +80,14 @@ class StatusBar(Static):
             f"tokens: {format_token_count(self.total_tokens)}   "
             f"sandbox: {self.sandbox_backend}"
         )
+
+    def render(self) -> str:
+        line1 = self._render_line1()
+        if self.subagent_task is None:
+            return line1
+        detail = f", last: {self.subagent_last_tool}" if self.subagent_last_tool else ""
+        line2 = (
+            f"⟳ Subagent: {truncate(self.subagent_task, 60)} "
+            f"— {self.subagent_tool_calls} tool call(s){detail}"
+        )
+        return f"{line1}\n{line2}"

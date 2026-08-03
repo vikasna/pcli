@@ -150,7 +150,7 @@ filtered out of the tool registry a subagent runs with (by name, in
 - **Permission:** required. `risk_description`: "Spawns a subagent that can
   call tools (including sandboxed ones) on its own."
 - **Live progress:** while running, reports task/tool-call-count/last-tool to
-  `ActivityTracker`, which the TUI's status pane renders (see
+  `ActivityTracker`, which the TUI's status bar renders as a second line (see
   [`tui-guide.md`](tui-guide.md)).
 
 ## write_todos
@@ -205,6 +205,20 @@ context. Because the artifact store is session-backed, an `artifact_id` also
 serves as a `ToolInvocation.full_result_ref` — the chat screen points a
 session's tool-invocation record at the same blob rather than storing the
 full output twice (`ChatScreen._record_tool_invocation`).
+
+The TUI displays this exact same string (`ToolResultEvent.output` — i.e.
+`chunk.output` in `ChatScreen._stream_response`, the *already*
+archived/truncated value above, not `raw_output`) via
+`MessageView.add_tool_result`, inside an expandable Collapsible — see
+[`tui-guide.md`](tui-guide.md#tool-results). The one thing that changed is
+that the view layer no longer applies a *second*, smaller truncation on top:
+previously the TUI cut whatever it was given down to a fixed 2000 characters
+for display; now the Collapsible shows all of `chunk.output` when expanded.
+In practice that mostly matters for results between roughly 2000 chars and
+`artifact_threshold_chars` (default 4000) — big enough that the old
+view-layer cap used to hide the tail, but not big enough to be archived — for
+truly large, archived output the human sees the same truncated
+preview-plus-`fetch_artifact`-note the model does.
 
 ## Auto-compaction
 
