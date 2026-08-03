@@ -8,6 +8,25 @@ from pcli.sandbox.subprocess_backend import RestrictedSubprocessSandbox
 
 _ECHO = [sys.executable, "-c", "import sys; print(sys.argv[1])", "hello-sandbox"]
 
+_posix_only = pytest.mark.skipif(
+    sys.platform == "win32", reason="preexec_fn/setsid only applies on POSIX"
+)
+
+
+@_posix_only
+def test_posix_preexec_fn_does_not_call_setsid_itself():
+    """Regression test: RestrictedSubprocessSandbox passes start_new_session=True,
+    which makes Popen call os.setsid() itself right after forking, before
+    running preexec_fn. The preexec_fn used to call os.setsid() again too,
+    which raises EPERM on an already-session-leader process and crashed
+    *every* sandboxed shell command on Linux with 'Exception occurred in
+    preexec_fn.' — see sandbox/limits.py."""
+    from pcli.sandbox.limits import make_posix_preexec_fn
+
+    preexec = make_posix_preexec_fn(cpu_seconds=None, memory_bytes=None)
+    assert preexec is not None
+    preexec()  # must not raise
+
 
 @pytest.mark.asyncio
 async def test_execute_argv_list(tmp_path: Path):
@@ -16,6 +35,20 @@ async def test_execute_argv_list(tmp_path: Path):
     assert result.exit_code == 0
     assert "hello-sandbox" in result.stdout
     assert result.backend_used == "subprocess"
+
+
+@_posix_only
+@pytest.mark.asyncio
+async def test_execute_shell_string_posix_native_command(tmp_path: Path):
+    """Regression test for the preexec_fn/setsid double-call bug (see
+    test_posix_preexec_fn_does_not_call_setsid_itself): runs a real shell
+    built-in through the actual sandbox, end to end, on POSIX."""
+    sandbox = RestrictedSubprocessSandbox(allowed_roots=[tmp_path])
+    result = await sandbox.execute(
+        ExecRequest(command="echo hello-from-shell", cwd=tmp_path, timeout_s=10)
+    )
+    assert result.exit_code == 0
+    assert "hello-from-shell" in result.stdout
 
 
 @pytest.mark.asyncio

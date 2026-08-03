@@ -1,10 +1,12 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
 import pytest
 import respx
 
+from pcli.agent.activity import ActivityTracker
 from pcli.agent.loop import AgentLoop, ToolResultEvent, TurnCompleteEvent
 from pcli.config.settings import Settings
 from pcli.llm.client import GatewayClient
@@ -235,6 +237,63 @@ async def test_spawn_subagent_can_actually_call_a_tool(tmp_path: Path):
     assert "1 tool call(s)" in result.output
     assert "Used the echo tool successfully." in result.output
     assert route.call_count == 2
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_spawn_subagent_reports_activity_progress(tmp_path: Path):
+    """The status pane needs live progress while a subagent runs — verify the
+    ActivityTracker sees a start snapshot, a per-tool-call progress snapshot,
+    and is cleared again once the subagent finishes."""
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(
+            200,
+            content=_sse(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_1",
+                                        "function": {"name": "echo_tool", "arguments": "{}"},
+                                    }
+                                ]
+                            },
+                            "finish_reason": None,
+                        }
+                    ]
+                },
+                {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+            ),
+        ),
+        _text_response("Used the echo tool successfully."),
+    ]
+
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    registry = _make_registry_with_echo_and_subagent()
+    activity = ActivityTracker()
+    snapshots: list[tuple[str, int, str | None] | None] = []
+
+    def _snapshot() -> None:
+        sub = activity.subagent
+        snapshots.append((sub.task, sub.tool_calls, sub.last_tool) if sub else None)
+
+    activity.subscribe(_snapshot)
+
+    async with GatewayClient(_settings()) as client:
+        ctx = replace(_make_ctx(tmp_path, registry, client, permission_manager), activity=activity)
+        result = await SPAWN_SUBAGENT.handler({"task": "echo something"}, ctx)
+
+    assert result.is_error is False
+    assert snapshots[0] == ("echo something", 0, None)
+    assert ("echo something", 1, "echo_tool") in snapshots
+    assert snapshots[-1] is None
+    assert activity.subagent is None
 
 
 @pytest.mark.asyncio

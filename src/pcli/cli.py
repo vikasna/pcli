@@ -9,7 +9,7 @@ from pathlib import Path
 import typer
 
 from pcli.config.paths import data_dir
-from pcli.config.settings import get_settings
+from pcli.config.settings import get_settings, update_config_file
 from pcli.cost.tracker import global_cost_report
 from pcli.session.export import export_session
 from pcli.session.importer import import_session
@@ -34,6 +34,12 @@ def _root(
     gateway_url: str = typer.Option(None, "--gateway-url", help="Override the gateway base URL."),
     api_key: str = typer.Option(None, "--api-key", help="Override the gateway API key."),
     model: str = typer.Option(None, "--model", help="Override the default model."),
+    artifact_threshold: int = typer.Option(
+        None,
+        "--artifact-threshold",
+        help="Override the artifact-archiving threshold, in characters "
+        "(tool results longer than this get truncated + archived; see fetch_artifact).",
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging."),
 ) -> None:
     configure_logging(verbose=verbose)
@@ -44,6 +50,17 @@ def _root(
         overrides["gateway_api_key"] = api_key
     if model:
         overrides["default_model"] = model
+    if artifact_threshold is not None:
+        overrides["artifact_threshold_chars"] = artifact_threshold
+    if gateway_url or model or artifact_threshold is not None:
+        # Remembered for next time so a bare `pcli` picks it up — deliberately
+        # not persisting api_key here, so a secret passed via --api-key isn't
+        # silently written to disk.
+        update_config_file(
+            gateway_base_url=gateway_url,
+            default_model=model,
+            artifact_threshold_chars=artifact_threshold,
+        )
     settings = get_settings(**overrides)
     ctx.obj = settings
 

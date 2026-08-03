@@ -119,3 +119,48 @@ def get_settings(**overrides: Any) -> Settings:
     if overrides or _settings is None:
         _settings = Settings(**overrides)
     return _settings
+
+
+def _toml_scalar(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _dump_toml(data: dict[str, Any]) -> str:
+    """Minimal TOML serializer for this app's own config.toml: flat scalar
+    keys plus at most one level of [table] nesting — the same shape
+    _TomlFileSource reads back. Not a general-purpose TOML writer (the
+    stdlib has none); good enough since we only ever write our own keys."""
+    lines: list[str] = []
+    tables: list[tuple[str, dict[str, Any]]] = []
+    for key, value in data.items():
+        if isinstance(value, dict):
+            tables.append((key, value))
+        else:
+            lines.append(f"{key} = {_toml_scalar(value)}")
+    for name, table in tables:
+        lines.append("")
+        lines.append(f"[{name}]")
+        lines.extend(f"{key} = {_toml_scalar(value)}" for key, value in table.items())
+    return "\n".join(lines) + "\n"
+
+
+def update_config_file(**updates: Any) -> None:
+    """Persists the given key/value pairs into config.toml, preserving any
+    other existing keys/tables. Falsy values (None, "") are skipped rather
+    than written, so callers can pass through optional CLI flags/selections
+    unconditionally without accidentally clearing a saved preference.
+
+    Used to remember a gateway URL or model picked via a CLI flag or a TUI
+    selection (e.g. /models), so a bare `pcli` picks them up next time.
+    """
+    path = config_file()
+    data: dict[str, Any] = {}
+    if path.exists():
+        data = dict(tomllib.loads(path.read_text(encoding="utf-8")))
+    data.update({key: value for key, value in updates.items() if value})
+    path.write_text(_dump_toml(data), encoding="utf-8")

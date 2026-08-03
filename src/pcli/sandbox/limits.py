@@ -25,10 +25,14 @@ def make_posix_preexec_fn(
         return None
 
     def _preexec() -> None:
-        import os
         import resource
 
-        os.setsid()
+        # No os.setsid() here: the caller already passes start_new_session=True
+        # to Popen/create_subprocess_exec, which calls setsid() itself right
+        # after forking, before running this preexec_fn. Calling it again on
+        # a process that's already a session leader raises EPERM, which
+        # crashes the whole preexec_fn (surfaces as "Exception occurred in
+        # preexec_fn.") and every single shell command would fail.
         if cpu_seconds is not None:
             try:
                 resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds))

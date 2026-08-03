@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pcli.agent.activity import ActivityTracker
 from pcli.llm.client import GatewayClient
 from pcli.llm.models import ToolDefinition, Usage
 from pcli.permissions.guardrails import GuardrailsConfig
@@ -42,6 +43,9 @@ class ToolContext:
     artifact_store: ArtifactStore | None = None
     """Where large tool outputs get archived (see agent/loop.py's automatic
     truncation) and where fetch_artifact reads them back from."""
+    activity: ActivityTracker | None = None
+    """Ephemeral live-progress reporting for the TUI's status pane (namely
+    spawn_subagent reporting its own tool-call progress). Not persisted."""
 
 
 @dataclass

@@ -2,6 +2,15 @@ Screen {
     background: $surface;
 }
 
+#status-pane {
+    height: 3;
+    background: $panel;
+    color: $text;
+    padding: 0 1;
+    border-bottom: solid $primary-background;
+    display: none;
+}
+
 #message-view {
     height: 1fr;
     padding: 1 2;

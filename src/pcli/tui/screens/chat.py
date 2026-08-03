@@ -15,9 +15,10 @@ from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widgets import Input
 
+from pcli.agent.activity import ActivityTracker
 from pcli.agent.loop import AgentLoop, ToolResultEvent
 from pcli.agent.prompt import build_system_prompt
-from pcli.config.settings import Settings, get_settings
+from pcli.config.settings import Settings, get_settings, update_config_file
 from pcli.cost.context import ContextLimitTable, current_context_usage
 from pcli.cost.tracker import CostTracker
 from pcli.llm.client import GatewayClient
@@ -37,6 +38,7 @@ from pcli.tui.screens.permission_modal import ask_via_modal
 from pcli.tui.shell_passthrough import run_passthrough_command
 from pcli.tui.widgets.message_view import MessageView
 from pcli.tui.widgets.status_bar import StatusBar
+from pcli.tui.widgets.status_pane import StatusPane
 
 _TOOL_RESULT_PREVIEW_CHARS = 2000
 
@@ -62,6 +64,7 @@ class ChatScreen(Screen):
         self._toolbox_manager: ToolboxManager | None = None
         self._current_ask: AskCallback | None = None
         self._cwd = Path.cwd()
+        self._activity = ActivityTracker()
 
         if session is not None:
             self._session = session
@@ -80,6 +83,7 @@ class ChatScreen(Screen):
 
     def compose(self) -> ComposeResult:
         with Vertical():
+            yield StatusPane(id="status-pane")
             yield MessageView(id="message-view")
             yield StatusBar(id="status-bar")
             yield Input(
@@ -100,6 +104,16 @@ class ChatScreen(Screen):
         status_bar.context_used_tokens = usage.total_tokens
         status_bar.context_limit_tokens = self._context_limit_table.lookup(model)
 
+    def _refresh_todo_pane(self) -> None:
+        self.query_one(StatusPane).todos = list(self._session.todos)
+
+    def _on_activity_changed(self) -> None:
+        pane = self.query_one(StatusPane)
+        sub = self._activity.subagent
+        pane.subagent_task = sub.task if sub else None
+        pane.subagent_tool_calls = sub.tool_calls if sub else 0
+        pane.subagent_last_tool = sub.last_tool if sub else None
+
     async def on_mount(self) -> None:
         self.query_one(Input).focus()
         status_bar = self.query_one(StatusBar)
@@ -108,6 +122,8 @@ class ChatScreen(Screen):
         context_usage = current_context_usage(self._session, limit_table=self._context_limit_table)
         status_bar.context_used_tokens = context_usage.used_tokens
         status_bar.context_limit_tokens = context_usage.limit_tokens
+        self._activity.subscribe(self._on_activity_changed)
+        self._refresh_todo_pane()
 
         message_view = self.query_one(MessageView)
         for message in self._session.messages:
@@ -174,6 +190,7 @@ class ChatScreen(Screen):
             max_tool_iterations=self._settings.max_tool_iterations,
             session=self._session,
             artifact_store=self._artifact_store,
+            activity=self._activity,
         )
 
     async def on_unmount(self) -> None:
@@ -357,6 +374,8 @@ class ChatScreen(Screen):
         if self._agent_loop is not None:
             self._agent_loop.set_model(model)
         self.query_one(StatusBar).model = model
+        # Remembered for next time so a bare `pcli` picks it up.
+        update_config_file(default_model=model)
 
     @work(exclusive=True)
     async def _export_current(self, out_path_arg: str | None) -> None:
@@ -403,6 +422,7 @@ class ChatScreen(Screen):
             return await ask_via_modal(self.app, tool_name, arguments, risk_description)
 
         self._current_ask = ask
+        status_bar.busy = True
 
         try:
             chat_messages = [m.to_chat_message() for m in self._session.messages]
@@ -424,6 +444,8 @@ class ChatScreen(Screen):
                     message_view.finish_streaming()
                 elif chunk.kind == "tool_result":
                     self._record_tool_invocation(chunk)
+                    if chunk.tool_call.function.name == "write_todos":
+                        self._refresh_todo_pane()
                     for extra in chunk.extra_usage:
                         self._cost_tracker.record_turn(
                             self._settings.default_model or self._session.model, extra
@@ -443,5 +465,7 @@ class ChatScreen(Screen):
             message_view.finish_streaming()
             message_view.add_message("system", f"Gateway error: {exc.message}")
             return
+        finally:
+            status_bar.busy = False
         message_view.finish_streaming()
         self._store.save(self._session)

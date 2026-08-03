@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from pcli.agent.loop import AgentLoop, TurnCompleteEvent
+from pcli.agent.loop import AgentLoop, ToolStartEvent, TurnCompleteEvent
 from pcli.llm.models import ChatMessage, Usage, UsageEvent
 from pcli.tools.base import ToolContext, ToolResult, ToolSpec
 from pcli.tools.registry import ToolRegistry
@@ -77,10 +77,15 @@ async def _spawn_subagent(arguments: dict, ctx: ToolContext) -> ToolResult:
     final_text_parts: list[str] = []
     tool_call_count = 0
     usages: list[Usage] = []
+    if ctx.activity is not None:
+        ctx.activity.start_subagent(task)
     try:
         async for event in sub_loop.run_turn(messages, ask=ctx.ask):
             if isinstance(event, UsageEvent):
                 usages.append(event.usage)
+            elif isinstance(event, ToolStartEvent):
+                if ctx.activity is not None:
+                    ctx.activity.record_subagent_tool_call(event.tool_call.function.name)
             elif isinstance(event, TurnCompleteEvent):
                 for message in event.new_messages:
                     if message.role != "assistant":
@@ -91,6 +96,9 @@ async def _spawn_subagent(arguments: dict, ctx: ToolContext) -> ToolResult:
                         final_text_parts.append(message.content)
     except Exception as exc:  # noqa: BLE001 - surface subagent failure, don't crash the parent turn
         return ToolResult(output=f"Subagent failed: {exc}", is_error=True, extra_usage=usages)
+    finally:
+        if ctx.activity is not None:
+            ctx.activity.finish_subagent()
 
     result_text = "\n\n".join(part for part in final_text_parts if part).strip()
     if not result_text:
