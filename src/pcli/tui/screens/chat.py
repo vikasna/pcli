@@ -16,6 +16,7 @@ from textual.screen import Screen
 from textual.widgets import Input
 
 from pcli.agent.activity import ActivityTracker
+from pcli.agent.compaction import maybe_compact
 from pcli.agent.loop import AgentLoop, ToolResultEvent
 from pcli.agent.prompt import build_system_prompt
 from pcli.config.settings import Settings, get_settings, update_config_file
@@ -102,7 +103,8 @@ class ChatScreen(Screen):
             yield MessageView(id="message-view")
             yield StatusBar(id="status-bar")
             yield Input(
-                placeholder="Ask pcli... (/sessions, /export, /toolbox, /models, !shell, !!quiet-shell)",
+                placeholder="Ask pcli... (/sessions, /export, /toolbox, /models, /compact, "
+                "!shell, !!quiet-shell)",
                 id="input-box",
             )
 
@@ -288,6 +290,8 @@ class ChatScreen(Screen):
             self._handle_toolbox_command(rest)
         elif command == "models":
             self._handle_models_command(rest or None)
+        elif command == "compact":
+            self._manual_compact()
         else:
             message_view.add_message("system", f"Unknown command: /{command}")
 
@@ -437,6 +441,71 @@ class ChatScreen(Screen):
             invocation.full_result_ref = SessionArtifactStore.blob_name_for(event.artifact_id)
         self._session.tool_invocations.append(invocation)
 
+    async def _run_compaction(self, reason: str) -> None:
+        """Summarizes and archives the oldest turns of session.messages (see
+        agent/compaction.py) — either after an "auto" trigger from
+        _stream_response, or a "manual" /compact command. Plain async method
+        (not @work) so _stream_response can just await it directly while
+        already inside its own worker; /compact reaches it via the small
+        @work-wrapped _manual_compact below, same pattern as every other
+        synchronously-dispatched command in this file."""
+        message_view = self.query_one(MessageView)
+        status_bar = self.query_one(StatusBar)
+        if self._client is None or self._agent_loop is None:
+            if reason == "manual":
+                message_view.add_message(
+                    "system", "Compaction isn't available (gateway/sandbox not set up)."
+                )
+            return
+
+        status_bar.busy = True
+        try:
+            result = await maybe_compact(
+                self._session,
+                gateway_client=self._client,
+                model=self._settings.default_model or self._session.model or None,
+                artifact_store=self._artifact_store,
+                keep_recent_turns=self._settings.auto_compact_keep_recent_turns,
+            )
+        finally:
+            status_bar.busy = False
+
+        if result is None:
+            if reason == "manual":
+                message_view.add_message("system", "Nothing to compact yet.")
+            return
+
+        # Reuses ToolInvocation.full_result_ref purely so export_session
+        # (which only bundles blobs it finds referenced there) carries this
+        # artifact along too — no real tool call happened.
+        self._session.tool_invocations.append(
+            ToolInvocation(
+                tool_name="_compaction",
+                arguments={},
+                status="ok",
+                result_summary=f"Compacted {result.messages_compacted} message(s).",
+                full_result_ref=SessionArtifactStore.blob_name_for(result.artifact_id),
+            )
+        )
+        # Real spend, so it counts toward cost — but deliberately not fed into
+        # _refresh_context_display, for the same reason subagent usage isn't:
+        # it's not the main conversation's context size. The status bar
+        # self-corrects on the next real turn's usage report.
+        self._cost_tracker.record_turn(
+            self._settings.default_model or self._session.model, result.usage
+        )
+        self._refresh_cost_display(status_bar)
+        message_view.add_message(
+            "system",
+            f"Compacted {result.messages_compacted} earlier message(s) to reduce context "
+            f"usage (archived as artifact_id='{result.artifact_id}').",
+        )
+        self._store.save(self._session)
+
+    @work(exclusive=True)
+    async def _manual_compact(self) -> None:
+        await self._run_compaction("manual")
+
     @work(exclusive=True)
     async def _stream_response(self) -> None:
         assert self._agent_loop is not None
@@ -495,3 +564,8 @@ class ChatScreen(Screen):
             status_bar.busy = False
         message_view.finish_streaming()
         self._store.save(self._session)
+
+        if self._settings.auto_compact_enabled:
+            usage = current_context_usage(self._session, limit_table=self._context_limit_table)
+            if usage.fraction >= self._settings.auto_compact_threshold:
+                await self._run_compaction("auto")

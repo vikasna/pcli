@@ -53,6 +53,16 @@ An `artifact_id` doubles as a `ToolInvocation.full_result_ref` — the chat
 screen points a tool-invocation record at the *same* blob AgentLoop already
 archived rather than storing the output a second time.
 
+Auto-compaction (`agent/compaction.py`, see [`tools.md`](tools.md#auto-compaction))
+reuses this exact field for a different purpose: no real tool call happens,
+but `ChatScreen._run_compaction` appends a synthetic `ToolInvocation` with
+`tool_name="_compaction"` whose `full_result_ref` points at the archived
+transcript blob. This is a deliberate reuse, not an oddity — `export_session`
+(below) only bundles blobs it finds referenced via
+`tool_invocations[*].full_result_ref`, so piggybacking on that existing field
+means a compacted transcript travels with an exported session automatically,
+with no new bundling logic needed in `export.py`.
+
 ### Export / import
 
 `pcli sessions export <id> [--out PATH] [--gzip]` (`session/export.py`)

@@ -50,7 +50,11 @@ like "archived as artifact_id='art_...'". Don't assume you've seen the whole res
 note is present. Only call fetch_artifact(artifact_id=...) if you actually need the missing \
 detail (e.g. a specific line further down a large file or log) — for most tasks the preview is \
 enough, and re-fetching whole artifacts back into context defeats the point. When you do need \
-more, prefer a narrow offset/limit over pulling the entire artifact back at once.
+more, prefer a narrow offset/limit over pulling the entire artifact back at once. The same \
+archiving applies to old conversation history itself: once context usage gets high, older turns \
+may be replaced with a summary note (also referencing an artifact_id) so the conversation can \
+keep going — fetch_artifact works there too if you need something specific from before the \
+summary.
 
 # Communication
 Be concise — this runs in a terminal, not a document viewer. Skip preamble like "I will now \

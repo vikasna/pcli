@@ -44,8 +44,29 @@ shell passthrough (both below). Plain text otherwise goes to the model.
   trip. Either way the choice updates the running session, the status bar,
   and is persisted to `config.toml` (`update_config_file(default_model=...)`)
   so a bare `pcli` picks it up next time.
+- **`/compact`** — manually summarizes and archives the oldest conversation
+  history right now (see [`tools.md`](tools.md#auto-compaction)), bypassing
+  the `auto_compact_threshold` check entirely. Still subject to
+  `maybe_compact`'s own "not enough history yet" guard, reporting "Nothing to
+  compact yet." if there isn't more history than
+  `auto_compact_keep_recent_turns` turns.
 
 Any other `/word` prints "Unknown command: /word".
+
+## Auto-compaction
+
+Compaction can also fire automatically and transparently, with no command
+needed: at the end of every turn, once the session is saved, if
+`auto_compact_enabled` is on (default) and context usage has reached
+`auto_compact_threshold` (default 80% of the model's context limit),
+`ChatScreen` runs the same summarization `/compact` triggers, reusing the
+"Working..." spinner on the status bar while it does. When it fires, a short
+system notice appears in the transcript (e.g. "Compacted N earlier
+message(s)... archived as artifact_id='art_...'"); the actual summary text
+that replaces the compacted messages is stored as a `role="system"` message
+and, like the leading system prompt, is never rendered into the message
+view. See [`configuration.md`](configuration.md#auto-compaction) for the
+three settings involved.
 
 ## Shell passthrough: `!command` and `!!command`
 

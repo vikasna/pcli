@@ -86,6 +86,39 @@ def test_export_import_roundtrip_with_restore_grants(tmp_path: Path):
     assert imported.permission_grants[0].tool_name == "run_shell"
 
 
+def test_export_import_roundtrip_carries_compaction_artifact(tmp_path: Path):
+    """Compaction (agent/compaction.py) records its archived transcript via a
+    synthetic ToolInvocation(tool_name="_compaction") purely so export_session
+    (which only bundles blobs referenced via tool_invocations[*].full_result_ref)
+    carries it along without needing its own bundling logic — verify that
+    actually works end to end."""
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    original = _build_session(store)
+
+    compaction_invocation = ToolInvocation(
+        tool_name="_compaction",
+        arguments={},
+        result_summary="Compacted 2 message(s).",
+        status="ok",
+    )
+    blob_name = store.write_blob(original.id, compaction_invocation.id, "archived transcript text")
+    compaction_invocation.full_result_ref = blob_name
+    original.tool_invocations.append(compaction_invocation)
+    store.save(original)
+
+    out_path = tmp_path / "export.pcli-session.json"
+    export_session(original, out_path, store=store)
+
+    imported = import_session(out_path, store=SessionStore(base_dir=tmp_path / "sessions2"))
+
+    imported_compaction = next(
+        inv for inv in imported.tool_invocations if inv.tool_name == "_compaction"
+    )
+    store2 = SessionStore(base_dir=tmp_path / "sessions2")
+    archived = store2.read_blob(imported.id, imported_compaction.full_result_ref)
+    assert archived == "archived transcript text"
+
+
 def test_import_rejects_newer_format_version(tmp_path: Path):
     store = SessionStore(base_dir=tmp_path / "sessions")
     original = _build_session(store)

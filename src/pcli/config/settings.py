@@ -95,6 +95,26 @@ class Settings(BaseSettings):
         "$0 rather than looked up in the pricing table (avoids a local model's name "
         "coincidentally matching a paid builtin pricing pattern, e.g. 'llama-3*').",
     )
+    auto_compact_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("PCLI_AUTO_COMPACT_ENABLED", "auto_compact_enabled"),
+        description="Whether old conversation history is automatically summarized and "
+        "archived (see agent/compaction.py) once context usage crosses auto_compact_threshold.",
+    )
+    auto_compact_threshold: float = Field(
+        default=0.8,
+        validation_alias=AliasChoices("PCLI_AUTO_COMPACT_THRESHOLD", "auto_compact_threshold"),
+        description="Fraction of the model's context limit (see current_context_usage in "
+        "cost/context.py) at which auto-compaction triggers after a turn completes.",
+    )
+    auto_compact_keep_recent_turns: int = Field(
+        default=2,
+        validation_alias=AliasChoices(
+            "PCLI_AUTO_COMPACT_KEEP_RECENT_TURNS", "auto_compact_keep_recent_turns"
+        ),
+        description="Number of most-recent user turns left untouched (verbatim) by "
+        "compaction; only older turns get summarized and archived.",
+    )
 
     @classmethod
     def settings_customise_sources(

@@ -46,6 +46,9 @@ to `table_key` when reading back, so both shapes round-trip.
 | `sandbox_backend` | `PCLI_SANDBOX_BACKEND` | *(none)* | `sandbox_backend` | `"auto"` | `auto` \| `docker` \| `subprocess` \| `none` (see note below). |
 | `artifact_threshold_chars` | `PCLI_ARTIFACT_THRESHOLD_CHARS` | `--artifact-threshold` | `artifact_threshold_chars` | `4000` | Tool results longer than this (in characters) are truncated out of the live conversation and archived; see [`tools.md`](tools.md#artifact-archiving). |
 | `local_api_gateways` | `PCLI_LOCAL_API_GATEWAYS` | `--local-api` | `local_api_gateways` | `[]` | Gateway base URLs running in local-api mode (uncapped iterations/rate limits, $0 cost). Additive, not a direct override — see [Local-API mode](#local-api-mode) below. |
+| `auto_compact_enabled` | `PCLI_AUTO_COMPACT_ENABLED` | *(none)* | `auto_compact_enabled` | `true` | Whether old conversation history is automatically summarized/archived once context usage crosses `auto_compact_threshold`; see [Auto-compaction](#auto-compaction) below. |
+| `auto_compact_threshold` | `PCLI_AUTO_COMPACT_THRESHOLD` | *(none)* | `auto_compact_threshold` | `0.8` | Fraction of the model's context limit (`current_context_usage` in `cost/context.py`) at which auto-compaction triggers after a turn completes. |
+| `auto_compact_keep_recent_turns` | `PCLI_AUTO_COMPACT_KEEP_RECENT_TURNS` | *(none)* | `auto_compact_keep_recent_turns` | `2` | Number of most-recent user turns left untouched (verbatim) by compaction; only older turns get summarized and archived. |
 
 `Settings.is_configured()` returns `bool(gateway_base_url)` — the API key is
 deliberately *not* required, so a blank key never blocks startup against an
@@ -87,6 +90,33 @@ model with `/models <model-id>` in the TUI does the same for `default_model`.
 **The API key is never auto-persisted.** `update_config_file` is deliberately
 never called with `gateway_api_key` — pass `--api-key` (or set
 `PCLI_GATEWAY_API_KEY`) every time you start pcli if your gateway needs one.
+
+## Auto-compaction
+
+`auto_compact_enabled`, `auto_compact_threshold`, and
+`auto_compact_keep_recent_turns` (table above) control automatic
+summarization of old conversation history, implemented in
+`agent/compaction.py` and triggered from `ChatScreen._stream_response` (see
+[`tools.md`](tools.md#auto-compaction) for the mechanism and
+[`tui-guide.md`](tui-guide.md) for the manual `/compact` command).
+**None of these three has a CLI flag, and none is auto-persisted to
+`config.toml`** — every other setting in the table above has at least one of
+those; these three are env-var/config.toml-only.
+
+The design is necessarily reactive: pcli has no local tokenizer to predict
+token usage before a request is sent (see `cost/context.py`'s own
+docstring), so it can only check `current_context_usage(...).fraction`
+*after* a turn finishes and, if warranted, compact *before* the next one
+starts — there's no way to pre-empt a request that's about to blow the
+context budget. The check runs once per turn, right after the session is
+saved: if `auto_compact_enabled` is true and the fraction is `>=
+auto_compact_threshold` (default 0.8, i.e. 80% of the model's context
+limit), compaction runs automatically. It always leaves the
+`auto_compact_keep_recent_turns` most-recent user turns (default 2)
+untouched and summarizes everything older in one dedicated LLM call.
+Recompaction needs no special-casing: a later compaction naturally includes
+a prior compaction's own summary message among the older messages it folds
+into a fresh combined summary.
 
 ## Local-API mode
 
