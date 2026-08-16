@@ -19,6 +19,7 @@ dependencies = [
     "tenacity>=8.2",
     "jsonschema>=4.21",
     "psutil>=5.9",
+    "pyperclip>=1.8",
 ]
 
 [project.optional-dependencies]

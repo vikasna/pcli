@@ -41,6 +41,7 @@ from pcli.tools.toolbox.manager import ToolboxDiscoveryError, ToolboxManager
 from pcli.tui.screens.permission_modal import ask_via_modal
 from pcli.tui.shell_passthrough import run_passthrough_command
 from pcli.tui.widgets.message_view import MessageView
+from pcli.tui.widgets.paste_input import PasteInput
 from pcli.tui.widgets.status_bar import StatusBar
 from pcli.tui.widgets.status_pane import StatusPane
 
@@ -102,7 +103,7 @@ class ChatScreen(Screen):
             yield StatusPane(id="status-pane")
             yield MessageView(id="message-view")
             yield StatusBar(id="status-bar")
-            yield Input(
+            yield PasteInput(
                 placeholder="Ask pcli... (/sessions, /export, /toolbox, /models, /compact, "
                 "!shell, !!quiet-shell, !!!interactive)",
                 id="input-box",

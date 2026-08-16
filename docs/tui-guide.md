@@ -26,6 +26,24 @@ Anything starting with `/` is a slash command; anything starting with `!` is
 shell passthrough, in one of three tiers (`!`, `!!`, `!!!` — all below). Plain
 text otherwise goes to the model.
 
+The input box is a `PasteInput` (`src/pcli/tui/widgets/paste_input.py`), a
+thin `Input` subclass adding a **Shift+Insert** binding that pastes from the
+real OS clipboard via the `pyperclip` package. This is distinct from
+Textual's built-in Ctrl+V, which only reflects text copied *within* the app
+(Textual's `App.clipboard` explicitly doesn't track the OS clipboard) and so
+does nothing useful for text copied from outside pcli (a browser, another
+terminal, an editor). Since the input box is single-line, only the first
+line of multi-line clipboard content is inserted — the same truncation
+Textual's own bracketed-paste handling already applies to `Input`. If
+`pyperclip` can't reach a clipboard mechanism (e.g. a minimal Linux setup
+without `xclip`/`xsel`/`wl-clipboard`), an error toast is shown instead of
+crashing; an empty clipboard is a silent no-op. All of `Input`'s other
+bindings (Ctrl+V, arrow keys, Ctrl+C copy, etc.) are unaffected — Textual
+merges a subclass's `BINDINGS` with the parent's rather than replacing them.
+The same `PasteInput` is also used for the import-path field in
+`/sessions`'s import modal (`id="import-path-input"`,
+`src/pcli/tui/screens/sessions.py`).
+
 ## Slash commands
 
 - **`/sessions`** — opens the session list screen (`SessionListScreen`):

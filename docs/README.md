@@ -33,9 +33,10 @@ TUI (ChatScreen) -> AgentLoop -> GatewayClient (LLM gateway)
   config.toml key, and the precedence/persistence rules.
 - [`tools.md`](tools.md) — every built-in tool the LLM can call, and the
   automatic artifact-archiving mechanism for large tool output.
-- [`tui-guide.md`](tui-guide.md) — using the interactive TUI: chat input,
-  slash commands, shell passthrough (including the `!!!` real-terminal
-  handoff), the decision log, permission prompts, status bar/pane.
+- [`tui-guide.md`](tui-guide.md) — using the interactive TUI: chat input
+  (including Shift+Insert OS-clipboard paste), slash commands, shell
+  passthrough (including the `!!!` real-terminal handoff), the decision log,
+  permission prompts, status bar/pane.
 - [`sandbox-and-permissions.md`](sandbox-and-permissions.md) — the sandbox
   backends and the guardrail/permission system that gates tool execution.
 - [`sessions-and-cost.md`](sessions-and-cost.md) — session persistence,

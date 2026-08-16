@@ -16,13 +16,16 @@ from pcli.config.paths import data_dir
 from pcli.session.export import export_session
 from pcli.session.importer import import_session
 from pcli.session.store import SessionStore
+from pcli.tui.widgets.paste_input import PasteInput
 
 
 class ImportPathModal(ModalScreen[str | None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="import-modal"):
             yield Static("Path to a .pcli-session.json[.gz] file to import:")
-            yield Input(placeholder="/path/to/session.pcli-session.json", id="import-path-input")
+            yield PasteInput(
+                placeholder="/path/to/session.pcli-session.json", id="import-path-input"
+            )
             yield Button("Import", id="import-confirm", variant="success")
             yield Button("Cancel", id="import-cancel", variant="error")
 

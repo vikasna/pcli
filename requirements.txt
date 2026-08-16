@@ -12,6 +12,7 @@ platformdirs>=4.2
 tenacity>=8.2
 jsonschema>=4.21
 psutil>=5.9
+pyperclip>=1.8
 
 # Windows-only: enables Job Object based resource limits in the
 # restricted-subprocess sandbox backend.
