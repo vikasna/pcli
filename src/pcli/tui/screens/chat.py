@@ -107,6 +107,7 @@ class ChatScreen(Screen):
                 placeholder="Ask pcli... (/sessions, /export, /toolbox, /models, /compact, "
                 "!shell, !!quiet-shell, !!!interactive)",
                 id="input-box",
+                expand_full_paste=True,
             )
 
     def _refresh_cost_display(self, status_bar: StatusBar) -> None:
@@ -237,6 +238,8 @@ class ChatScreen(Screen):
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
+        if isinstance(event.input, PasteInput):
+            text = event.input.consume_pending_paste(text)
         if not text:
             return
         event.input.value = ""

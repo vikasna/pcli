@@ -32,17 +32,32 @@ real OS clipboard via the `pyperclip` package. This is distinct from
 Textual's built-in Ctrl+V, which only reflects text copied *within* the app
 (Textual's `App.clipboard` explicitly doesn't track the OS clipboard) and so
 does nothing useful for text copied from outside pcli (a browser, another
-terminal, an editor). Since the input box is single-line, only the first
-line of multi-line clipboard content is inserted — the same truncation
-Textual's own bracketed-paste handling already applies to `Input`. If
-`pyperclip` can't reach a clipboard mechanism (e.g. a minimal Linux setup
-without `xclip`/`xsel`/`wl-clipboard`), an error toast is shown instead of
-crashing; an empty clipboard is a silent no-op. All of `Input`'s other
-bindings (Ctrl+V, arrow keys, Ctrl+C copy, etc.) are unaffected — Textual
-merges a subclass's `BINDINGS` with the parent's rather than replacing them.
-The same `PasteInput` is also used for the import-path field in
-`/sessions`'s import modal (`id="import-path-input"`,
-`src/pcli/tui/screens/sessions.py`).
+terminal, an editor). If `pyperclip` can't reach a clipboard mechanism (e.g.
+a minimal Linux setup without `xclip`/`xsel`/`wl-clipboard`), an error toast
+is shown instead of crashing; an empty clipboard is a silent no-op. All of
+`Input`'s other bindings (Ctrl+V, arrow keys, Ctrl+C copy, etc.) are
+unaffected — Textual merges a subclass's `BINDINGS` with the parent's rather
+than replacing them.
+
+Since the input box is single-line, a multi-line clipboard can't be shown
+inline. The chat input is constructed with `expand_full_paste=True`, so a
+single-line clipboard is still inserted directly, but a multi-line one is
+kept off-screen and a compact placeholder like `[Pasted 4 lines]` is
+inserted in its place while you keep composing. The placeholder is
+display-only: `ChatScreen.on_input_submitted` calls
+`event.input.consume_pending_paste(text)` before doing anything else with
+the submitted text (including `!`/`!!`/`!!!`/`/` dispatch), which expands a
+still-present placeholder back to the original clipboard text — so what's
+actually sent to the model and stored in the session is always the full
+pasted text, never the placeholder string. Editing the placeholder away, or
+pasting again before submitting, just clears the stale pending state.
+
+The same `PasteInput` is also used, with the default
+`expand_full_paste=False`, for the import-path field in `/sessions`'s
+import modal (`id="import-path-input"`,
+`src/pcli/tui/screens/sessions.py`) — there, being a single-value path field
+rather than a message box, a multi-line clipboard is truncated to its first
+line instead, matching Textual's own `Input._on_paste` behavior.
 
 ## Slash commands
 
