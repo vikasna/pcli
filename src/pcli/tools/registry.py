@@ -35,6 +35,7 @@ class ToolRegistry:
 
 def build_default_registry() -> ToolRegistry:
     from pcli.tools.builtin.artifact_tool import FETCH_ARTIFACT
+    from pcli.tools.builtin.decision_tool import RECORD_DECISION
     from pcli.tools.builtin.fs_tools import GLOB_SEARCH, LIST_DIR, READ_FILE, WRITE_FILE
     from pcli.tools.builtin.grep_tool import GREP
     from pcli.tools.builtin.shell_tool import RUN_SHELL
@@ -56,6 +57,7 @@ def build_default_registry() -> ToolRegistry:
         CALL_PYTHON,
         SPAWN_SUBAGENT,
         WRITE_TODOS,
+        RECORD_DECISION,
         FETCH_ARTIFACT,
     ):
         registry.register(tool)

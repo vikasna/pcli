@@ -37,7 +37,12 @@ All writes are atomic (`_atomic_write`: write to a `.tmp` sibling, then
   historical/audit trail that travels with the session, not the enforcement
   store — remembered grants are still enforced via `PermissionPolicy`'s
   separate `permissions.json`, independent of this field.
-- `todos: list[TodoItem]` — the `write_todos` tool's task list.
+- `todos: list[TodoItem]` — the `write_todos` tool's task list (replaced
+  wholesale on every call).
+- `decisions: list[Decision]` — the `record_decision` tool's append-only
+  decision log (`decision`, `rationale`, `created_at` per entry); unlike
+  `todos`, entries are only ever added, never replaced or mutated — see
+  [`tools.md`](tools.md#record_decision).
 - `metadata: dict` — free-form; used by the importer to stash
   `imported_from_id` / `imported_from_file`.
 

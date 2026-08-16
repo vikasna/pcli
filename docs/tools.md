@@ -165,6 +165,37 @@ more than one `in_progress` item at a time.
 - **Permission:** not required.
 - Requires `ctx.session` to be set (errors otherwise).
 
+## record_decision
+
+Logs one consequential decision the model made, with its reasoning, to the
+session's decision log — stored on `Session.decisions`
+(`src/pcli/session/models.py`'s `Decision` model: `decision`, `rationale`,
+`created_at`). **Unlike `write_todos` above (which replaces the whole list
+every call), each call here appends one entry** — nothing is ever mutated or
+removed. A change of mind is logged as a new entry, not an edit of the old
+one; don't assume the latest call reflects the full current state the way it
+does for `write_todos`.
+
+- **Parameters:** `decision` (string, required — what was decided, stated
+  plainly), `rationale` (string, required — the reasoning, including
+  supporting evidence when there is any).
+- **Permission:** not required (`needs_permission=False`) — same stance as
+  `write_todos`: pure session bookkeeping, no side effects.
+- Requires `ctx.session` to be set (errors otherwise: "No session available to
+  record decisions in.").
+- Errors if either `decision` or `rationale` is missing/empty: "Both
+  'decision' and 'rationale' are required."
+- The system prompt's `# Recording decisions` section
+  (`src/pcli/agent/prompt.py`) instructs the model to reserve this for
+  consequential decisions (not routine tool calls) and to include the
+  evidence behind the decision in the rationale when there is any.
+- Like `todos`, `decisions` is a plain `Session` field with no dedicated
+  export/import handling — it rides along with the existing whole-session
+  JSON dump/roundtrip (`session/export.py`).
+- **TUI:** rendered as a distinct, always-visible message rather than the
+  generic collapsed tool-result — see
+  [`tui-guide.md`](tui-guide.md#decision-log).
+
 ## fetch_artifact
 
 Retrieves (a windowed slice of) content previously archived by the automatic
@@ -256,3 +287,20 @@ archiving doesn't.
 - **No-op guard:** `maybe_compact` returns `None` (nothing to do) once there
   are `keep_recent_turns` or fewer user turns in the session; `/compact`
   surfaces this as "Nothing to compact yet."
+
+## Grounding conclusions in evidence
+
+Prompt-level discipline only — no new tool, no new data model, no code-level
+enforcement. The `# Grounding conclusions in evidence` section of
+`BASE_SYSTEM_PROMPT` (`src/pcli/agent/prompt.py`), placed right after
+`# Managing context`, instructs the model that when it states something as
+fact — a root cause, "X causes Y", "the bug is in Z", "this is safe to do" —
+it must be grounded in something actually observed *this session* (a file it
+read, a command's output, a search result), not assumed from training
+knowledge or pattern-matching on how the task looks, and to reference that
+evidence directly: a `file_path:line`, the specific command/output that
+showed it, or the tool call that confirmed it. If something hasn't been
+verified and the model is inferring or guessing, it's told to say so plainly
+rather than state it as settled. It's explicitly scoped to conclusions the
+user will act on — routine narration doesn't need a citation for every
+sentence.

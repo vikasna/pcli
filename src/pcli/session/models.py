@@ -89,6 +89,16 @@ class TodoItem(BaseModel):
     status: Literal["pending", "in_progress", "completed"] = "pending"
 
 
+class Decision(BaseModel):
+    """One entry in the session's decision log (see tools/builtin/decision_tool.py).
+    Append-only audit trail — unlike TodoItem, an entry is never mutated once
+    recorded; a change of mind is a new entry, not an edit of the old one."""
+
+    decision: str
+    rationale: str
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
 class Session(BaseModel):
     id: str = Field(default_factory=lambda: new_id("sess_"))
     schema_version: int = CURRENT_SCHEMA_VERSION
@@ -102,6 +112,7 @@ class Session(BaseModel):
     cost: SessionCost = Field(default_factory=SessionCost)
     permission_grants: list[PermissionGrant] = Field(default_factory=list)
     todos: list[TodoItem] = Field(default_factory=list)
+    decisions: list[Decision] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     def touch(self) -> None:

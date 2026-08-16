@@ -23,7 +23,8 @@ prompt — see below) before the turn completes and the session is saved to
 disk.
 
 Anything starting with `/` is a slash command; anything starting with `!` is
-shell passthrough (both below). Plain text otherwise goes to the model.
+shell passthrough, in one of three tiers (`!`, `!!`, `!!!` — all below). Plain
+text otherwise goes to the model.
 
 ## Slash commands
 
@@ -68,7 +69,7 @@ and, like the leading system prompt, is never rendered into the message
 view. See [`configuration.md`](configuration.md#auto-compaction) for the
 three settings involved.
 
-## Shell passthrough: `!command` and `!!command`
+## Shell passthrough: `!command`, `!!command`, and `!!!command`
 
 Typing `!<command>` runs it directly via `run_passthrough_command`
 (`src/pcli/tui/shell_passthrough.py`) and prints `$ command` followed by
@@ -85,6 +86,46 @@ library, or the model's context window. It exists purely so you can inspect
 things without leaving pcli, on the reasoning that these protections exist to
 constrain the LLM, not the human at the keyboard. Output is capped at 50,000
 characters and the default timeout is 120s.
+
+### `!!!command`: real interactive terminal handoff
+
+`!`/`!!` pipe the child process's stdout/stderr back into pcli, so anything
+that needs a genuine TTY — password prompts, REPLs, editors like `vim`, `ssh`
+sessions — doesn't work through them (Textual already owns pcli's own
+stdin). `!!!<command>` is a third, separate tier for exactly that case:
+`ChatScreen._run_interactive_shell` (`src/pcli/tui/screens/chat.py`) hands
+the real terminal to the command instead of capturing it.
+
+It's checked *before* the `!`/`!!` check in `on_input_submitted`, and is
+otherwise fully additive — `!`/`!!` behavior is unchanged. Implementation-wise
+it's also a plain **synchronous** method rather than a `@work` worker (unlike
+every other shell/command handler in `chat.py`): it wraps a blocking
+`subprocess.run(command, shell=True, cwd=..., check=False)` inside Textual's
+`App.suspend()`, a context manager that stops the app reading/writing the
+terminal for the duration of the `with` block and hands control back to the
+OS, restoring pcli's own terminal mode when the block exits. Since
+`App.suspend()` itself blocks synchronously, there's nothing useful the event
+loop could do concurrently anyway.
+
+Behavior differs from `!`/`!!` everywhere interactivity matters:
+
+- **No timeout** (`!`/`!!` default to 120s, `DEFAULT_TIMEOUT_S`) and **no
+  output capture or truncation** (`!`/`!!` cap output at 50,000 characters) —
+  the command owns the real terminal directly, so the user has the same
+  direct control (e.g. Ctrl+C) as any normal terminal session.
+- A `shell`-role message is shown before handoff — `→ Handing off terminal
+  to: command` — and another after the command returns — `$ command  (ran
+  interactively) [exit_code=N]`.
+- Typing `!!!` with nothing after it prints a usage message instead of doing
+  anything.
+- If the environment doesn't support suspending
+  (`textual.app.SuspendNotSupported` — e.g. not supported in Textual Web), a
+  plain fallback `system` message is shown instead of crashing: "Interactive
+  shell handoff isn't supported in this terminal environment."
+
+Like `!`/`!!`, `!!!` bypasses the LLM, the sandbox, permissions, and
+session/artifact recording entirely. The input box's placeholder text
+mentions it as `!!!interactive`.
 
 ## Permission prompts
 
@@ -135,6 +176,33 @@ syntax-highlighted via `rich.syntax.Syntax`; everything else is rendered
 verbatim as plain monospace text (`rich.text.Text`), deliberately *not*
 Markdown, since tool output routinely contains underscores/asterisks/etc.
 that Markdown would misinterpret.
+
+## Decision log
+
+`record_decision` calls ([`tools.md`](tools.md#record_decision)) render
+differently from other tool results. Instead of the generic
+collapsed-by-default `Collapsible` described above,
+`ChatScreen._show_decision_notice` (`src/pcli/tui/screens/chat.py`) shows
+them as an always-visible message — `message_view.add_message("decision",
+f"**{decision}**\n\n{rationale}")` — so a logged decision is immediately
+scannable rather than tucked behind a click. In `_stream_response`'s
+`tool_result` handling, this branch fires only for a successful (non-error)
+`record_decision` call; an errored call still falls through to the normal
+`add_tool_result` Collapsible.
+
+It's labeled `Decision` (`_ROLE_LABELS["decision"]` in
+`src/pcli/tui/widgets/message_view.py`) and styled with a `$secondary` left
+border (`.message-decision` in `src/pcli/tui/styles/pcli.tcss`) — distinct
+from `.message-tool`'s `$warning` border and `.message-shell`'s `$accent`
+border.
+
+On `ChatScreen.on_mount`, if the session being opened already has recorded
+decisions (`Session.decisions` non-empty — i.e. resuming a session that has
+some), a `system`-role summary message is added: "Resuming with N recorded
+decision(s):" followed by one `• <decision>` line per entry (`decision` text
+only, not the `rationale`), built by `render_decisions()` in
+`src/pcli/tools/builtin/decision_tool.py`. This mirrors the existing
+resume-time summary shown for `Session.todos` when it's non-empty.
 
 ## Status bar
 

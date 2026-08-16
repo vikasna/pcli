@@ -5,11 +5,12 @@ after every turn."""
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from typing import ClassVar
 
 from textual import work
-from textual.app import ComposeResult
+from textual.app import ComposeResult, SuspendNotSupported
 from textual.binding import BindingType
 from textual.containers import Vertical
 from textual.screen import Screen
@@ -103,7 +104,7 @@ class ChatScreen(Screen):
             yield StatusBar(id="status-bar")
             yield Input(
                 placeholder="Ask pcli... (/sessions, /export, /toolbox, /models, /compact, "
-                "!shell, !!quiet-shell)",
+                "!shell, !!quiet-shell, !!!interactive)",
                 id="input-box",
             )
 
@@ -156,6 +157,15 @@ class ChatScreen(Screen):
 
             message_view.add_message(
                 "system", f"Resuming with existing todos:\n{render_todos(self._session.todos)}"
+            )
+
+        if self._session.decisions:
+            from pcli.tools.builtin.decision_tool import render_decisions
+
+            message_view.add_message(
+                "system",
+                f"Resuming with {len(self._session.decisions)} recorded decision(s):\n"
+                f"{render_decisions(self._session.decisions)}",
             )
 
         if not self._settings.is_configured():
@@ -230,6 +240,10 @@ class ChatScreen(Screen):
             return
         event.input.value = ""
 
+        if text.startswith("!!!"):
+            self._run_interactive_shell(text[3:].strip())
+            return
+
         if text.startswith("!"):
             self._run_shell_passthrough(text)
             return
@@ -244,6 +258,38 @@ class ChatScreen(Screen):
         self._session.messages.append(Message(role="user", content=text))
         message_view.add_message("user", text)
         self._stream_response()
+
+    def _run_interactive_shell(self, command: str) -> None:
+        """Runs `!!!cmd` with a real terminal handed to it (passwords,
+        REPLs, editors, ssh — anything that needs an actual TTY, which the
+        pipe-based !/!! passthrough below can't provide since Textual
+        already owns pcli's own stdin). Deliberately a plain sync method,
+        not a @work worker: App.suspend() is itself a synchronous context
+        manager (Textual stops reading/writing the terminal entirely for
+        its duration), so there's nothing useful the event loop could do
+        concurrently anyway — blocking here is the correct behavior, not a
+        workaround."""
+        message_view = self.query_one(MessageView)
+        if not command:
+            message_view.add_message(
+                "system", "Usage: !!!<command> to run a command with a real interactive terminal"
+            )
+            return
+
+        message_view.add_message("shell", f"→ Handing off terminal to: {command}")
+        try:
+            with self.app.suspend():
+                exit_code = subprocess.run(
+                    command, shell=True, cwd=str(self._cwd), check=False
+                ).returncode
+        except SuspendNotSupported:
+            message_view.add_message(
+                "system", "Interactive shell handoff isn't supported in this terminal environment."
+            )
+            return
+        message_view.add_message(
+            "shell", f"$ {command}  (ran interactively)\n[exit_code={exit_code}]"
+        )
 
     @work(exclusive=False)
     async def _run_shell_passthrough(self, raw: str) -> None:
@@ -440,6 +486,20 @@ class ChatScreen(Screen):
             invocation.full_result_ref = SessionArtifactStore.blob_name_for(event.artifact_id)
         self._session.tool_invocations.append(invocation)
 
+    def _show_decision_notice(self, event: ToolResultEvent) -> None:
+        """record_decision results are shown as a distinct, always-visible
+        message (not the generic collapsed-by-default tool Collapsible) —
+        the whole point of the decision log is that it's immediately
+        scannable, not tucked away."""
+        try:
+            arguments = json.loads(event.tool_call.function.arguments or "{}")
+        except json.JSONDecodeError:
+            arguments = {}
+        decision = arguments.get("decision", "") if isinstance(arguments, dict) else ""
+        rationale = arguments.get("rationale", "") if isinstance(arguments, dict) else ""
+        message_view = self.query_one(MessageView)
+        message_view.add_message("decision", f"**{decision}**\n\n{rationale}")
+
     async def _run_compaction(self, reason: str) -> None:
         """Summarizes and archives the oldest turns of session.messages (see
         agent/compaction.py) — either after an "auto" trigger from
@@ -546,9 +606,12 @@ class ChatScreen(Screen):
                         )
                     if chunk.extra_usage:
                         self._refresh_cost_display(status_bar)
-                    message_view.add_tool_result(
-                        chunk.tool_call.function.name, chunk.output, is_error=chunk.is_error
-                    )
+                    if chunk.tool_call.function.name == "record_decision" and not chunk.is_error:
+                        self._show_decision_notice(chunk)
+                    else:
+                        message_view.add_tool_result(
+                            chunk.tool_call.function.name, chunk.output, is_error=chunk.is_error
+                        )
                     message_view.finish_streaming()
                 elif chunk.kind == "turn_complete":
                     self._session.messages.extend(

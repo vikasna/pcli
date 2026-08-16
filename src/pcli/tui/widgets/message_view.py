@@ -19,6 +19,7 @@ _ROLE_LABELS = {
     "system": "System",
     "tool": "Tool",
     "shell": "Shell",
+    "decision": "Decision",
 }
 
 # Caps how often a streaming message repaints. Re-rendering on every single
