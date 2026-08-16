@@ -9,6 +9,7 @@ from pathlib import Path
 import httpx
 import pytest
 import respx
+from textual import events
 from textual.app import App
 
 from pcli.config.settings import Settings
@@ -83,3 +84,41 @@ async def test_submitting_a_pasted_placeholder_sends_the_full_clipboard_text(
         assert len(user_messages) == 1
         assert user_messages[0].content == clipboard_text
         assert "[Pasted" not in user_messages[0].content
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_terminal_intercepted_paste_also_sends_the_full_clipboard_text(tmp_path: Path):
+    """The path that actually matters in practice: most terminals intercept
+    Shift+Insert themselves and deliver it as a bracketed-paste events.Paste
+    message, not a literal keypress — this must get the same full-text
+    treatment as the pyperclip-based shift+insert binding, not Textual's
+    stock first-line-only Input._on_paste."""
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            content=_sse({"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]}),
+        )
+    )
+
+    screen, session = _make_screen(tmp_path)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert screen._client is not None
+
+        field = screen.query_one(PasteInput)
+        field.focus()
+
+        clipboard_text = "line one\nline two\nline three"
+        field.post_message(events.Paste(text=clipboard_text))
+        await pilot.pause()
+        assert field.value == "[Pasted 3 lines]"
+
+        await pilot.press("enter")
+        for _ in range(10):
+            await pilot.pause()
+
+        user_messages = [m for m in session.messages if m.role == "user"]
+        assert len(user_messages) == 1
+        assert user_messages[0].content == clipboard_text

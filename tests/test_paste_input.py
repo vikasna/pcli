@@ -1,4 +1,5 @@
 import pytest
+from textual import events
 from textual.app import App, ComposeResult
 
 from pcli.tui.widgets.paste_input import PasteInput
@@ -255,3 +256,70 @@ async def test_non_expanding_input_never_produces_a_placeholder(monkeypatch):
 
         assert field.value == "line one"
         assert field.consume_pending_paste(field.value) == field.value
+
+
+# --- Terminal-intercepted paste (events.Paste / _on_paste) ---
+#
+# This is the path that actually fires in most real terminals: they
+# intercept Shift+Insert (and middle-click, Ctrl+Shift+V, ...) themselves
+# and deliver the clipboard via the already-enabled bracketed-paste ANSI
+# channel, which Textual turns into an events.Paste message — never a
+# literal "shift+insert" keypress, so action_paste_from_os_clipboard above
+# never fires in that case. Dispatched here via post_message, the same way
+# Textual's own driver would deliver it, not by calling a private method
+# directly.
+
+
+@pytest.mark.asyncio
+async def test_terminal_paste_event_inserts_only_first_line_when_not_expanding():
+    app = _InputApp()
+    async with app.run_test() as pilot:
+        field = app.query_one(PasteInput)
+        field.focus()
+
+        field.post_message(events.Paste(text="first line\nsecond line"))
+        await pilot.pause()
+
+        assert field.value == "first line"
+
+
+@pytest.mark.asyncio
+async def test_terminal_paste_event_shows_placeholder_when_expanding():
+    app = _ExpandingInputApp()
+    async with app.run_test() as pilot:
+        field = app.query_one(PasteInput)
+        field.focus()
+
+        field.post_message(events.Paste(text="line one\nline two\nline three"))
+        await pilot.pause()
+
+        assert field.value == "[Pasted 3 lines]"
+
+
+@pytest.mark.asyncio
+async def test_terminal_paste_event_single_line_inserts_directly_when_expanding():
+    app = _ExpandingInputApp()
+    async with app.run_test() as pilot:
+        field = app.query_one(PasteInput)
+        field.focus()
+
+        field.post_message(events.Paste(text="just one line"))
+        await pilot.pause()
+
+        assert field.value == "just one line"
+
+
+@pytest.mark.asyncio
+async def test_terminal_paste_event_placeholder_expands_at_submit():
+    app = _ExpandingInputApp()
+    async with app.run_test() as pilot:
+        field = app.query_one(PasteInput)
+        field.focus()
+
+        clipboard_text = "a\nb\nc"
+        field.post_message(events.Paste(text=clipboard_text))
+        await pilot.pause()
+        assert field.value == "[Pasted 3 lines]"
+
+        expanded = field.consume_pending_paste(field.value)
+        assert expanded == clipboard_text

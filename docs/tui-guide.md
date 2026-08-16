@@ -27,17 +27,34 @@ shell passthrough, in one of three tiers (`!`, `!!`, `!!!` — all below). Plain
 text otherwise goes to the model.
 
 The input box is a `PasteInput` (`src/pcli/tui/widgets/paste_input.py`), a
-thin `Input` subclass adding a **Shift+Insert** binding that pastes from the
-real OS clipboard via the `pyperclip` package. This is distinct from
-Textual's built-in Ctrl+V, which only reflects text copied *within* the app
-(Textual's `App.clipboard` explicitly doesn't track the OS clipboard) and so
-does nothing useful for text copied from outside pcli (a browser, another
-terminal, an editor). If `pyperclip` can't reach a clipboard mechanism (e.g.
-a minimal Linux setup without `xclip`/`xsel`/`wl-clipboard`), an error toast
-is shown instead of crashing; an empty clipboard is a silent no-op. All of
-`Input`'s other bindings (Ctrl+V, arrow keys, Ctrl+C copy, etc.) are
-unaffected — Textual merges a subclass's `BINDINGS` with the parent's rather
-than replacing them.
+thin `Input` subclass making Shift+Insert (and middle-click, and
+Ctrl+Shift+V) paste the real OS clipboard, via two delivery paths that
+terminals split across unpredictably:
+
+- **Terminal-intercepted paste** — most terminals (Windows Terminal, xterm,
+  GNOME Terminal, ...) intercept the paste gesture themselves and deliver the
+  clipboard over the bracketed-paste channel Textual already has enabled,
+  which Textual turns into an `events.Paste` message. `PasteInput` overrides
+  `_on_paste` to apply its own logic here instead of falling through to
+  `Input`'s built-in handler, which is always first-line-only. This is the
+  path that fires in practice on most setups, including Windows Terminal.
+- **Literal keystroke** — terminals that instead pass Shift+Insert through as
+  a plain keystroke leave Textual with nothing bound to it by default, so
+  `PasteInput` also adds an explicit **Shift+Insert** binding
+  (`action_paste_from_os_clipboard`) that reads the OS clipboard directly via
+  the `pyperclip` package, as a fallback for this case. If `pyperclip` can't
+  reach a clipboard mechanism (e.g. a minimal Linux setup without
+  `xclip`/`xsel`/`wl-clipboard`), an error toast is shown instead of
+  crashing; an empty clipboard is a silent no-op.
+
+Both paths funnel into the same insertion logic, so the behavior described
+below is the same regardless of which one a given terminal uses. Both are
+also distinct from Textual's built-in Ctrl+V, which only reflects text
+copied *within* the app (Textual's `App.clipboard` explicitly doesn't track
+the OS clipboard) and so does nothing useful for text copied from outside
+pcli (a browser, another terminal, an editor). All of `Input`'s other
+bindings (arrow keys, Ctrl+C copy, etc.) are unaffected — Textual merges a
+subclass's `BINDINGS` with the parent's rather than replacing them.
 
 Since the input box is single-line, a multi-line clipboard can't be shown
 inline. The chat input is constructed with `expand_full_paste=True`, so a
