@@ -38,6 +38,16 @@ Anything starting with `/` is a slash command; anything starting with `!` is
 shell passthrough, in one of three tiers (`!`, `!!`, `!!!` — all below). Plain
 text otherwise goes to the model.
 
+### Submitting while a turn is in progress
+
+Submitting a message while pcli is still working on a previous turn no longer
+cancels that turn. Your message is appended to the transcript right away, just
+like normal, and is then automatically sent as a follow-up turn the instant
+the current one finishes. If you keep typing and submitting while pcli is
+still busy, each message queues up and runs in turn, back-to-back, with
+nothing lost or interrupted along the way — the same queued-input behavior
+you may know from opencode or Claude Code.
+
 The input box is a `PasteInput` (`src/pcli/tui/widgets/paste_input.py`), a
 thin `Input` subclass making Shift+Insert (and middle-click, and
 Ctrl+Shift+V) paste the real OS clipboard, via two delivery paths that
@@ -112,7 +122,11 @@ line instead, matching Textual's own `Input._on_paste` behavior.
   the `auto_compact_threshold` check entirely. Still subject to
   `maybe_compact`'s own "not enough history yet" guard, reporting "Nothing to
   compact yet." if there isn't more history than
-  `auto_compact_keep_recent_turns` turns.
+  `auto_compact_keep_recent_turns` turns. Refuses to run while a turn is still
+  in progress, showing "Still working on the current turn — try /compact
+  again once it's done." instead — just try again once it finishes. This
+  doesn't affect auto-compaction (below), which always runs sequentially
+  after a turn ends anyway.
 
 Any other `/word` prints "Unknown command: /word".
 

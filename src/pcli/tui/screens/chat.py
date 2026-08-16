@@ -92,6 +92,12 @@ class ChatScreen(Screen):
         self._current_ask: AskCallback | None = None
         self._cwd = Path.cwd()
         self._activity = ActivityTracker()
+        # Lets a message submitted while a turn is already running be
+        # queued and processed right after, instead of either being ignored
+        # or (the bug this fixes) silently cancelling the in-flight turn —
+        # see _stream_response/on_input_submitted.
+        self._turn_in_progress = False
+        self._has_queued_followup = False
 
         if session is not None:
             self._session = session
@@ -272,7 +278,15 @@ class ChatScreen(Screen):
         message_view = self.query_one(MessageView)
         self._session.messages.append(Message(role="user", content=text))
         message_view.add_message("user", text)
-        self._stream_response()
+        if self._turn_in_progress:
+            # Queue it rather than starting a second _stream_response worker
+            # (which, on the same exclusive group, would cancel the one
+            # already running instead of running alongside or after it) —
+            # the message is already visible above; _stream_response picks
+            # it up itself once the current turn finishes.
+            self._has_queued_followup = True
+        else:
+            self._stream_response()
 
     def _run_interactive_shell(self, command: str) -> None:
         """Runs `!!!cmd` with a real terminal handed to it (passwords,
@@ -532,6 +546,18 @@ class ChatScreen(Screen):
                 )
             return
 
+        if reason == "manual" and self._turn_in_progress:
+            # maybe_compact slices/replaces session.messages directly —
+            # running it concurrently with an active turn (which also reads
+            # and appends to that same list) could corrupt the conversation.
+            # The "auto" trigger is never at risk of this: it only ever runs
+            # sequentially, awaited from inside _run_one_turn itself, after
+            # that turn has already finished.
+            message_view.add_message(
+                "system", "Still working on the current turn — try /compact again once it's done."
+            )
+            return
+
         status_bar.busy = True
         try:
             result = await maybe_compact(
@@ -580,8 +606,32 @@ class ChatScreen(Screen):
     async def _manual_compact(self) -> None:
         await self._run_compaction("manual")
 
-    @work(exclusive=True)
+    @work(exclusive=True, group="agent-turn")
     async def _stream_response(self) -> None:
+        """Runs turns back-to-back for as long as new user input gets
+        queued while the previous one was still in flight (see
+        on_input_submitted) — matches how opencode/Claude Code let you
+        queue follow-up messages instead of either blocking input or
+        cancelling the in-flight turn.
+
+        Given its own dedicated worker group so no other exclusive worker
+        on this screen (compaction, /export, /toolbox, ...) can ever cancel
+        it: they used to all share Textual's default group, and Textual
+        cancels every other worker in a group whenever a new exclusive one
+        in that same group starts — so submitting a second chat message (or
+        any other command) while a turn was running silently killed it
+        instead of queueing or running after."""
+        self._turn_in_progress = True
+        try:
+            while True:
+                await self._run_one_turn()
+                if not self._has_queued_followup:
+                    break
+                self._has_queued_followup = False
+        finally:
+            self._turn_in_progress = False
+
+    async def _run_one_turn(self) -> None:
         assert self._agent_loop is not None
         message_view = self.query_one(MessageView)
         status_bar = self.query_one(StatusBar)
