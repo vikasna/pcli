@@ -5,6 +5,7 @@ after every turn."""
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 from pathlib import Path
 from typing import ClassVar
@@ -50,9 +51,19 @@ from pcli.tui.widgets.status_pane import StatusPane
 # match a paid pattern there (e.g. "llama-3*") and show a fake nonzero cost.
 _FREE_PRICING_TABLE = PricingTable(entries={}, default=ModelPricing())
 
+logger = logging.getLogger(__name__)
+
 
 class ChatScreen(Screen):
-    BINDINGS: ClassVar[list[BindingType]] = [("ctrl+c", "quit", "Quit")]
+    # No custom quit binding needed: Textual's own App already binds ctrl+q
+    # to quit (with priority=True, so nothing here could override it even if
+    # we wanted to), and ctrl+c is reserved by Textual itself as a
+    # "press ctrl+q to quit" hint (App.action_help_quit) rather than quitting
+    # directly — deliberately, to avoid killing the app on a reflexive
+    # ctrl+c. A previous ("ctrl+c", "quit", "Quit") entry here never actually
+    # fired (confirmed: Textual's system-level binding for the same key
+    # always wins over a Screen-level one) and just misled anyone reading it.
+    BINDINGS: ClassVar[list[BindingType]] = []
 
     def __init__(
         self,
@@ -622,8 +633,18 @@ class ChatScreen(Screen):
                         Message.from_chat_message(m) for m in chunk.new_messages
                     )
         except GatewayError as exc:
+            # Previously the only trace of this was a message that vanished
+            # the moment the TUI closed — nothing was logged, and nothing
+            # was saved, so a session that failed on its very first turn
+            # left literally no record anywhere (not even the user's own
+            # message). Log it (with traceback) and save whatever's already
+            # in self._session.messages (system prompt, prior successful
+            # turns, and the user message that triggered this attempt) so a
+            # failed turn is actually debuggable afterward.
+            logger.exception("Gateway error during turn: %s", exc.message)
             message_view.finish_streaming()
             message_view.add_message("system", f"Gateway error: {exc.message}")
+            self._store.save(self._session)
             return
         finally:
             status_bar.busy = False

@@ -73,7 +73,11 @@ Five settings-related flags exist (`src/pcli/cli.py`, root callback):
 `--local-api`. Everything else must be set via environment variable or
 `config.toml`. There's also `--verbose` / `-v`, which raises file logging
 (`~/.../pcli.log`, see `configure_logging`) to `DEBUG`; it isn't a `Settings`
-field.
+field. Historically `pcli.log` only ever captured `httpx`'s own
+request/response logging (nothing from pcli's own code called into `logging`
+at all); `ChatScreen._stream_response` now also logs a full traceback there
+(`logger.exception(...)`, `ERROR` level, so it's captured regardless of
+`--verbose`) whenever a turn fails with a `GatewayError`.
 
 `--local-api` is different in kind from the other four: it's a boolean flag
 that doesn't set a scalar override, it *appends* the active gateway to a

@@ -14,6 +14,18 @@ Top to bottom (`ChatScreen.compose`):
   second line with subagent progress while one is running.
 - **Input box** — where you type.
 
+## Quitting
+
+**Ctrl+Q** quits. This isn't something pcli declares itself — it's Textual's
+own `App.BINDINGS` default (`ctrl+q` -> `quit`, `priority=True`, so nothing at
+the `Screen` level could ever override it). **Ctrl+C does not quit** —
+Textual's `App` also binds `ctrl+c` itself, to `action_help_quit`, which just
+shows a "Press ctrl+q to quit the app" notification rather than quitting,
+deliberately, so a reflexive Ctrl+C doesn't kill the app. `ChatScreen.BINDINGS`
+is `[]`; it used to declare its own `("ctrl+c", "quit", "Quit")` entry, but
+that never actually fired (a same-key system-level binding on `App` always
+wins over a same-key `Screen`-level one) and was removed.
+
 ## Chat input
 
 Type a message and press Enter to send it to the agent. It's appended to the

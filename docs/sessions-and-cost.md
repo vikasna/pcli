@@ -20,6 +20,28 @@ All writes are atomic (`_atomic_write`: write to a `.tmp` sibling, then
 `index.json` entry (title, updated_at, model, message count, total cost) so
 `sessions list` / `/sessions` don't need to load every full session file.
 
+### When a session gets saved
+
+In the TUI, `ChatScreen._stream_response` calls `self._store.save(self._session)`:
+
+- **On a successful turn** — after the `async for` loop over `AgentLoop.run_turn`
+  finishes, so `session.messages` includes the assistant's response
+  (`Message.from_chat_message` for each of `chunk.new_messages` from the
+  `turn_complete` event) alongside everything earlier.
+- **On a failed turn** (`except GatewayError`) — save also runs here, right
+  before the handler returns. This preserves whatever was already appended to
+  `session.messages` before the failure (the system prompt, all prior
+  successful turns, and the user's own message that triggered this attempt)
+  — but *not* an assistant response for the failed turn itself, since
+  `run_turn` raises mid-stream and a `turn_complete` event is never yielded to
+  extend `session.messages` with one. Before this, a `GatewayError` was never
+  saved at all: a turn that failed left no persisted trace, not even the
+  triggering user message.
+
+`_run_compaction` also calls `save()` after archiving, so a compaction (auto
+or `/compact`) is persisted immediately rather than waiting for the next
+turn.
+
 ### What's stored on `Session`
 
 - `messages: list[Message]` — full chat history, including tool-call/tool-
