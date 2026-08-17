@@ -534,3 +534,70 @@ async def test_agent_loop_max_tool_iterations_none_is_unlimited(tmp_path: Path):
     turn_complete = next(e for e in events if isinstance(e, TurnCompleteEvent))
     assert turn_complete.new_messages[-1].content == "done"
     assert route.call_count == 31  # all 30 tool-call rounds plus the final text round
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_reasoning_content_passes_through_but_is_never_folded_into_message_content(
+    tmp_path: Path,
+):
+    """Reasoning/"thinking" model output (delta.reasoning_content) must
+    reach the caller as ReasoningDelta events (chat.py renders it
+    separately) but must never end up concatenated into the assistant
+    message's actual content — that field is what gets replayed back to
+    the model on the next turn, and reasoning traces aren't meant to be."""
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(
+            200,
+            content=_sse(
+                {"choices": [{"delta": {"reasoning_content": "hmm, "}, "finish_reason": None}]},
+                {"choices": [{"delta": {"reasoning_content": "let's see"}, "finish_reason": None}]},
+                {"choices": [{"delta": {"content": "42"}, "finish_reason": "stop"}]},
+            ),
+        ),
+    ]
+
+    async with GatewayClient(_settings()) as client:
+        loop = AgentLoop(client)
+        events = [e async for e in loop.run_turn([ChatMessage(role="user", content="what is it")])]
+
+    reasoning_texts = [e.text for e in events if e.kind == "reasoning_delta"]
+    assert reasoning_texts == ["hmm, ", "let's see"]
+
+    turn_complete = next(e for e in events if isinstance(e, TurnCompleteEvent))
+    assert turn_complete.new_messages[-1].content == "42"  # reasoning text isn't mixed in
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_reasoning_only_response_ends_the_turn_with_no_content_and_no_tool_calls(
+    tmp_path: Path,
+):
+    """The real-world failure this whole feature addresses: a model that
+    spends its entire response reasoning and never transitions to `content`
+    or a tool call. run_turn still ends the turn cleanly (content=None,
+    no tool_calls) rather than hanging or erroring — it's chat.py's job to
+    notice new_messages[-1] carries nothing visible and tell the user, with
+    the reasoning (now at least captured) shown as the only clue why."""
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(
+            200,
+            content=_sse(
+                {"choices": [{"delta": {"reasoning_content": "thinking a lot"}, "finish_reason": None}]},
+                {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+            ),
+        ),
+    ]
+
+    async with GatewayClient(_settings()) as client:
+        loop = AgentLoop(client)
+        events = [e async for e in loop.run_turn([ChatMessage(role="user", content="do it")])]
+
+    turn_complete = next(e for e in events if isinstance(e, TurnCompleteEvent))
+    assert len(turn_complete.new_messages) == 1
+    assert turn_complete.new_messages[0].content is None
+    assert turn_complete.new_messages[0].tool_calls is None
+    assert [e.text for e in events if e.kind == "reasoning_delta"] == ["thinking a lot"]
+    assert route.call_count == 1  # no infinite retry loop on an empty-but-valid response

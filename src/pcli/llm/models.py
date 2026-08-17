@@ -60,6 +60,18 @@ class TextDelta(BaseModel):
     text: str
 
 
+class ReasoningDelta(BaseModel):
+    """A fragment of a reasoning/"thinking" model's chain-of-thought,
+    streamed under `delta.reasoning_content` (or `delta.reasoning`) by
+    OpenAI-compatible servers that expose it as a channel separate from the
+    final answer (`delta.content`) — e.g. vLLM/SGLang/LM Studio serving
+    DeepSeek-R1-style or Nemotron "thinking" models. Never folded into the
+    assistant message's actual content; see agent/loop.py."""
+
+    kind: Literal["reasoning_delta"] = "reasoning_delta"
+    text: str
+
+
 class ToolCallDelta(BaseModel):
     kind: Literal["tool_call_delta"] = "tool_call_delta"
     index: int
@@ -83,4 +95,6 @@ class FinishEvent(BaseModel):
     reason: str | None = None
 
 
-StreamEvent = TextDelta | ToolCallDelta | ToolCallCompleteEvent | UsageEvent | FinishEvent
+StreamEvent = (
+    TextDelta | ReasoningDelta | ToolCallDelta | ToolCallCompleteEvent | UsageEvent | FinishEvent
+)

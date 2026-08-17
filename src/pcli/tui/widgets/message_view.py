@@ -100,6 +100,21 @@ class MessageView(VerticalScroll):
         self.mount(collapsible)
         self.scroll_end(animate=False)
 
+    def add_reasoning(self, text: str) -> None:
+        """A reasoning/"thinking" model's chain-of-thought (delta.reasoning_content
+        — see llm/streaming.py), rendered collapsed by default: it's the
+        model's internal monologue, not its actual answer, and can run to
+        thousands of tokens. One-shot render like add_tool_result (never
+        streamed token-by-token into the DOM) — this is secondary content,
+        and the "busy" spinner already covers the in-progress case."""
+        if not text.strip():
+            return
+        title = f"\U0001f9e0 Thinking — {len(text):,} char(s)"
+        body = Static(Text(text, no_wrap=False, overflow="fold"), classes="tool-result-body")
+        collapsible = Collapsible(body, title=title, collapsed=True, classes="reasoning-collapsible")
+        self.mount(collapsible)
+        self.scroll_end(animate=False)
+
     def finish_streaming(self) -> None:
         self._flush()  # ensure the last throttled fragment(s) are actually shown
         self._current = None

@@ -643,11 +643,34 @@ class ChatScreen(Screen):
         self._current_ask = ask
         status_bar.busy = True
 
+        # Reasoning models stream their chain-of-thought under a channel
+        # separate from the actual reply (see llm/streaming.py) — buffered
+        # here and flushed as a collapsed "Thinking" panel whenever real
+        # content or a tool call follows, rather than shown live: a model
+        # can spend its *entire* response reasoning without ever producing
+        # visible text or a tool call, which previously looked exactly like
+        # pcli doing nothing at all. had_any_content tracks that case so a
+        # clear notice can be shown instead of a silently empty turn.
+        reasoning_parts: list[str] = []
+        had_any_content = False
+        had_any_reasoning = False
+
+        def flush_reasoning() -> None:
+            nonlocal had_any_reasoning
+            if reasoning_parts:
+                had_any_reasoning = True
+                message_view.add_reasoning("".join(reasoning_parts))
+                reasoning_parts.clear()
+
         try:
             chat_messages = [m.to_chat_message() for m in self._session.messages]
             async for chunk in self._agent_loop.run_turn(chat_messages, ask=ask):
                 if chunk.kind == "text_delta":
+                    had_any_content = True
+                    flush_reasoning()
                     message_view.append_to_last(chunk.text)
+                elif chunk.kind == "reasoning_delta":
+                    reasoning_parts.append(chunk.text)
                 elif chunk.kind == "usage":
                     self._cost_tracker.record_turn(
                         self._settings.default_model or self._session.model, chunk.usage
@@ -655,6 +678,8 @@ class ChatScreen(Screen):
                     self._refresh_cost_display(status_bar)
                     self._refresh_context_display(status_bar, chunk.usage)
                 elif chunk.kind == "tool_start":
+                    had_any_content = True
+                    flush_reasoning()
                     message_view.finish_streaming()
                     message_view.add_message(
                         "tool",
@@ -692,13 +717,26 @@ class ChatScreen(Screen):
             # turns, and the user message that triggered this attempt) so a
             # failed turn is actually debuggable afterward.
             logger.exception("Gateway error during turn: %s", exc.message)
+            flush_reasoning()
             message_view.finish_streaming()
             message_view.add_message("system", f"Gateway error: {exc.message}")
             self._store.save(self._session)
             return
         finally:
             status_bar.busy = False
+        flush_reasoning()
         message_view.finish_streaming()
+        if not had_any_content:
+            # Not an error - the model responded, just with nothing visible
+            # (e.g. it used its whole response budget on reasoning above and
+            # never got to an actual answer or tool call). Previously this
+            # looked identical to pcli having silently failed to do anything.
+            suffix = ' (see "Thinking" above)' if had_any_reasoning else ""
+            message_view.add_message(
+                "system",
+                f"The model didn't produce a reply or tool call this turn{suffix}. "
+                "Try again, or ask something more focused.",
+            )
         self._store.save(self._session)
 
         if self._settings.auto_compact_enabled:

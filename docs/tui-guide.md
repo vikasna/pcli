@@ -253,6 +253,36 @@ verbatim as plain monospace text (`rich.text.Text`), deliberately *not*
 Markdown, since tool output routinely contains underscores/asterisks/etc.
 that Markdown would misinterpret.
 
+## Model reasoning ("Thinking")
+
+Some models — particularly local "reasoning" models served through an
+OpenAI-compatible gateway (e.g. LM Studio) — stream their internal
+chain-of-thought separately from their actual reply. When the backend
+provides this, pcli shows it as its own panel in the message view, titled:
+
+```
+🤔 Thinking — 842 char(s)
+```
+
+collapsed by default, the same one-shot-render/click-to-expand pattern as the
+tool-result Collapsibles above, styled with a muted left border
+(`.reasoning-collapsible`) to keep it visually distinct from tool results and
+the actual reply. It appears once a real reply or tool call follows it, or at
+the end of the turn if neither does. It's purely something to look at —
+unlike the assistant's actual reply, this reasoning text is never sent back
+to the model on later turns and isn't part of the conversation history.
+
+### When a turn produces no reply at all
+
+Occasionally a reasoning model spends its whole response budget "thinking"
+without ever producing a final answer or tool call. This used to leave a
+completely empty, silent assistant bubble with nothing to indicate what
+happened. Now pcli shows a clear notice instead: "The model didn't produce a
+reply or tool call this turn (see "Thinking" above). Try again, or ask
+something more focused." (the parenthetical is omitted if no reasoning panel
+was shown either). If you see this, it usually means the model ran out of
+room to answer — try again, or rephrase as a more focused ask.
+
 ## Decision log
 
 `record_decision` calls ([`tools.md`](tools.md#record_decision)) render

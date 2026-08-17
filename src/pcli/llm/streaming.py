@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 
 from pcli.llm.models import (
     FinishEvent,
+    ReasoningDelta,
     StreamEvent,
     TextDelta,
     ToolCall,
@@ -71,6 +72,17 @@ async def parse_sse_stream(lines: AsyncIterator[str]) -> AsyncIterator[StreamEve
         content = delta.get("content")
         if content:
             yield TextDelta(text=content)
+
+        # Reasoning/"thinking" models (DeepSeek-R1-style, Nemotron "detailed
+        # thinking", ...) served through vLLM/SGLang/LM Studio stream their
+        # chain-of-thought under a separate field, never under `content` —
+        # a model that spends its whole response reasoning without ever
+        # transitioning to `content` previously vanished here entirely: no
+        # text, no tool call, no error, just a silently empty turn. Servers
+        # aren't consistent about the key name, so both are checked.
+        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+        if reasoning:
+            yield ReasoningDelta(text=reasoning)
 
         for tc in delta.get("tool_calls") or []:
             index = tc.get("index", 0)
