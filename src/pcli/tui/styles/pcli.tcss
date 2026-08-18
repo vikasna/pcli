@@ -63,7 +63,11 @@ Screen {
 
 .reasoning-collapsible {
     margin-bottom: 1;
-    border-left: thick $text-muted;
+    /* $text-muted is an "auto"-computed contrast color (see Textual's
+       design-variable table), which the border-color parser rejects as
+       not a concrete color - unlike $foreground-muted, a real hex/rgba
+       value with the same muted look, which resolves fine here. */
+    border-left: thick $foreground-muted;
     background: transparent;
 }
 

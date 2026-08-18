@@ -72,6 +72,7 @@ All tests live flat under `tests/` (no subpackages), one file per concern:
 | `test_toolbox_introspect.py` | Subcommand-guessing regex; `collect_help_corpus` walking guessed subcommands; `synthesize_tools` valid response, retry-once-then-succeed, give-up-after-two-invalid-attempts, schema-violation rejection. |
 | `test_toolbox_manager.py` | Registry/synthesized-schema store roundtrips; corpus hashing; curated-plugin discovery; unknown-binary error; `load_all` rebuilding curated tools and skipping missing ones. |
 | `test_toolbox_plugin_kubectl.py` | Pure-Python plugin logic with no real binaries needed: kubectl version parsing, tool shape/risk tiers, `get`/`delete` arg building; httpd version parsing; SGE skipping missing sibling binaries. |
+| `test_tui_app.py` | Mounts the real `PcliApp` with its actual `CSS_PATH`, unlike every other TUI test here which mounts `ChatScreen` on a bare `App` subclass. This is what actually parses `pcli.tcss` at test time, so it's the guard against invalid/broken CSS rules reaching a real build — a failure class the bare-`App` tests elsewhere in the suite don't exercise. |
 
 A recurring pattern worth reusing for new tests: sandbox/toolbox plugin tests
 avoid needing the real binary wherever the logic under test (arg-building,
