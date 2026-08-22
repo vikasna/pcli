@@ -135,6 +135,7 @@ def cost_report_command() -> None:
 @toolbox_app.command("discover")
 def toolbox_discover(name: str) -> None:
     from pcli.llm.client import GatewayClient
+    from pcli.llm.errors import GatewayError
     from pcli.tools.toolbox.manager import ToolboxDiscoveryError, ToolboxManager
 
     async def _run() -> None:
@@ -146,7 +147,11 @@ def toolbox_discover(name: str) -> None:
                 name, gateway_client=client, model=settings.default_model or None
             )
             typer.echo(summary)
-        except ToolboxDiscoveryError as exc:
+        except (ToolboxDiscoveryError, GatewayError) as exc:
+            # discover() calls the gateway to synthesize tool schemas when
+            # there's no curated plugin - that can fail same as any other
+            # gateway call (previously uncaught here, crashing with a raw
+            # traceback instead of a clean message).
             typer.echo(f"Discovery failed: {exc}", err=True)
             raise typer.Exit(code=1) from exc
         finally:

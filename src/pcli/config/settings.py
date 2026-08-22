@@ -18,6 +18,15 @@ from pydantic_settings import (
 
 from pcli.config.paths import config_file
 
+# Local model inference (LM Studio, Ollama, ...) is routinely far slower than
+# a hosted API - no batching, often CPU-bound - and pcli's own logs have
+# caught request_timeout_s's 120s default being exceeded by perfectly normal
+# local generation (a model streaming steadily at ~5 tokens/sec can easily
+# take several minutes for one reply). Local-api gateways get at least this
+# much, regardless of the configured request_timeout_s, unless the user has
+# explicitly configured something even higher. See Settings.effective_request_timeout_s.
+_LOCAL_API_MIN_TIMEOUT_S = 600.0
+
 
 class _TomlFileSource(PydanticBaseSettingsSource):
     """Reads config.toml and flattens one level of [table] nesting to table_key."""
@@ -141,6 +150,15 @@ class Settings(BaseSettings):
 
     def is_local_api(self) -> bool:
         return bool(self.gateway_base_url) and self.gateway_base_url in self.local_api_gateways
+
+    @property
+    def effective_request_timeout_s(self) -> float:
+        """The timeout GatewayClient actually applies: request_timeout_s,
+        floored to _LOCAL_API_MIN_TIMEOUT_S for local-api gateways (an
+        explicit request_timeout_s higher than the floor still wins)."""
+        if self.is_local_api():
+            return max(self.request_timeout_s, _LOCAL_API_MIN_TIMEOUT_S)
+        return self.request_timeout_s
 
 
 _settings: Settings | None = None

@@ -109,7 +109,13 @@ class AgentLoop:
         while True:
             iterations += 1
             if self._max_tool_iterations is not None and iterations > self._max_tool_iterations:
-                note = "\n[pcli] Reached the max tool-call iteration limit for this turn."
+                note = (
+                    f"\n[pcli] Reached the max tool-call iteration limit "
+                    f"({self._max_tool_iterations}) for this turn. If the model legitimately "
+                    "needs more tool calls to finish, raise max_tool_iterations via "
+                    "PCLI_MAX_TOOL_ITERATIONS or config.toml (--local-api removes this cap "
+                    "entirely for a local gateway)."
+                )
                 yield TextDelta(text=note)
                 working_messages.append(ChatMessage(role="assistant", content=note))
                 break
@@ -172,7 +178,9 @@ class AgentLoop:
             if limit_hit:
                 note = (
                     f"\n[pcli] Reached the guardrail limit of {max_tool_calls_per_turn} tool "
-                    "call(s) for this turn."
+                    "call(s) for this turn. If this is expected, raise limits."
+                    "max_tool_calls_per_turn in guardrails.toml (--local-api removes this cap "
+                    "entirely for a local gateway)."
                 )
                 yield TextDelta(text=note)
                 working_messages.append(ChatMessage(role="assistant", content=note))

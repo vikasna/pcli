@@ -417,7 +417,11 @@ async def test_agent_loop_enforces_max_tool_calls_per_turn(tmp_path: Path):
 
     turn_complete = next(e for e in events if isinstance(e, TurnCompleteEvent))
     assert [m.role for m in turn_complete.new_messages] == ["assistant", "tool", "tool", "assistant"]
-    assert "Reached the guardrail limit" in turn_complete.new_messages[-1].content
+    note = turn_complete.new_messages[-1].content
+    assert "Reached the guardrail limit" in note
+    # Actionable, not just a dead end: names the setting and where to change it.
+    assert "max_tool_calls_per_turn" in note
+    assert "guardrails.toml" in note
     assert route.call_count == 1  # stopped after this batch, no further chat_stream call
 
 
@@ -492,7 +496,11 @@ async def test_agent_loop_default_max_tool_iterations_stops_the_turn(tmp_path: P
             events.append(event)
 
     turn_complete = next(e for e in events if isinstance(e, TurnCompleteEvent))
-    assert "Reached the max tool-call iteration limit" in turn_complete.new_messages[-1].content
+    note = turn_complete.new_messages[-1].content
+    assert "Reached the max tool-call iteration limit" in note
+    # Actionable, not just a dead end: names the setting and where to change it.
+    assert "max_tool_iterations" in note
+    assert "PCLI_MAX_TOOL_ITERATIONS" in note
     # Stopped exactly at the cap: never reached the 26th round or the final one.
     assert route.call_count == 25
 

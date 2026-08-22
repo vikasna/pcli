@@ -34,7 +34,7 @@ class GatewayClient:
         self._client = httpx.AsyncClient(
             base_url=settings.gateway_base_url.rstrip("/"),
             headers=headers,
-            timeout=settings.request_timeout_s,
+            timeout=settings.effective_request_timeout_s,
         )
 
     async def aclose(self) -> None:
@@ -45,6 +45,58 @@ class GatewayClient:
 
     async def __aexit__(self, *exc_info: object) -> None:
         await self.aclose()
+
+    def _network_error_hint(self, exc: httpx.HTTPError) -> str | None:
+        """Turns a raw httpx transport failure into something the user can
+        actually act on: which setting to change, and to what — grounded in
+        a real debugged case where a local model streaming at ~5 tokens/sec
+        tripped the 120s default mid-response, and pcli's only trace of it
+        was an opaque "Gateway error" with the underlying exception text."""
+        timeout = self._settings.effective_request_timeout_s
+        suggestion = max(600, int(timeout * 3))
+        gateway_kind = "local API gateway" if self._settings.is_local_api() else "gateway"
+
+        if isinstance(exc, httpx.ConnectTimeout):
+            return (
+                f"Couldn't connect to the {gateway_kind} within {timeout:g}s "
+                f"(request_timeout_s={timeout:g}). Check it's actually running at "
+                f"{self._settings.gateway_base_url!r} — or, if it's just slow to accept "
+                f"connections (e.g. still loading a model), set a larger request_timeout_s "
+                f"(e.g. {suggestion}) via PCLI_REQUEST_TIMEOUT_S or config.toml."
+            )
+        if isinstance(exc, httpx.TimeoutException):
+            local_note = (
+                "Local models are often much slower than hosted ones — " if self._settings.is_local_api() else ""
+            )
+            return (
+                f"Read timed out on the {gateway_kind} (request_timeout_s={timeout:g}). "
+                f"{local_note}Set a larger request_timeout_s (e.g. {suggestion}) via "
+                "PCLI_REQUEST_TIMEOUT_S or config.toml."
+            )
+        if isinstance(exc, httpx.ConnectError):
+            return (
+                f"Couldn't reach the {gateway_kind} at {self._settings.gateway_base_url!r} — "
+                "check that it's running and that gateway_base_url is correct."
+            )
+        return None
+
+    def _http_status_hint(self, status_code: int) -> str | None:
+        if status_code in (401, 403):
+            if self._settings.gateway_api_key:
+                return "The gateway rejected the configured gateway_api_key — check it's correct and hasn't expired."
+            return (
+                "No gateway_api_key is configured and this gateway appears to require one — "
+                "set PCLI_GATEWAY_API_KEY or gateway_api_key in config.toml."
+            )
+        if status_code == 429:
+            return (
+                f"Rate-limited by the gateway. pcli already retries with backoff (up to "
+                f"max_retries={self._settings.max_retries}) — if this keeps happening, raise "
+                "max_retries or reduce request frequency."
+            )
+        if status_code >= 500:
+            return "This is usually transient on the gateway's side — trying again shortly often helps."
+        return None
 
     def _build_payload(
         self,
@@ -96,7 +148,9 @@ class GatewayClient:
                     if response.status_code >= 400:
                         body = await response.aread()
                         raise GatewayError.from_http_status(
-                            response.status_code, body.decode(errors="replace")
+                            response.status_code,
+                            body.decode(errors="replace"),
+                            hint=self._http_status_hint(response.status_code),
                         )
                     async for event in parse_sse_stream(response.aiter_lines()):
                         started = True
@@ -107,7 +161,7 @@ class GatewayClient:
                 if not exc.retryable or started or attempt == max_attempts:
                     raise
             except httpx.HTTPError as exc:
-                last_error = GatewayError.from_network_error(str(exc))
+                last_error = GatewayError.from_network_error(str(exc), hint=self._network_error_hint(exc))
                 if started or attempt == max_attempts:
                     raise last_error
 
@@ -165,9 +219,11 @@ class GatewayClient:
         try:
             response = await self._client.get("/models")
         except httpx.HTTPError as exc:
-            raise GatewayError.from_network_error(str(exc)) from exc
+            raise GatewayError.from_network_error(str(exc), hint=self._network_error_hint(exc)) from exc
         if response.status_code >= 400:
-            raise GatewayError.from_http_status(response.status_code, response.text)
+            raise GatewayError.from_http_status(
+                response.status_code, response.text, hint=self._http_status_hint(response.status_code)
+            )
         payload = response.json()
         entries = payload.get("data", []) if isinstance(payload, dict) else []
         ids = [entry["id"] for entry in entries if isinstance(entry, dict) and "id" in entry]

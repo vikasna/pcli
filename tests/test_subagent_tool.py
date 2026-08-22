@@ -124,6 +124,32 @@ async def test_spawn_subagent_returns_final_text_and_usage(tmp_path: Path):
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_spawn_subagent_gateway_error_includes_actionable_hint(tmp_path: Path):
+    """subagent_tool.py's except Exception already catches GatewayError and
+    reports f"Subagent failed: {exc}" - since the hint (e.g. which config
+    setting to raise) is folded directly into GatewayError.message rather
+    than a separate attribute, this call site picks it up automatically,
+    with no subagent_tool.py change needed."""
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        side_effect=httpx.ReadTimeout("the read operation timed out")
+    )
+
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    registry = _make_registry_with_echo_and_subagent()
+
+    async with GatewayClient(_settings()) as client:
+        ctx = _make_ctx(tmp_path, registry, client, permission_manager)
+        result = await SPAWN_SUBAGENT.handler({"task": "What is the answer?"}, ctx)
+
+    assert result.is_error is True
+    assert "Subagent failed" in result.output
+    assert "request_timeout_s" in result.output
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_spawn_subagent_registry_never_contains_itself(tmp_path: Path):
     """Prove the depth cap is structural: intercept the nested AgentLoop's
     tool_registry rather than trusting the summary text."""

@@ -116,3 +116,32 @@ def test_settings_picks_up_persisted_local_api_gateways(
 
     settings = Settings()
     assert settings.is_local_api() is True
+
+
+def test_effective_request_timeout_s_unaffected_for_non_local_api():
+    settings = Settings(gateway_base_url="http://hosted.test/v1", request_timeout_s=120.0)
+    assert settings.is_local_api() is False
+    assert settings.effective_request_timeout_s == 120.0
+
+
+def test_effective_request_timeout_s_floored_for_local_api():
+    """Local model inference is routinely far slower than a hosted API - the
+    plain 120s default is too easily exceeded by ordinary local generation
+    (this is exactly what happened debugging a real session: a local model
+    streaming at ~5 tokens/sec tripped it mid-response)."""
+    settings = Settings(
+        gateway_base_url="http://localhost:1234/v1",
+        local_api_gateways=["http://localhost:1234/v1"],
+        request_timeout_s=120.0,
+    )
+    assert settings.is_local_api() is True
+    assert settings.effective_request_timeout_s == 600.0
+
+
+def test_effective_request_timeout_s_respects_explicit_higher_value_for_local_api():
+    settings = Settings(
+        gateway_base_url="http://localhost:1234/v1",
+        local_api_gateways=["http://localhost:1234/v1"],
+        request_timeout_s=1200.0,
+    )
+    assert settings.effective_request_timeout_s == 1200.0

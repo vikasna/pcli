@@ -397,7 +397,11 @@ class ChatScreen(Screen):
             summary = await self._toolbox_manager.discover(
                 name, gateway_client=self._client, model=self._settings.default_model or None
             )
-        except ToolboxDiscoveryError as exc:
+        except (ToolboxDiscoveryError, GatewayError) as exc:
+            # discover() calls the gateway to synthesize tool schemas when
+            # there's no curated plugin (toolbox/manager.py) - that call can
+            # raise GatewayError same as any other, and it previously wasn't
+            # caught here at all, crashing this worker silently.
             message_view.add_message("system", f"Discovery failed: {exc}")
             return
         message_view.add_message("system", summary)
@@ -567,6 +571,17 @@ class ChatScreen(Screen):
                 artifact_store=self._artifact_store,
                 keep_recent_turns=self._settings.auto_compact_keep_recent_turns,
             )
+        except GatewayError as exc:
+            # Previously uncaught here: maybe_compact's one summarization
+            # call failing (e.g. a timeout) would crash straight out of this
+            # worker with nothing shown to the user - the turn that
+            # triggered auto-compaction had already completed and saved
+            # successfully by this point, so this is a notice, not a lost
+            # turn, but it still needs to be visible (context usage just
+            # silently won't have shrunk).
+            logger.exception("Gateway error during compaction: %s", exc.message)
+            message_view.add_message("system", f"Compaction failed: {exc.message}")
+            return
         finally:
             status_bar.busy = False
 

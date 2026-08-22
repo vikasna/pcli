@@ -193,3 +193,157 @@ async def test_list_models_raises_gateway_error_on_failure():
     async with GatewayClient(_settings()) as client:
         with pytest.raises(GatewayError):
             await client.list_models()
+
+
+# --- Actionable error-message hints ---
+#
+# Regression coverage for a real debugged case: a local model streaming at
+# ~5 tokens/sec tripped the 120s request_timeout_s default mid-response, and
+# pcli's only trace of it was an opaque "Gateway error: <raw httpx text>"
+# with no indication that request_timeout_s was even the relevant knob. The
+# hint is folded directly into GatewayError.message (see llm/errors.py), so
+# it's checked here via exc_info.value.message/str(exc) — the same thing
+# every call site (chat.py, subagent_tool.py, cli.py, ...) already displays.
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_read_timeout_on_local_api_gateway_hints_at_request_timeout_s():
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        side_effect=httpx.ReadTimeout("the read operation timed out")
+    )
+
+    settings = _settings(
+        max_retries=1,
+        local_api_gateways=["http://fake-gateway.test/v1"],
+    )
+    assert settings.is_local_api() is True
+
+    async with GatewayClient(settings) as client:
+        with pytest.raises(GatewayError) as exc_info:
+            async for _ in client.chat_stream([ChatMessage(role="user", content="hi")]):
+                pass
+
+    message = exc_info.value.message
+    assert "local API gateway" in message
+    assert "request_timeout_s=600" in message  # the local-api floor, not the raw 120s default
+    assert "PCLI_REQUEST_TIMEOUT_S" in message
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_read_timeout_on_hosted_gateway_hints_at_request_timeout_s_without_local_api_framing():
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        side_effect=httpx.ReadTimeout("the read operation timed out")
+    )
+
+    async with GatewayClient(_settings(max_retries=1)) as client:
+        with pytest.raises(GatewayError) as exc_info:
+            async for _ in client.chat_stream([ChatMessage(role="user", content="hi")]):
+                pass
+
+    message = exc_info.value.message
+    assert "request_timeout_s=120" in message
+    assert "Local models" not in message
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_connect_timeout_hints_at_checking_the_gateway_is_running():
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        side_effect=httpx.ConnectTimeout("connect timed out")
+    )
+
+    async with GatewayClient(_settings(max_retries=1)) as client:
+        with pytest.raises(GatewayError) as exc_info:
+            async for _ in client.chat_stream([ChatMessage(role="user", content="hi")]):
+                pass
+
+    message = exc_info.value.message
+    assert "Couldn't connect" in message
+    assert "http://fake-gateway.test/v1" in message
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_connect_error_hints_at_checking_the_gateway_is_running():
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        side_effect=httpx.ConnectError("connection refused")
+    )
+
+    async with GatewayClient(_settings(max_retries=1)) as client:
+        with pytest.raises(GatewayError) as exc_info:
+            async for _ in client.chat_stream([ChatMessage(role="user", content="hi")]):
+                pass
+
+    assert "Couldn't reach the gateway" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_401_response_hints_at_the_configured_api_key():
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=httpx.Response(401, content=b'{"error": "unauthorized"}')
+    )
+
+    async with GatewayClient(_settings()) as client:
+        with pytest.raises(GatewayError) as exc_info:
+            async for _ in client.chat_stream([ChatMessage(role="user", content="hi")]):
+                pass
+
+    assert "gateway_api_key" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_401_response_without_a_configured_key_hints_at_setting_one():
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=httpx.Response(401, content=b'{"error": "unauthorized"}')
+    )
+
+    async with GatewayClient(_settings(gateway_api_key="")) as client:
+        with pytest.raises(GatewayError) as exc_info:
+            async for _ in client.chat_stream([ChatMessage(role="user", content="hi")]):
+                pass
+
+    assert "No gateway_api_key is configured" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_429_response_hints_at_max_retries():
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=httpx.Response(429, content=b"rate limited")
+    )
+
+    async with GatewayClient(_settings(max_retries=1)) as client:
+        with pytest.raises(GatewayError) as exc_info:
+            async for _ in client.chat_stream([ChatMessage(role="user", content="hi")]):
+                pass
+
+    assert "max_retries" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_500_response_hints_that_it_is_usually_transient():
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=httpx.Response(500, content=b"internal error")
+    )
+
+    async with GatewayClient(_settings(max_retries=1)) as client:
+        with pytest.raises(GatewayError) as exc_info:
+            async for _ in client.chat_stream([ChatMessage(role="user", content="hi")]):
+                pass
+
+    assert "transient" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_client_uses_the_local_api_timeout_floor_not_the_raw_setting():
+    settings = _settings(
+        request_timeout_s=120.0,
+        local_api_gateways=["http://fake-gateway.test/v1"],
+    )
+    async with GatewayClient(settings) as client:
+        assert client._client.timeout.read == 600.0

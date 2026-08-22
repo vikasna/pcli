@@ -180,3 +180,37 @@ async def test_compact_slash_command_triggers_manual_compaction(tmp_path: Path):
         assert any(
             inv.tool_name == "_compaction" for inv in session.tool_invocations
         ), "manual /compact should have run the same compaction path"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_run_compaction_gateway_error_is_shown_not_crashed(tmp_path: Path):
+    """maybe_compact's summarization call failing (e.g. a timeout) was
+    previously uncaught here entirely - it would crash straight out of
+    _run_compaction with nothing shown to the user. The turn that triggered
+    auto-compaction has already completed and saved successfully by this
+    point, so this must be a visible notice, not a silent worker crash."""
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        side_effect=httpx.ReadTimeout("the read operation timed out")
+    )
+
+    screen, _store, session = _make_screen(tmp_path, keep_recent_turns=1)
+    screen._settings.max_retries = 1  # fail fast, no retry backoff in the test
+
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert screen._client is not None
+
+        messages_before = list(session.messages)
+
+        await screen._run_compaction("manual")
+        await pilot.pause()
+
+        message_view = screen.query_one(MessageView)
+        assert message_view._current_role == "system"
+        assert "Compaction failed" in message_view._current_text
+        assert "request_timeout_s" in message_view._current_text
+
+        # Nothing was mutated - the session's messages are untouched.
+        assert session.messages == messages_before

@@ -40,7 +40,7 @@ to `table_key` when reading back, so both shapes round-trip.
 | `gateway_api_key` | `PCLI_GATEWAY_API_KEY` | `--api-key` | `gateway_api_key` | `""` | API key sent to the gateway. Optional — local unauthenticated servers (LM Studio, Ollama) don't need one. |
 | `gateway_auth_header` | `PCLI_GATEWAY_AUTH_HEADER` | *(none)* | `gateway_auth_header` | `"Authorization"` | Header used to send the key. If `"Authorization"`, the value sent is `Bearer <key>`; otherwise the raw key is sent under that header name. |
 | `default_model` | `PCLI_MODEL` | `--model` | `default_model` | `""` | Model id passed as `model` in chat-completions requests. |
-| `request_timeout_s` | `PCLI_REQUEST_TIMEOUT_S` | *(none)* | `request_timeout_s` | `120.0` | HTTP client timeout (`httpx.AsyncClient(timeout=...)`) for gateway requests. |
+| `request_timeout_s` | `PCLI_REQUEST_TIMEOUT_S` | *(none)* | `request_timeout_s` | `120.0` | HTTP client timeout (`httpx.AsyncClient(timeout=...)`) for gateway requests. `GatewayClient` actually applies `Settings.effective_request_timeout_s`, not this raw field — see the local-api floor below. |
 | `max_retries` | `PCLI_MAX_RETRIES` | *(none)* | `max_retries` | `4` | Max attempts for `GatewayClient.chat_stream` on retryable failures (network errors, HTTP 429/5xx) — retried only if no stream data has been yielded yet. |
 | `max_tool_iterations` | `PCLI_MAX_TOOL_ITERATIONS` | *(none)* | `max_tool_iterations` | `25` | Cap on tool-call round-trips within a single `AgentLoop.run_turn`; beyond this the loop appends a "reached the max tool-call iteration limit" note and stops. |
 | `sandbox_backend` | `PCLI_SANDBOX_BACKEND` | *(none)* | `sandbox_backend` | `"auto"` | `auto` \| `docker` \| `subprocess` \| `none` (see note below). |
@@ -160,6 +160,21 @@ verified in-code rather than toggled via `Settings` fields:
    [`sessions-and-cost.md`](sessions-and-cost.md#cost-tracking). Token/context
    tracking is unaffected; only the `$` figure is zeroed.
 
+A fourth effect applies below the `ChatScreen` layer, in `GatewayClient`
+itself, so it isn't limited to the TUI: **the effective request timeout is
+floored to 600 seconds (10 minutes) for a local-api gateway.**
+`Settings.effective_request_timeout_s` — what `GatewayClient` actually passes
+to `httpx.AsyncClient(timeout=...)`, instead of the raw `request_timeout_s`
+field — returns `max(request_timeout_s, 600.0)` when `is_local_api()` is
+true, so an explicit `request_timeout_s` higher than 600 still wins, and it's
+never *lowered* on your behalf. Non-local-api gateways are unaffected:
+`request_timeout_s` (default 120s) is used as-is. This exists because local
+model inference (LM Studio, Ollama, ...) is routinely far slower than a
+hosted API — no batching, often CPU-bound — and 120s is easily exceeded by
+perfectly ordinary local generation; it was added after a real session where
+a local model streaming at ~5 tokens/sec tripped the old 120s default
+mid-reply and pcli surfaced nothing more useful than a bare "Gateway error."
+
 A subagent spawned via `spawn_subagent` keeps its own separate iteration cap
 (`_DEFAULT_MAX_ITERATIONS = 15`, `src/pcli/tools/builtin/subagent_tool.py`)
 regardless of local-api mode — nesting depth/runaway recursion is treated as
@@ -173,6 +188,30 @@ The motivation is local/free OpenAI-compatible servers (LM Studio, Ollama,
 ...): there's no real turn-count or cost concern against them, so the normal
 safety-oriented limits (sized for paid, rate-limited gateways) are just
 friction.
+
+## Gateway error messages
+
+`GatewayError` (`src/pcli/llm/errors.py`) folds a concrete, actionable hint
+into its `.message` whenever the failure maps to something fixable via
+configuration, so the hint shows up everywhere the error is surfaced (TUI
+turn errors, `/models`, `/compact`, `/toolbox discover`, subagent failures,
+and the `pcli toolbox discover` CLI command — see
+[`tui-guide.md`](tui-guide.md) for how it's displayed). The most illustrative
+case is the one that motivated the timeout floor above: a read timeout
+mid-request now names the `effective_request_timeout_s` currently in effect,
+suggests a concrete larger value, and says to set it via
+`PCLI_REQUEST_TIMEOUT_S` or `config.toml` — calling out that it's the "local
+API gateway" and that local models are often much slower than hosted ones,
+when applicable. The same pattern (name the setting, suggest a value, say how
+to set it) covers connect timeouts, connection errors, HTTP 401/403 (bad or
+missing `gateway_api_key`), HTTP 429 (points at `max_retries`), and HTTP 5xx.
+The "reached the max tool-call iteration limit" / "reached the guardrail
+limit of N tool calls" turn-ending notices (`agent/loop.py`) got the same
+treatment: they now name `max_tool_iterations`/`PCLI_MAX_TOOL_ITERATIONS` and
+`guardrails.toml`'s `limits.max_tool_calls_per_turn` respectively, and mention
+that `--local-api` removes both caps for that gateway. Likewise, an invalid
+`sandbox_backend` value now lists the valid options (`auto`, `docker`,
+`subprocess`, `none`) instead of just naming the bad one.
 
 ## Gateway protocol expectations
 

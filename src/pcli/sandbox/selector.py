@@ -42,7 +42,11 @@ async def select_sandbox(
     if backend_override == "none":
         return NullSandbox()
     if backend_override not in ("auto", ""):
-        raise ValueError(f"Unknown sandbox_backend '{backend_override}'")
+        raise ValueError(
+            f"Unknown sandbox_backend '{backend_override}' — valid values are 'auto', 'docker', "
+            "'subprocess', or 'none'. Set sandbox_backend in config.toml or via "
+            "PCLI_SANDBOX_BACKEND."
+        )
 
     if await probe_docker_available():
         return DockerSandbox()

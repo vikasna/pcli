@@ -98,6 +98,30 @@ import modal (`id="import-path-input"`,
 rather than a message box, a multi-line clipboard is truncated to its first
 line instead, matching Textual's own `Input._on_paste` behavior.
 
+## Gateway errors
+
+When a turn fails against the gateway (`GatewayError`), pcli shows a system
+message in the transcript — `Gateway error: <message>` — and logs a full
+traceback to `pcli.log` regardless of `--verbose` (see
+[`configuration.md`](configuration.md#cli-flags)). `<message>` isn't just the
+raw exception text: it now folds in a concrete, actionable hint pointing at
+the specific setting to change, wherever the failure maps to something
+fixable. The case that prompted this: a local model streaming a reply slowly
+enough to exceed pcli's HTTP read timeout used to show a bare "Gateway
+error" with nothing else to go on; now it names the effective timeout
+currently in effect, suggests a larger value, and says how to set it
+(`PCLI_REQUEST_TIMEOUT_S` or `config.toml`) — see
+[`configuration.md`](configuration.md#local-api-mode) for the related 600s
+timeout floor pcli now applies automatically to `--local-api` gateways. The
+same "name the setting, suggest a value" pattern
+covers a bad/missing gateway API key (HTTP 401/403), rate limiting (HTTP
+429, points at `max_retries`), and other gateway-side failures, and applies
+everywhere a gateway error can surface — `/models`, `/compact`, `/toolbox
+discover` (below), subagent failures, and the `pcli toolbox discover` CLI
+command — not just a plain chat turn. `/compact` and `/toolbox discover`
+also used to crash uncaught on a gateway failure; both now report the error
+as a normal system message instead.
+
 ## Slash commands
 
 - **`/sessions`** — opens the session list screen (`SessionListScreen`):
