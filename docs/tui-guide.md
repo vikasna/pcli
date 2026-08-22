@@ -9,7 +9,12 @@ Top to bottom (`ChatScreen.compose`):
 
 - **Status pane** (`StatusPane`) — todo list only, ~3 lines, scrollable.
   Collapses to zero height when there's nothing to show.
-- **Message view** (`MessageView`) — scrollable conversation history.
+- **Message view** (`MessageView`) — scrollable conversation history. Auto-
+  scrolls to the bottom as new content streams in, but only while you're
+  already there — scroll up at any point (e.g. to read an expanded tool
+  result or "Thinking" panel) and further streamed content stops dragging you
+  back down; scroll back to the bottom yourself and auto-scroll picks up
+  again automatically.
 - **Status bar** (`StatusBar`) — cost/context/tokens/sandbox/spinner, plus a
   second line with subagent progress while one is running.
 - **Input box** — where you type.

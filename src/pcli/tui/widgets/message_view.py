@@ -55,14 +55,27 @@ class MessageView(VerticalScroll):
         self._last_refresh = 0.0
         self._refresh_pending = False
 
+    def _scroll_end_if_at_bottom(self, was_at_bottom: bool) -> None:
+        """Auto-scroll is "stick to bottom", not "force to bottom": if the
+        user had already scrolled up (e.g. to read an expanded "Thinking" or
+        tool-result panel while a turn keeps streaming below it), further
+        content must not drag them back down and fight that scroll. Only
+        resumes once they scroll back to the bottom themselves. Callers must
+        capture is_vertical_scroll_end *before* mounting/updating content —
+        doing it after would always read as "not at bottom" once the
+        content just grew."""
+        if was_at_bottom:
+            self.scroll_end(animate=False)
+
     def add_message(self, role: str, text: str = "") -> Static:
+        was_at_bottom = self.is_vertical_scroll_end
         widget = Static(classes=f"message message-{role}")
         self.mount(widget)
         self._current = widget
         self._current_role = role
         self._current_text = text
         widget.update(self._render_message(role, text))
-        self.scroll_end(animate=False)
+        self._scroll_end_if_at_bottom(was_at_bottom)
         self._last_refresh = time.monotonic()
         return widget
 
@@ -82,8 +95,9 @@ class MessageView(VerticalScroll):
         self._last_refresh = time.monotonic()
         if self._current is None:
             return
+        was_at_bottom = self.is_vertical_scroll_end
         self._current.update(self._render_message(self._current_role, self._current_text))
-        self.scroll_end(animate=False)
+        self._scroll_end_if_at_bottom(was_at_bottom)
 
     def add_tool_result(self, tool_name: str, output: str, *, is_error: bool) -> None:
         """Tool results render as a collapsed-by-default Collapsible (full
@@ -92,13 +106,14 @@ class MessageView(VerticalScroll):
         already fully available in memory at this point. Formatting is
         handled by _format_tool_output; this never touches self._current
         (no ongoing streaming state to track for a tool result)."""
+        was_at_bottom = self.is_vertical_scroll_end
         status_icon = "✗" if is_error else "✓"
         title = f"{status_icon} {tool_name} — {len(output):,} char(s)"
         body = Static(_format_tool_output(output), classes="tool-result-body")
         classes = "tool-result-collapsible" + (" error" if is_error else "")
         collapsible = Collapsible(body, title=title, collapsed=True, classes=classes)
         self.mount(collapsible)
-        self.scroll_end(animate=False)
+        self._scroll_end_if_at_bottom(was_at_bottom)
 
     def add_reasoning(self, text: str) -> None:
         """A reasoning/"thinking" model's chain-of-thought (delta.reasoning_content
@@ -109,11 +124,12 @@ class MessageView(VerticalScroll):
         and the "busy" spinner already covers the in-progress case."""
         if not text.strip():
             return
+        was_at_bottom = self.is_vertical_scroll_end
         title = f"\U0001f9e0 Thinking — {len(text):,} char(s)"
         body = Static(Text(text, no_wrap=False, overflow="fold"), classes="tool-result-body")
         collapsible = Collapsible(body, title=title, collapsed=True, classes="reasoning-collapsible")
         self.mount(collapsible)
-        self.scroll_end(animate=False)
+        self._scroll_end_if_at_bottom(was_at_bottom)
 
     def finish_streaming(self) -> None:
         self._flush()  # ensure the last throttled fragment(s) are actually shown
