@@ -40,7 +40,7 @@ to `table_key` when reading back, so both shapes round-trip.
 | `gateway_api_key` | `PCLI_GATEWAY_API_KEY` | `--api-key` | `gateway_api_key` | `""` | API key sent to the gateway. Optional — local unauthenticated servers (LM Studio, Ollama) don't need one. |
 | `gateway_auth_header` | `PCLI_GATEWAY_AUTH_HEADER` | *(none)* | `gateway_auth_header` | `"Authorization"` | Header used to send the key. If `"Authorization"`, the value sent is `Bearer <key>`; otherwise the raw key is sent under that header name. |
 | `default_model` | `PCLI_MODEL` | `--model` | `default_model` | `""` | Model id passed as `model` in chat-completions requests. |
-| `request_timeout_s` | `PCLI_REQUEST_TIMEOUT_S` | *(none)* | `request_timeout_s` | `120.0` | HTTP client timeout (`httpx.AsyncClient(timeout=...)`) for gateway requests. `GatewayClient` actually applies `Settings.effective_request_timeout_s`, not this raw field — see the local-api floor below. |
+| `request_timeout_s` | `PCLI_REQUEST_TIMEOUT_S` | *(none)* | `request_timeout_s` | `120.0` | HTTP timeout applied per-request (chat completions, `/models`, health check) via `GatewayClient`'s `_effective_timeout()` helper, which reads `Settings.effective_request_timeout_s` fresh on every call rather than a value baked into the client at construction — so a change takes effect on the very next gateway request, no restart needed. Changeable live in the TUI with [`/timeout`](tui-guide.md#slash-commands), which persists it to `config.toml` the same way `/models <model-id>` persists `default_model`. See the local-api floor below. |
 | `max_retries` | `PCLI_MAX_RETRIES` | *(none)* | `max_retries` | `4` | Max attempts for `GatewayClient.chat_stream` on retryable failures (network errors, HTTP 429/5xx) — retried only if no stream data has been yielded yet. |
 | `max_tool_iterations` | `PCLI_MAX_TOOL_ITERATIONS` | *(none)* | `max_tool_iterations` | `25` | Cap on tool-call round-trips within a single `AgentLoop.run_turn`; beyond this the loop appends a "reached the max tool-call iteration limit" note and stops. |
 | `sandbox_backend` | `PCLI_SANDBOX_BACKEND` | *(none)* | `sandbox_backend` | `"auto"` | `auto` \| `docker` \| `subprocess` \| `none` (see note below). |
@@ -163,8 +163,8 @@ verified in-code rather than toggled via `Settings` fields:
 A fourth effect applies below the `ChatScreen` layer, in `GatewayClient`
 itself, so it isn't limited to the TUI: **the effective request timeout is
 floored to 600 seconds (10 minutes) for a local-api gateway.**
-`Settings.effective_request_timeout_s` — what `GatewayClient` actually passes
-to `httpx.AsyncClient(timeout=...)`, instead of the raw `request_timeout_s`
+`Settings.effective_request_timeout_s` — what `GatewayClient` passes as
+`timeout=` on each individual request, instead of the raw `request_timeout_s`
 field — returns `max(request_timeout_s, 600.0)` when `is_local_api()` is
 true, so an explicit `request_timeout_s` higher than 600 still wins, and it's
 never *lowered* on your behalf. Non-local-api gateways are unaffected:
@@ -174,6 +174,11 @@ hosted API — no batching, often CPU-bound — and 120s is easily exceeded by
 perfectly ordinary local generation; it was added after a real session where
 a local model streaming at ~5 tokens/sec tripped the old 120s default
 mid-reply and pcli surfaced nothing more useful than a bare "Gateway error."
+Because `_effective_timeout()` is re-read on every request rather than fixed
+at client construction, this floor (and any manual change to
+`request_timeout_s`, e.g. via [`/timeout`](tui-guide.md#slash-commands))
+applies starting with the very next gateway request — nothing about it
+requires restarting pcli.
 
 A subagent spawned via `spawn_subagent` keeps its own separate iteration cap
 (`_DEFAULT_MAX_ITERATIONS = 15`, `src/pcli/tools/builtin/subagent_tool.py`)

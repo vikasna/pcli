@@ -347,3 +347,77 @@ async def test_client_uses_the_local_api_timeout_floor_not_the_raw_setting():
     )
     async with GatewayClient(settings) as client:
         assert client._client.timeout.read == 600.0
+
+
+# --- Live/dynamic timeout ---
+#
+# The timeout used to be baked into the httpx.AsyncClient once at
+# construction, so changing Settings.request_timeout_s later (e.g. via a
+# /timeout command) had no effect until GatewayClient was rebuilt. Every
+# request now passes timeout=self._effective_timeout() explicitly (httpx
+# supports a per-request override), reading Settings live each time.
+
+
+@pytest.mark.asyncio
+async def test_effective_timeout_reads_settings_live_not_a_snapshot():
+    settings = _settings(request_timeout_s=42.0)
+    async with GatewayClient(settings) as client:
+        assert client._effective_timeout() == 42.0
+
+        settings.request_timeout_s = 999.0
+        assert client._effective_timeout() == 999.0
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_chat_stream_passes_the_live_effective_timeout_per_request():
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200, content=_sse({"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]})
+        )
+    )
+
+    settings = _settings(request_timeout_s=42.0)
+    captured_timeouts: list[object] = []
+
+    async with GatewayClient(settings) as client:
+        original_stream = client._client.stream
+
+        def _spy_stream(*args, **kwargs):
+            captured_timeouts.append(kwargs.get("timeout"))
+            return original_stream(*args, **kwargs)
+
+        client._client.stream = _spy_stream
+
+        await client.collect([ChatMessage(role="user", content="hi")])
+        assert captured_timeouts == [42.0]
+
+        # Changed after the first call, with no client rebuild - the very
+        # next request must pick it up.
+        settings.request_timeout_s = 900.0
+        await client.collect([ChatMessage(role="user", content="hi again")])
+        assert captured_timeouts == [42.0, 900.0]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_list_models_passes_the_live_effective_timeout():
+    route = respx.get("http://fake-gateway.test/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "a"}]})
+    )
+
+    settings = _settings(request_timeout_s=77.0)
+    async with GatewayClient(settings) as client:
+        original_get = client._client.get
+        captured_timeouts: list[object] = []
+
+        def _spy_get(*args, **kwargs):
+            captured_timeouts.append(kwargs.get("timeout"))
+            return original_get(*args, **kwargs)
+
+        client._client.get = _spy_get
+
+        await client.list_models()
+
+    assert route.called
+    assert captured_timeouts == [77.0]

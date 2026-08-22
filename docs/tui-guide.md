@@ -115,7 +115,9 @@ fixable. The case that prompted this: a local model streaming a reply slowly
 enough to exceed pcli's HTTP read timeout used to show a bare "Gateway
 error" with nothing else to go on; now it names the effective timeout
 currently in effect, suggests a larger value, and says how to set it
-(`PCLI_REQUEST_TIMEOUT_S` or `config.toml`) — see
+(`PCLI_REQUEST_TIMEOUT_S` or `config.toml`) — or, quicker than hand-editing
+`config.toml`, [`/timeout <seconds>`](#slash-commands) sets it live from
+right inside the TUI, no restart needed — see
 [`configuration.md`](configuration.md#local-api-mode) for the related 600s
 timeout floor pcli now applies automatically to `--local-api` gateways. The
 same "name the setting, suggest a value" pattern
@@ -156,6 +158,16 @@ as a normal system message instead.
   again once it's done." instead — just try again once it finishes. This
   doesn't affect auto-compaction (below), which always runs sequentially
   after a turn ends anyway.
+- **`/timeout [seconds]`** — with no argument, reports the current
+  `request_timeout_s` (see [`configuration.md`](configuration.md)), plus an
+  "(effective: Ns — floored for local-api)" note when the
+  [local-api floor](configuration.md#local-api-mode) is currently raising the
+  effective timeout above the raw setting. With an argument
+  (`/timeout 900`), sets `request_timeout_s` immediately — `GatewayClient`
+  reads it fresh on every request, so the new value applies starting with the
+  very next gateway call, no restart needed — and persists it to
+  `config.toml`, the same way `/models <model-id>` persists `default_model`.
+  Rejects non-numeric input and values that aren't greater than 0.
 
 Any other `/word` prints "Unknown command: /word".
 

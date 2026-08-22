@@ -36,6 +36,14 @@ class GatewayClient:
             headers=headers,
             timeout=settings.effective_request_timeout_s,
         )
+        # The constructor-level timeout above is only a fallback baseline —
+        # every actual request passes timeout=self._effective_timeout()
+        # explicitly (httpx supports a per-request override), so a setting
+        # change (e.g. via the /timeout command) takes effect on the very
+        # next request instead of requiring GatewayClient to be rebuilt.
+
+    def _effective_timeout(self) -> float:
+        return self._settings.effective_request_timeout_s
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -143,7 +151,7 @@ class GatewayClient:
             started = False
             try:
                 async with self._client.stream(
-                    "POST", "/chat/completions", json=payload
+                    "POST", "/chat/completions", json=payload, timeout=self._effective_timeout()
                 ) as response:
                     if response.status_code >= 400:
                         body = await response.aread()
@@ -210,14 +218,14 @@ class GatewayClient:
     )
     async def health_check(self) -> bool:
         """Best-effort reachability probe against the gateway's models endpoint."""
-        response = await self._client.get("/models")
+        response = await self._client.get("/models", timeout=self._effective_timeout())
         return response.status_code < 500
 
     async def list_models(self) -> list[str]:
         """Fetches available model IDs from the gateway's OpenAI-compatible
         `GET /models` endpoint (`{"data": [{"id": "..."}, ...]}`)."""
         try:
-            response = await self._client.get("/models")
+            response = await self._client.get("/models", timeout=self._effective_timeout())
         except httpx.HTTPError as exc:
             raise GatewayError.from_network_error(str(exc), hint=self._network_error_hint(exc)) from exc
         if response.status_code >= 400:

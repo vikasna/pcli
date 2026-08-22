@@ -122,7 +122,7 @@ class ChatScreen(Screen):
             yield StatusBar(id="status-bar")
             yield PasteInput(
                 placeholder="Ask pcli... (/sessions, /export, /toolbox, /models, /compact, "
-                "!shell, !!quiet-shell, !!!interactive)",
+                "/timeout, !shell, !!quiet-shell, !!!interactive)",
                 id="input-box",
                 expand_full_paste=True,
             )
@@ -366,8 +366,41 @@ class ChatScreen(Screen):
             self._handle_models_command(rest or None)
         elif command == "compact":
             self._manual_compact()
+        elif command == "timeout":
+            self._handle_timeout_command(rest or None)
         else:
             message_view.add_message("system", f"Unknown command: /{command}")
+
+    def _handle_timeout_command(self, arg: str | None) -> None:
+        """`/timeout [seconds]` — GatewayClient reads request_timeout_s fresh
+        on every request (see llm/client.py's per-request timeout override),
+        so changing it here takes effect on the very next gateway call, no
+        restart needed. Persisted the same way /models persists a
+        selection, so it's remembered next time too."""
+        message_view = self.query_one(MessageView)
+        if not arg:
+            current = self._settings.request_timeout_s
+            effective = self._settings.effective_request_timeout_s
+            note = f" (effective: {effective:g}s — floored for local-api)" if effective != current else ""
+            message_view.add_message(
+                "system", f"request_timeout_s is currently {current:g}s{note}. Usage: /timeout <seconds>"
+            )
+            return
+
+        try:
+            seconds = float(arg)
+        except ValueError:
+            message_view.add_message("system", f"'{arg}' isn't a valid number of seconds.")
+            return
+        if seconds <= 0:
+            message_view.add_message("system", "request_timeout_s must be greater than 0.")
+            return
+
+        self._settings.request_timeout_s = seconds
+        update_config_file(request_timeout_s=seconds)
+        message_view.add_message(
+            "system", f"request_timeout_s set to {seconds:g}s — takes effect on the next gateway request."
+        )
 
     def _handle_toolbox_command(self, rest: str) -> None:
         message_view = self.query_one(MessageView)
