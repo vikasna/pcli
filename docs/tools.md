@@ -35,6 +35,24 @@ Overwrites (or creates) a text file, creating parent directories as needed.
   disk."
 - **Guardrail:** `path` checked against the fs allow/deny lists.
 
+## edit_file
+
+Replaces an exact, unique occurrence of `old_string` with `new_string` in an
+existing file — for a small change, without resending the whole file the way
+`write_file` requires. `old_string` must match the file's current content
+exactly (including whitespace) and occur exactly once.
+
+- **Parameters:** `path` (string, required), `old_string` (string, required),
+  `new_string` (string, required).
+- **Permission:** required. `risk_description`: "Edits a file on disk."
+- **Guardrail:** `path` checked against the fs allow/deny lists, same as
+  `write_file`.
+- **Errors cleanly** (not a crash) in three cases
+  (`src/pcli/tools/builtin/fs_tools.py:79`): the file doesn't exist (message
+  points at `write_file` to create it instead), `old_string` isn't found, or
+  `old_string` matches more than once (asks for more surrounding context to
+  disambiguate).
+
 ## list_dir
 
 Lists a directory's immediate entries as `d  name` / `f  name` lines, sorted
@@ -82,7 +100,79 @@ nonzero or the command timed out.
   optional, default 30).
 - **Permission:** required. `needs_sandbox=True`. `risk_description`:
   "Executes an arbitrary shell command."
-- **Guardrail:** `command` checked against the shell denylist.
+- **Guardrail:** `command` checked against the shell denylist. `timeout_s` is
+  also clamped to the guardrail ceiling `limits.max_shell_timeout_s` (default
+  300s, see [`sandbox-and-permissions.md`](sandbox-and-permissions.md#guardrails));
+  if the requested value exceeds it, the timeout is silently clamped and the
+  tool output notes the clamp and points at `run_shell_background` instead
+  (`src/pcli/tools/builtin/shell_tool.py:20`).
+
+## run_shell_background, read_background_output, stop_background_process
+
+Background execution for commands with no natural end (dev servers,
+watchers) or that may run longer than a few minutes — instead of blocking
+the turn on a very large `run_shell` `timeout_s`. All three are only
+registered when the active sandbox backend is `subprocess`
+(`RestrictedSubprocessSandbox`, see
+[`sandbox-and-permissions.md`](sandbox-and-permissions.md#sandbox-backends));
+calling any of them with Docker or `none` active returns a clean error
+naming the active backend, not a crash
+(`src/pcli/tools/builtin/shell_tool.py:14`).
+
+**`run_shell_background`** starts a command and returns immediately with a
+`job_id` instead of waiting for it to finish.
+
+- **Parameters:** `command` (string, required).
+- **Permission:** required. `needs_sandbox=True`. `risk_description`:
+  "Starts a shell command that keeps running in the background."
+- **Guardrail:** `command` checked against the shell denylist, same as
+  `run_shell`. Concurrent background jobs are capped at guardrail
+  `limits.max_background_jobs` (default 5); starting one more than that
+  raises rather than starting it.
+
+**`read_background_output`** reports whether a job is still running or has
+exited (with exit code), and returns only the *new* stdout/stderr produced
+since the last read of that job — offset-based, not a fixed tail, so nothing
+in the middle is silently dropped between polls
+(`src/pcli/sandbox/subprocess_backend.py:276`). If more than `max_chars` is
+waiting, the result says so and the caller should call again rather than
+requesting a larger `max_chars`.
+
+- **Parameters:** `job_id` (string, required), `max_chars` (integer,
+  optional, default 4000), `reset` (boolean, optional, default `false` — when
+  `true`, re-reads everything from the start instead of continuing from the
+  last offset).
+- **Permission:** not required (`needs_permission=False`) — read-only.
+  `needs_sandbox=True`.
+
+**`stop_background_process`** kills a background job.
+
+- **Parameters:** `job_id` (string, required).
+- **Permission:** required. `needs_sandbox=True`. `risk_description`:
+  "Kills a running background process."
+
+## register_toolbox_tool
+
+Lets the model itself trigger toolbox discovery/registration mid-conversation
+— previously this was human-only, via `/toolbox discover` in the TUI or
+`pcli toolbox discover` on the CLI (see
+[`toolbox-plugins.md`](toolbox-plugins.md)). Intended use: the model writes a
+small reusable script for something it expects to need repeatedly, then
+registers it as a real callable tool instead of re-deriving the same shell
+command every time. See
+[`toolbox-plugins.md#self-authored-scripts`](toolbox-plugins.md#self-authored-scripts)
+for the underlying `path` mechanics.
+
+- **Parameters:** `name` (string, required — short identifier used as the
+  new tool group's prefix), `path` (string, optional — path to a
+  self-authored script; omit to look `name` up on `PATH` instead).
+- **Permission:** required **unconditionally** — `needs_permission=True`
+  with no exceptions, unlike other tools where a `risk` level can make a call
+  default-allow. `risk_description`: "Registers a new tool the model can call
+  in later turns — a bigger action than running one command, since it grants
+  standing execution rights." This is also called out explicitly in the
+  tool's description string and in the system prompt
+  (`src/pcli/tools/builtin/toolbox_register_tool.py:35`).
 
 ## search_python
 

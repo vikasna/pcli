@@ -18,6 +18,7 @@ from pcli.tools.artifacts import ArtifactStore
 
 if TYPE_CHECKING:
     from pcli.tools.registry import ToolRegistry
+    from pcli.tools.toolbox.manager import ToolboxManager
 
 
 @dataclass
@@ -47,6 +48,9 @@ class ToolContext:
     activity: ActivityTracker | None = None
     """Ephemeral live-progress reporting for the TUI's status pane (namely
     spawn_subagent reporting its own tool-call progress). Not persisted."""
+    toolbox_manager: ToolboxManager | None = None
+    """Lets register_toolbox_tool trigger toolbox discovery directly,
+    mirroring what the /toolbox discover slash command does."""
 
 
 @dataclass

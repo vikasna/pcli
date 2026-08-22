@@ -1,6 +1,9 @@
+import asyncio
 import sys
+import time
 from pathlib import Path
 
+import psutil
 import pytest
 
 from pcli.sandbox.base import ExecRequest, SandboxSecurityError
@@ -88,6 +91,41 @@ async def test_timeout_kills_process(tmp_path: Path):
         ExecRequest(command=[sys.executable, "-c", script], cwd=tmp_path, timeout_s=1)
     )
     assert result.timed_out is True
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_awaiting_task_kills_the_subprocess(tmp_path: Path):
+    """Regression test: execute()'s try/except used to only catch
+    asyncio.TimeoutError (its own internal wait_for timeout) — if the
+    *caller* cancels the task instead (e.g. the TUI's Esc+Esc), the
+    subprocess was silently orphaned since cancelling the Python await does
+    nothing to the OS process by itself."""
+    sandbox = RestrictedSubprocessSandbox(allowed_roots=[tmp_path])
+    pid_file = tmp_path / "pid.txt"
+    script = (
+        "import os, pathlib, time; "
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid())); "
+        "time.sleep(30)"
+    )
+    task = asyncio.ensure_future(
+        sandbox.execute(ExecRequest(command=[sys.executable, "-c", script], cwd=tmp_path, timeout_s=30))
+    )
+
+    deadline = time.monotonic() + 10
+    while not pid_file.exists() and time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+    assert pid_file.exists(), "subprocess never reported its pid"
+    pid = int(pid_file.read_text())
+    assert psutil.pid_exists(pid)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    deadline = time.monotonic() + 5
+    while psutil.pid_exists(pid) and time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+    assert not psutil.pid_exists(pid), "cancelling the task must kill the subprocess"
 
 
 @pytest.mark.asyncio

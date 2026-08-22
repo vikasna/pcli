@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import time
 from pathlib import Path
 from typing import ClassVar
 
@@ -30,8 +31,9 @@ from pcli.llm.errors import GatewayError
 from pcli.llm.models import Usage
 from pcli.permissions.guardrails import GuardrailsConfig
 from pcli.permissions.manager import AskCallback, PermissionManager
-from pcli.sandbox.base import Sandbox
+from pcli.sandbox.base import Sandbox, SandboxSecurityError
 from pcli.sandbox.selector import select_sandbox
+from pcli.sandbox.subprocess_backend import RestrictedSubprocessSandbox
 from pcli.session.export import export_session
 from pcli.session.models import Message, Session, ToolInvocation
 from pcli.session.store import SessionStore
@@ -51,6 +53,10 @@ from pcli.tui.widgets.status_pane import StatusPane
 # match a paid pattern there (e.g. "llama-3*") and show a fake nonzero cost.
 _FREE_PRICING_TABLE = PricingTable(entries={}, default=ModelPricing())
 
+# How long a second Escape press has to land after the first to count as a
+# "confirm cancel" double-press (see ChatScreen.action_cancel_turn).
+_ESCAPE_DOUBLE_PRESS_WINDOW_S = 0.6
+
 logger = logging.getLogger(__name__)
 
 
@@ -63,7 +69,9 @@ class ChatScreen(Screen):
     # ctrl+c. A previous ("ctrl+c", "quit", "Quit") entry here never actually
     # fired (confirmed: Textual's system-level binding for the same key
     # always wins over a Screen-level one) and just misled anyone reading it.
-    BINDINGS: ClassVar[list[BindingType]] = []
+    BINDINGS: ClassVar[list[BindingType]] = [
+        ("escape", "cancel_turn", "Cancel turn (press twice)"),
+    ]
 
     def __init__(
         self,
@@ -98,6 +106,7 @@ class ChatScreen(Screen):
         # see _stream_response/on_input_submitted.
         self._turn_in_progress = False
         self._has_queued_followup = False
+        self._last_escape_at = 0.0
 
         if session is not None:
             self._session = session
@@ -247,11 +256,47 @@ class ChatScreen(Screen):
             session=self._session,
             artifact_store=self._artifact_store,
             activity=self._activity,
+            toolbox_manager=self._toolbox_manager,
         )
 
     async def on_unmount(self) -> None:
         if self._client is not None:
             await self._client.aclose()
+        if isinstance(self._sandbox, RestrictedSubprocessSandbox):
+            await self._sandbox.kill_all_background_jobs()
+
+    def action_cancel_turn(self) -> None:
+        """Esc+Esc: cancels the in-flight turn (the streaming reply and/or
+        whatever tool is currently executing as part of it). A no-op with no
+        turn running, so idly pressing Escape does nothing. Requires two
+        presses within _ESCAPE_DOUBLE_PRESS_WINDOW_S so a single reflexive
+        Escape (e.g. dismissing a thought, or a stray keypress) can't
+        accidentally kill real work — the first press just shows a hint."""
+        if not self._turn_in_progress:
+            return
+
+        now = time.monotonic()
+        if now - self._last_escape_at <= _ESCAPE_DOUBLE_PRESS_WINDOW_S:
+            self._last_escape_at = 0.0
+            message_view = self.query_one(MessageView)
+            # _stream_response's while-loop (see its docstring) is what
+            # cancel_group actually kills. If a follow-up was queued right
+            # before this, _has_queued_followup would stay stuck True with
+            # no live loop left to consult it, and a LATER, unrelated turn's
+            # loop-check would spuriously run an extra empty-input
+            # _run_one_turn() — clearing it here is required, not optional.
+            dropped_followup = self._has_queued_followup
+            self._has_queued_followup = False
+            self.workers.cancel_group(self, "agent-turn")
+            note = "Turn cancelled."
+            if dropped_followup:
+                note += " A queued follow-up message was not sent."
+            message_view.add_message("system", note)
+        else:
+            self._last_escape_at = now
+            self.query_one(MessageView).add_message(
+                "system", "Press Esc again to cancel the current turn."
+            )
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
@@ -408,7 +453,11 @@ class ChatScreen(Screen):
         arg = arg.strip()
 
         if sub == "discover" and arg:
-            self._toolbox_discover(arg)
+            # /toolbox discover <name> [path] - a second token registers a
+            # self-authored script directly, bypassing PATH lookup (same
+            # path= parameter register_toolbox_tool gives the LLM itself).
+            name, _, path = arg.partition(" ")
+            self._toolbox_discover(name, path.strip() or None)
         elif sub == "list":
             self._toolbox_list()
         elif sub == "remove" and arg:
@@ -416,11 +465,11 @@ class ChatScreen(Screen):
         else:
             message_view.add_message(
                 "system",
-                "Usage: /toolbox discover <name> | /toolbox list | /toolbox remove <name>",
+                "Usage: /toolbox discover <name> [path] | /toolbox list | /toolbox remove <name>",
             )
 
     @work(exclusive=True)
-    async def _toolbox_discover(self, name: str) -> None:
+    async def _toolbox_discover(self, name: str, path: str | None = None) -> None:
         message_view = self.query_one(MessageView)
         if self._toolbox_manager is None:
             message_view.add_message("system", "Toolbox isn't available (gateway/sandbox not set up).")
@@ -428,9 +477,9 @@ class ChatScreen(Screen):
         message_view.add_message("system", f"Discovering '{name}'...")
         try:
             summary = await self._toolbox_manager.discover(
-                name, gateway_client=self._client, model=self._settings.default_model or None
+                name, gateway_client=self._client, model=self._settings.default_model or None, path=path
             )
-        except (ToolboxDiscoveryError, GatewayError) as exc:
+        except (ToolboxDiscoveryError, GatewayError, SandboxSecurityError) as exc:
             # discover() calls the gateway to synthesize tool schemas when
             # there's no curated plugin (toolbox/manager.py) - that call can
             # raise GatewayError same as any other, and it previously wasn't

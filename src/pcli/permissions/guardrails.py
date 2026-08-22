@@ -39,6 +39,8 @@ deny_paths = ["~/.ssh", "~/.aws", "~/.config/pcli"]
 max_output_bytes = 2000000
 max_tool_calls_per_turn = 25
 max_tool_calls_per_minute = 60
+max_shell_timeout_s = 300
+max_background_jobs = 5
 
 [python]
 # Top-level modules the pydiscovery tools (inspect_python_module, call_python)
@@ -85,6 +87,13 @@ class GuardrailsConfig(BaseModel):
     max_output_bytes: int = 2_000_000
     max_tool_calls_per_turn: int = 25
     max_tool_calls_per_minute: int = 60
+    max_shell_timeout_s: int = 300
+    """Ceiling run_shell's (blocking) timeout_s is clamped to — commands
+    that need longer should use run_shell_background instead, which has no
+    such cap since it doesn't block the turn."""
+    max_background_jobs: int = 5
+    """Concurrent-running cap for run_shell_background; enforced by
+    RestrictedSubprocessSandbox.start_background."""
     python_module_denylist: list[str] = []
 
     @classmethod
@@ -105,6 +114,8 @@ class GuardrailsConfig(BaseModel):
             max_output_bytes=limits.get("max_output_bytes", 2_000_000),
             max_tool_calls_per_turn=limits.get("max_tool_calls_per_turn", 25),
             max_tool_calls_per_minute=limits.get("max_tool_calls_per_minute", 60),
+            max_shell_timeout_s=limits.get("max_shell_timeout_s", 300),
+            max_background_jobs=limits.get("max_background_jobs", 5),
             python_module_denylist=python.get("module_denylist", []),
         )
 

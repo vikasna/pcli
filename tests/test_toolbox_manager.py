@@ -207,7 +207,7 @@ async def test_make_synthesized_tool_spec_executes_through_sandbox(tmp_path):
         "parameters": {"type": "object", "properties": {"all": {"type": "boolean"}}},
         "risk": "mutate",
     }
-    tool_spec = make_synthesized_tool_spec("widget", "/usr/bin/widget", tool_data)
+    tool_spec = make_synthesized_tool_spec("widget", ["/usr/bin/widget"], tool_data)
     assert tool_spec.name == "widget_list"
     assert tool_spec.needs_permission is True
 

@@ -5,7 +5,7 @@ import pytest
 from pcli.permissions.guardrails import GuardrailsConfig
 from pcli.sandbox.base import ExecRequest, ExecResult, Sandbox, SandboxCapabilities
 from pcli.tools.base import ToolContext
-from pcli.tools.builtin.fs_tools import GLOB_SEARCH, LIST_DIR, READ_FILE, WRITE_FILE
+from pcli.tools.builtin.fs_tools import EDIT_FILE, GLOB_SEARCH, LIST_DIR, READ_FILE, WRITE_FILE
 from pcli.tools.builtin.grep_tool import GREP
 from pcli.tools.builtin.shell_tool import RUN_SHELL
 
@@ -54,6 +54,48 @@ async def test_read_file_not_found(tmp_path: Path):
     ctx = _ctx(tmp_path)
     result = await READ_FILE.handler({"path": "missing.txt"}, ctx)
     assert result.is_error is True
+
+
+@pytest.mark.asyncio
+async def test_edit_file_replaces_unique_match(tmp_path: Path):
+    (tmp_path / "note.txt").write_text("hello world\ngoodbye world\n")
+    ctx = _ctx(tmp_path)
+    result = await EDIT_FILE.handler(
+        {"path": "note.txt", "old_string": "hello world", "new_string": "hi world"}, ctx
+    )
+    assert result.is_error is False
+    assert (tmp_path / "note.txt").read_text() == "hi world\ngoodbye world\n"
+
+
+@pytest.mark.asyncio
+async def test_edit_file_missing_target_errors(tmp_path: Path):
+    ctx = _ctx(tmp_path)
+    result = await EDIT_FILE.handler(
+        {"path": "missing.txt", "old_string": "x", "new_string": "y"}, ctx
+    )
+    assert result.is_error is True
+    assert "write_file" in result.output
+
+
+@pytest.mark.asyncio
+async def test_edit_file_old_string_not_found_errors(tmp_path: Path):
+    (tmp_path / "note.txt").write_text("hello world\n")
+    ctx = _ctx(tmp_path)
+    result = await EDIT_FILE.handler(
+        {"path": "note.txt", "old_string": "not present", "new_string": "y"}, ctx
+    )
+    assert result.is_error is True
+    assert "not found" in result.output
+
+
+@pytest.mark.asyncio
+async def test_edit_file_ambiguous_match_errors_without_writing(tmp_path: Path):
+    (tmp_path / "note.txt").write_text("dup\ndup\n")
+    ctx = _ctx(tmp_path)
+    result = await EDIT_FILE.handler({"path": "note.txt", "old_string": "dup", "new_string": "x"}, ctx)
+    assert result.is_error is True
+    assert "not unique" in result.output
+    assert (tmp_path / "note.txt").read_text() == "dup\ndup\n"  # untouched
 
 
 @pytest.mark.asyncio
@@ -115,3 +157,33 @@ async def test_run_shell_nonzero_exit_is_error(tmp_path: Path):
     result = await RUN_SHELL.handler({"command": "false"}, ctx)
     assert result.is_error is True
     assert "boom" in result.output
+
+
+@pytest.mark.asyncio
+async def test_run_shell_timeout_s_is_clamped_to_the_guardrail_ceiling(tmp_path: Path):
+    sandbox = _StubShellSandbox(
+        ExecResult(stdout="ok\n", stderr="", exit_code=0, timed_out=False, backend_used="stub")
+    )
+    guardrails = GuardrailsConfig(max_shell_timeout_s=60)
+    ctx = ToolContext(sandbox=sandbox, guardrails=guardrails, cwd=tmp_path)
+
+    result = await RUN_SHELL.handler({"command": "echo ok", "timeout_s": 9999}, ctx)
+
+    assert sandbox.last_request is not None
+    assert sandbox.last_request.timeout_s == 60
+    assert "clamped" in result.output
+
+
+@pytest.mark.asyncio
+async def test_run_shell_timeout_s_under_the_ceiling_is_unaffected(tmp_path: Path):
+    sandbox = _StubShellSandbox(
+        ExecResult(stdout="ok\n", stderr="", exit_code=0, timed_out=False, backend_used="stub")
+    )
+    guardrails = GuardrailsConfig(max_shell_timeout_s=300)
+    ctx = ToolContext(sandbox=sandbox, guardrails=guardrails, cwd=tmp_path)
+
+    result = await RUN_SHELL.handler({"command": "echo ok", "timeout_s": 45}, ctx)
+
+    assert sandbox.last_request is not None
+    assert sandbox.last_request.timeout_s == 45
+    assert "clamped" not in result.output

@@ -133,9 +133,15 @@ def cost_report_command() -> None:
 
 
 @toolbox_app.command("discover")
-def toolbox_discover(name: str) -> None:
+def toolbox_discover(
+    name: str,
+    path: str = typer.Option(
+        None, "--path", help="Register a self-authored script directly, bypassing PATH lookup."
+    ),
+) -> None:
     from pcli.llm.client import GatewayClient
     from pcli.llm.errors import GatewayError
+    from pcli.sandbox.base import SandboxSecurityError
     from pcli.tools.toolbox.manager import ToolboxDiscoveryError, ToolboxManager
 
     async def _run() -> None:
@@ -144,10 +150,10 @@ def toolbox_discover(name: str) -> None:
         client = GatewayClient(settings) if settings.is_configured() else None
         try:
             summary = await manager.discover(
-                name, gateway_client=client, model=settings.default_model or None
+                name, gateway_client=client, model=settings.default_model or None, path=path
             )
             typer.echo(summary)
-        except (ToolboxDiscoveryError, GatewayError) as exc:
+        except (ToolboxDiscoveryError, GatewayError, SandboxSecurityError) as exc:
             # discover() calls the gateway to synthesize tool schemas when
             # there's no curated plugin - that can fail same as any other
             # gateway call (previously uncaught here, crashing with a raw

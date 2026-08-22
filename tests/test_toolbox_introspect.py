@@ -50,7 +50,7 @@ async def test_collect_help_corpus_walks_guessed_subcommands(tmp_path, monkeypat
         introspect_module, "RestrictedSubprocessSandbox", lambda **kw: _FakeSandbox(responses)
     )
 
-    corpus = await introspect_module.collect_help_corpus("/usr/bin/widget", tmp_path)
+    corpus = await introspect_module.collect_help_corpus(["/usr/bin/widget"], tmp_path)
     assert "widget --help" in corpus
     assert "widget list --help" in corpus
     assert "widget create --help" in corpus

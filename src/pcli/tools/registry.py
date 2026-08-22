@@ -36,11 +36,17 @@ class ToolRegistry:
 def build_default_registry() -> ToolRegistry:
     from pcli.tools.builtin.artifact_tool import FETCH_ARTIFACT
     from pcli.tools.builtin.decision_tool import RECORD_DECISION
-    from pcli.tools.builtin.fs_tools import GLOB_SEARCH, LIST_DIR, READ_FILE, WRITE_FILE
+    from pcli.tools.builtin.fs_tools import EDIT_FILE, GLOB_SEARCH, LIST_DIR, READ_FILE, WRITE_FILE
     from pcli.tools.builtin.grep_tool import GREP
-    from pcli.tools.builtin.shell_tool import RUN_SHELL
+    from pcli.tools.builtin.shell_tool import (
+        READ_BACKGROUND_OUTPUT,
+        RUN_SHELL,
+        RUN_SHELL_BACKGROUND,
+        STOP_BACKGROUND_PROCESS,
+    )
     from pcli.tools.builtin.subagent_tool import SPAWN_SUBAGENT
     from pcli.tools.builtin.todo_tool import WRITE_TODOS
+    from pcli.tools.builtin.toolbox_register_tool import REGISTER_TOOLBOX_TOOL
     from pcli.tools.pydiscovery.invoke import CALL_PYTHON
     from pcli.tools.pydiscovery.search import INSPECT_PYTHON_MODULE, SEARCH_PYTHON
 
@@ -48,10 +54,14 @@ def build_default_registry() -> ToolRegistry:
     for tool in (
         READ_FILE,
         WRITE_FILE,
+        EDIT_FILE,
         LIST_DIR,
         GLOB_SEARCH,
         GREP,
         RUN_SHELL,
+        RUN_SHELL_BACKGROUND,
+        READ_BACKGROUND_OUTPUT,
+        STOP_BACKGROUND_PROCESS,
         SEARCH_PYTHON,
         INSPECT_PYTHON_MODULE,
         CALL_PYTHON,
@@ -59,6 +69,7 @@ def build_default_registry() -> ToolRegistry:
         WRITE_TODOS,
         RECORD_DECISION,
         FETCH_ARTIFACT,
+        REGISTER_TOOLBOX_TOOL,
     ):
         registry.register(tool)
     return registry

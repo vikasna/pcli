@@ -69,6 +69,47 @@ flags, `=`-joined values don't fit this convention).
 Both curated and synthesized command tools run through `ctx.sandbox` (same
 as `run_shell`) and require permission unless their `risk` is `"read"`.
 
+## Self-authored scripts
+
+`ToolboxManager.discover(software_name, ..., path=...)`
+(`src/pcli/tools/toolbox/manager.py:160`) has an optional `path` parameter:
+instead of requiring the software to already be on `PATH`, discovery can
+point directly at a script — including one just written with `write_file`,
+e.g. a small Python helper for something expected to be needed repeatedly.
+When `path` is given, curated-plugin matching is skipped entirely (pointing
+at a specific script means "use exactly this," not "look something up") and
+discovery goes straight through the same LLM-synthesized path described
+above: `--help` corpus collection, hashing/caching, synthesis.
+
+- **`.py` scripts are invoked via `sys.executable`**
+  (`_invocation_for_path`, `src/pcli/tools/toolbox/manager.py:100`) rather
+  than executed directly — this works cross-platform, including Windows,
+  without needing a shebang line or the execute bit a self-authored script
+  can't be relied on to have.
+- **The path must resolve inside the current working directory**
+  (`_resolve_script_path`, `src/pcli/tools/toolbox/manager.py:141`) — the
+  same containment rule `RestrictedSubprocessSandbox._validate_cwd` enforces
+  for everything else in the sandbox (see
+  [`sandbox-and-permissions.md`](sandbox-and-permissions.md#restrictedsubprocesssandbox)).
+  A path that resolves outside it is rejected, not silently redirected.
+
+Two ways to trigger it:
+
+- **Human-triggered:** `pcli toolbox discover <name> --path <path>` on the
+  CLI (`src/pcli/cli.py:135`), or `/toolbox discover <name> [path]` in the
+  TUI — an optional second word after the name
+  (`ChatScreen._handle_toolbox_command`, `src/pcli/tui/screens/chat.py:450`).
+  Both were human/slash-command-only before this parameter existed.
+- **Model-triggered:** the `register_toolbox_tool` tool
+  (`src/pcli/tools/builtin/toolbox_register_tool.py`) lets the model call
+  discovery itself, mid-conversation, instead of that being human-only — see
+  [`tools.md`](tools.md#register_toolbox_tool). This is the intended path for
+  a model that just authored its own reusable script and wants a real tool
+  wrapping it, rather than re-deriving the same shell command every time it's
+  needed. Unlike the human-triggered paths above, `register_toolbox_tool` is
+  **always** permission-gated (`needs_permission=True` unconditionally) since
+  it grants standing execution rights rather than running a single command.
+
 ## Persistence
 
 - `toolbox_dir()/registry.json` — `{software_name: {source, binary_path,

@@ -49,7 +49,12 @@ no Python `docker` SDK dependency). Defaults: image `python:3.12-slim`,
 read-write at `/workspace`. Supports network isolation, memory limits, and
 CPU limits (`SandboxCapabilities` all `True`). Output is truncated at
 2,000,000 bytes (`max_output_bytes`); a timeout kills the container and
-returns `timed_out=True`.
+returns `timed_out=True`. `execute()` also kills the process on
+`asyncio.CancelledError` (`src/pcli/sandbox/docker_backend.py:93`) — distinct
+from its own timeout firing, this is what happens when the *caller* cancels
+the awaiting task instead, e.g. the TUI's Esc+Esc turn cancellation (see
+[`tui-guide.md`](tui-guide.md#escesc-cancel-turn)); without this the
+subprocess/container would be silently orphaned.
 
 ### RestrictedSubprocessSandbox
 
@@ -73,6 +78,16 @@ wall-clock timeout as the universal safety net.
   `supports_network_isolation=False`. Guardrails/permission prompts should
   treat network-sensitive calls as always-ask when this backend is active.
 - Output truncated at 2,000,000 bytes, same as Docker.
+- `execute()` kills the process tree on `asyncio.CancelledError`, not just on
+  its own timeout (`src/pcli/sandbox/subprocess_backend.py:191`) — same fix,
+  same rationale, as `DockerSandbox` above.
+- Also backs `run_shell_background`/`read_background_output`/
+  `stop_background_process` (see [`tools.md`](tools.md#run_shell_background-read_background_output-stop_background_process)):
+  `start_background`/`read_background`/`stop_background` on this class,
+  duck-type-checked (`isinstance(ctx.sandbox, RestrictedSubprocessSandbox)`)
+  since these aren't part of the `Sandbox` ABC and Docker/`NullSandbox` don't
+  implement them yet — using the three background tools with another backend
+  active returns a clean error rather than a crash.
 
 `pydiscovery`'s `inspect_python_module`/`call_python` tools and the toolbox's
 version/`--help` probes always use a dedicated
@@ -126,6 +141,8 @@ deny_paths = ["~/.ssh", "~/.aws", "~/.config/pcli"]
 max_output_bytes = 2000000
 max_tool_calls_per_turn = 25
 max_tool_calls_per_minute = 60
+max_shell_timeout_s = 300
+max_background_jobs = 5
 
 [python]
 module_denylist = ["os", "sys", "subprocess", "ctypes", "shutil", "socket", "importlib", "multiprocessing", "threading", "pty"]
@@ -146,7 +163,7 @@ Three checks, each tied to a specific tool argument via `ToolSpec`'s
   dedicated fs/shell tools, so letting the LLM reach them indirectly via
   arbitrary Python calls would be a redundant, higher-risk escape hatch).
 
-All three `[limits]` values are actively enforced, each at a different layer:
+All five `[limits]` values are actively enforced, each at a different layer:
 
 - **`max_output_bytes`** — enforced in `AgentLoop._dispatch_tool_call`
   (`src/pcli/agent/loop.py`) as a global backstop applied to *every* tool's
@@ -177,6 +194,19 @@ All three `[limits]` values are actively enforced, each at a different layer:
   a subagent's tool calls too, since a subagent is handed the same
   `PermissionManager` instance as its parent. A limit of `0` or less disables
   the check entirely (always allowed).
+- **`max_shell_timeout_s`** — enforced in `_run_shell`
+  (`src/pcli/tools/builtin/shell_tool.py:20`): the ceiling `run_shell`'s
+  LLM-controllable `timeout_s` argument (default 30) is clamped to. If the
+  model requests a longer timeout, it's silently clamped to this limit and
+  the tool's output notes that the clamp happened, pointing the model at
+  `run_shell_background` (below) instead of a very large `timeout_s`.
+- **`max_background_jobs`** — enforced in
+  `RestrictedSubprocessSandbox.start_background`
+  (`src/pcli/sandbox/subprocess_backend.py:248`): caps how many background
+  jobs (started via `run_shell_background`) may be running at once; starting
+  one more than the limit raises instead of starting it. See
+  [`tools.md`](tools.md#run_shell_background-read_background_output-stop_background_process)
+  for the three background-shell tools this and `max_shell_timeout_s` gate.
 
 **Local-API mode disables both `max_tool_calls_per_turn` and
 `max_tool_calls_per_minute`, but only for the paired gateway.** When

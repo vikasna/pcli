@@ -1,0 +1,30 @@
+"""Coverage that BASE_SYSTEM_PROMPT actually mentions the tools/behaviors it
+needs to guide the model toward - regression coverage for the prompt text
+itself, not just that the module imports."""
+
+from pcli.agent.prompt import BASE_SYSTEM_PROMPT, build_system_prompt
+
+
+def test_prompt_guides_toward_edit_file_over_write_file_for_existing_files():
+    assert "edit_file" in BASE_SYSTEM_PROMPT
+    assert "write_file" in BASE_SYSTEM_PROMPT
+
+
+def test_prompt_mentions_background_shell_execution():
+    assert "run_shell_background" in BASE_SYSTEM_PROMPT
+    assert "read_background_output" in BASE_SYSTEM_PROMPT
+    assert "stop_background_process" in BASE_SYSTEM_PROMPT
+    assert "timeout_s" in BASE_SYSTEM_PROMPT
+
+
+def test_prompt_mentions_register_toolbox_tool_and_that_it_is_permission_gated():
+    assert "register_toolbox_tool" in BASE_SYSTEM_PROMPT
+    section_start = BASE_SYSTEM_PROMPT.index("# Building reusable tools")
+    section = BASE_SYSTEM_PROMPT[section_start : section_start + 600]
+    assert "permission" in section
+
+
+def test_build_system_prompt_appends_extra_sections():
+    result = build_system_prompt(extra_sections=["# Extra\nSomething."])
+    assert result.startswith(BASE_SYSTEM_PROMPT)
+    assert result.endswith("# Extra\nSomething.")

@@ -76,6 +76,51 @@ WRITE_FILE = ToolSpec(
 )
 
 
+async def _edit_file(arguments: dict, ctx: ToolContext) -> ToolResult:
+    resolved = _resolve(arguments["path"], ctx)
+    if not resolved.is_file():
+        return ToolResult(
+            output=f"{resolved} doesn't exist — use write_file to create it.", is_error=True
+        )
+    old_string = arguments["old_string"]
+    new_string = arguments["new_string"]
+    content = resolved.read_text(encoding="utf-8")
+    count = content.count(old_string)
+    if count == 0:
+        return ToolResult(output="old_string not found in file.", is_error=True)
+    if count > 1:
+        return ToolResult(
+            output=f"old_string is not unique ({count} occurrences) — include more "
+            "surrounding context to make it match exactly once.",
+            is_error=True,
+        )
+    resolved.write_text(content.replace(old_string, new_string, 1), encoding="utf-8")
+    return ToolResult(output=f"Edited {resolved} (1 replacement).")
+
+
+EDIT_FILE = ToolSpec(
+    name="edit_file",
+    description="Replace an exact, unique block of text in an existing file with new text. "
+    "old_string must match the file's current content exactly (including whitespace) and "
+    "occur exactly once — include enough surrounding context to make it unambiguous. Prefer "
+    "this over write_file for small changes to existing files; use write_file for new files "
+    "or a genuine full rewrite.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "old_string": {"type": "string", "description": "Exact text to replace."},
+            "new_string": {"type": "string", "description": "Text to replace it with."},
+        },
+        "required": ["path", "old_string", "new_string"],
+    },
+    handler=_edit_file,
+    needs_permission=True,
+    risk_description="Edits a file on disk.",
+    guardrail_path_arg="path",
+)
+
+
 async def _list_dir(arguments: dict, ctx: ToolContext) -> ToolResult:
     resolved = _resolve(arguments.get("path", "."), ctx)
     if not resolved.is_dir():

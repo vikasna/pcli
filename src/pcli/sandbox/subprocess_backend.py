@@ -12,6 +12,9 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+import time
+import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from pcli.sandbox.base import (
@@ -22,6 +25,9 @@ from pcli.sandbox.base import (
     SandboxSecurityError,
 )
 from pcli.sandbox.limits import is_posix, kill_process_tree, make_posix_preexec_fn
+
+_MAX_BACKGROUND_JOB_LIFETIME_S = 2 * 60 * 60
+_BACKGROUND_DRAIN_CHUNK_BYTES = 4096
 
 _ENV_ALLOW_NAMES = {
     "PATH",
@@ -65,6 +71,35 @@ def _truncate(data: bytes, max_bytes: int) -> str:
     return data[:max_bytes].decode(errors="replace") + "\n[...output truncated...]"
 
 
+@dataclass
+class BackgroundJob:
+    """A command started via RestrictedSubprocessSandbox.start_background:
+    runs independently of any single tool call, with its stdout/stderr
+    continuously drained into memory (capped at max_output_bytes) so
+    read_background can report on it without blocking. stdout_read_offset/
+    stderr_read_offset track how much of each stream a caller has already
+    consumed (see read_background) — new reads only return what's arrived
+    since the last one, rather than re-sending everything or silently
+    dropping whatever fell outside a fixed tail window."""
+
+    id: str
+    command: str
+    started_at: float
+    proc: asyncio.subprocess.Process
+    stdout_chunks: list[bytes] = field(default_factory=list)
+    stderr_chunks: list[bytes] = field(default_factory=list)
+    stdout_bytes: int = 0
+    stderr_bytes: int = 0
+    stdout_read_offset: int = 0
+    stderr_read_offset: int = 0
+    exit_code: int | None = None
+    finished_at: float | None = None
+
+    @property
+    def running(self) -> bool:
+        return self.exit_code is None
+
+
 class RestrictedSubprocessSandbox(Sandbox):
     name = "subprocess"
 
@@ -80,6 +115,7 @@ class RestrictedSubprocessSandbox(Sandbox):
         self._max_output_bytes = max_output_bytes
         self._cpu_seconds = cpu_seconds
         self._memory_bytes = memory_bytes
+        self._background_jobs: dict[str, BackgroundJob] = {}
 
     def capabilities(self) -> SandboxCapabilities:
         posix = is_posix()
@@ -96,39 +132,47 @@ class RestrictedSubprocessSandbox(Sandbox):
                 return resolved
         raise SandboxSecurityError(f"cwd '{resolved}' is outside all allowed roots")
 
+    def _popen_kwargs(self) -> dict:
+        if is_posix():
+            return {
+                "preexec_fn": make_posix_preexec_fn(
+                    cpu_seconds=self._cpu_seconds, memory_bytes=self._memory_bytes
+                ),
+                "start_new_session": True,
+            }
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+
+    async def _start_process(
+        self, command: list[str] | str, cwd: Path, env: dict[str, str], *, needs_stdin: bool
+    ) -> asyncio.subprocess.Process:
+        popen_kwargs = self._popen_kwargs()
+        stdin_mode = asyncio.subprocess.PIPE if needs_stdin else asyncio.subprocess.DEVNULL
+        if isinstance(command, str):
+            return await asyncio.create_subprocess_shell(
+                command,
+                cwd=str(cwd),
+                env=env,
+                stdin=stdin_mode,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                **popen_kwargs,
+            )
+        return await asyncio.create_subprocess_exec(
+            *command,
+            cwd=str(cwd),
+            env=env,
+            stdin=stdin_mode,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            **popen_kwargs,
+        )
+
     async def execute(self, request: ExecRequest) -> ExecResult:
         cwd = self._validate_cwd(request.cwd)
         env = _scrub_env(request.env)
-
-        popen_kwargs: dict = {}
-        if is_posix():
-            popen_kwargs["preexec_fn"] = make_posix_preexec_fn(
-                cpu_seconds=self._cpu_seconds, memory_bytes=self._memory_bytes
-            )
-            popen_kwargs["start_new_session"] = True
-        else:
-            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-
-        if isinstance(request.command, str):
-            proc = await asyncio.create_subprocess_shell(
-                request.command,
-                cwd=str(cwd),
-                env=env,
-                stdin=asyncio.subprocess.PIPE if request.stdin is not None else asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                **popen_kwargs,
-            )
-        else:
-            proc = await asyncio.create_subprocess_exec(
-                *request.command,
-                cwd=str(cwd),
-                env=env,
-                stdin=asyncio.subprocess.PIPE if request.stdin is not None else asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                **popen_kwargs,
-            )
+        proc = await self._start_process(
+            request.command, cwd, env, needs_stdin=request.stdin is not None
+        )
 
         timed_out = False
         stdin_bytes = request.stdin.encode() if request.stdin is not None else None
@@ -144,6 +188,14 @@ class RestrictedSubprocessSandbox(Sandbox):
             except TimeoutError:
                 pass
             stdout_bytes, stderr_bytes = b"", b"[pcli] command timed out and was killed"
+        except asyncio.CancelledError:
+            # Distinct from the TimeoutError case above: this fires when the
+            # *caller* (e.g. the TUI's Esc+Esc turn cancellation) cancels the
+            # awaiting task, not when our own wait_for's timeout expires.
+            # Without this, the subprocess is silently orphaned — cancelling
+            # the Python await here does nothing to the OS process itself.
+            kill_process_tree(proc.pid)
+            raise
 
         return ExecResult(
             stdout=_truncate(stdout_bytes, self._max_output_bytes),
@@ -152,3 +204,117 @@ class RestrictedSubprocessSandbox(Sandbox):
             timed_out=timed_out,
             backend_used=self.name,
         )
+
+    # --- Background jobs: run_shell_background/read_background_output/
+    # stop_background_process (tools/builtin/shell_tool.py) sit on top of
+    # these. Deliberately not part of the Sandbox ABC (see plan) - kept here
+    # so DockerSandbox/NullSandbox don't need to implement something they
+    # can't meaningfully support yet; callers duck-type-check
+    # isinstance(sandbox, RestrictedSubprocessSandbox).
+
+    async def _pump_background_stream(
+        self, stream: asyncio.StreamReader, job: BackgroundJob, attr: str
+    ) -> None:
+        chunks: list[bytes] = getattr(job, f"{attr}_chunks")
+        while True:
+            chunk = await stream.read(_BACKGROUND_DRAIN_CHUNK_BYTES)
+            if not chunk:
+                break
+            current = getattr(job, f"{attr}_bytes")
+            if current < self._max_output_bytes:
+                chunks.append(chunk[: self._max_output_bytes - current])
+            setattr(job, f"{attr}_bytes", current + len(chunk))
+
+    async def _drain_background(self, job: BackgroundJob) -> None:
+        await asyncio.gather(
+            self._pump_background_stream(job.proc.stdout, job, "stdout"),
+            self._pump_background_stream(job.proc.stderr, job, "stderr"),
+        )
+        job.exit_code = await job.proc.wait()
+        job.finished_at = time.monotonic()
+
+    def _sweep_background_jobs(self, *, keep_finished: int = 20) -> None:
+        now = time.monotonic()
+        for job in list(self._background_jobs.values()):
+            if job.running and now - job.started_at > _MAX_BACKGROUND_JOB_LIFETIME_S:
+                kill_process_tree(job.proc.pid)
+        finished = sorted(
+            (j for j in self._background_jobs.values() if not j.running),
+            key=lambda j: j.finished_at or 0.0,
+        )
+        while len(self._background_jobs) > keep_finished and finished:
+            del self._background_jobs[finished.pop(0).id]
+
+    async def start_background(
+        self,
+        *,
+        command: list[str] | str,
+        cwd: Path,
+        env: dict[str, str] | None = None,
+        max_jobs: int = 5,
+    ) -> str:
+        self._sweep_background_jobs()
+        running = sum(1 for job in self._background_jobs.values() if job.running)
+        if running >= max_jobs:
+            raise SandboxSecurityError(
+                f"Already {running} background job(s) running (max {max_jobs}) — stop one "
+                "with stop_background_process before starting another."
+            )
+        resolved_cwd = self._validate_cwd(cwd)
+        scrubbed_env = _scrub_env(env or {})
+        proc = await self._start_process(command, resolved_cwd, scrubbed_env, needs_stdin=False)
+        job_id = uuid.uuid4().hex[:8]
+        command_str = command if isinstance(command, str) else " ".join(command)
+        job = BackgroundJob(id=job_id, command=command_str, started_at=time.monotonic(), proc=proc)
+        self._background_jobs[job_id] = job
+        asyncio.create_task(self._drain_background(job))
+        return job_id
+
+    def get_background(self, job_id: str) -> BackgroundJob | None:
+        return self._background_jobs.get(job_id)
+
+    def read_background(
+        self, job_id: str, *, max_chars: int = 4000, reset: bool = False
+    ) -> tuple[BackgroundJob, str, str, bool] | None:
+        """Returns (job, new_stdout, new_stderr, has_more): only the text
+        that arrived since the caller's last read (or from the start, if
+        reset or this is the first read), capped to max_chars per stream
+        per call — offset-based rather than tail-based, so nothing in the
+        middle is silently dropped between polls on a chatty command; a
+        caller wanting more just calls again (has_more says so) instead of
+        requesting a bigger max_chars, so one poll can't flood context."""
+        job = self._background_jobs.get(job_id)
+        if job is None:
+            return None
+        if reset:
+            job.stdout_read_offset = 0
+            job.stderr_read_offset = 0
+        full_stdout = b"".join(job.stdout_chunks).decode(errors="replace")
+        full_stderr = b"".join(job.stderr_chunks).decode(errors="replace")
+        new_stdout = full_stdout[job.stdout_read_offset :]
+        new_stderr = full_stderr[job.stderr_read_offset :]
+        stdout_chunk = new_stdout[:max_chars]
+        stderr_chunk = new_stderr[:max_chars]
+        job.stdout_read_offset += len(stdout_chunk)
+        job.stderr_read_offset += len(stderr_chunk)
+        has_more = len(new_stdout) > len(stdout_chunk) or len(new_stderr) > len(stderr_chunk)
+        return job, stdout_chunk, stderr_chunk, has_more
+
+    async def stop_background(self, job_id: str) -> bool:
+        job = self._background_jobs.get(job_id)
+        if job is None:
+            return False
+        if job.running:
+            kill_process_tree(job.proc.pid)
+            try:
+                await asyncio.wait_for(job.proc.wait(), timeout=5)
+            except TimeoutError:
+                pass
+        return True
+
+    async def kill_all_background_jobs(self) -> None:
+        """Called from ChatScreen.on_unmount so a background job never
+        outlives the TUI process it was started from."""
+        for job in list(self._background_jobs.values()):
+            if job.running:
+                kill_process_tree(job.proc.pid)

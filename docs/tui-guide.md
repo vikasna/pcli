@@ -103,6 +103,32 @@ import modal (`id="import-path-input"`,
 rather than a message box, a multi-line clipboard is truncated to its first
 line instead, matching Textual's own `Input._on_paste` behavior.
 
+### Esc+Esc: cancel turn
+
+Pressing **Escape twice within 0.6 seconds**
+(`_ESCAPE_DOUBLE_PRESS_WINDOW_S`, `src/pcli/tui/screens/chat.py:58`) while a
+turn is in progress cancels it — both the streaming reply and/or whatever
+tool is currently executing as part of that turn, including killing a real
+running shell subprocess (`ChatScreen.action_cancel_turn`,
+`src/pcli/tui/screens/chat.py:268`, via `self.workers.cancel_group(self,
+"agent-turn")`). This is what the `CancelledError`-triggered process-kill
+fix in both sandbox backends is for — see
+[`sandbox-and-permissions.md`](sandbox-and-permissions.md#restrictedsubprocesssandbox)
+— without it a cancelled turn's shell command would keep running in the
+background, orphaned.
+
+- **A single Escape press** just shows a hint in the transcript — "Press Esc
+  again to cancel the current turn." — and does nothing else, so a reflexive
+  or stray Escape (e.g. dismissing a thought) can't accidentally kill real
+  work.
+- **Escape with no turn running** is a silent no-op.
+- After cancelling, a system message "Turn cancelled." appears in the chat.
+  If a follow-up message had been queued mid-turn (see "Submitting while a
+  turn is in progress" above) it's dropped rather than sent, and the note
+  says so: "A queued follow-up message was not sent."
+- No new keybinding conflicts: plain Escape had no prior binding on the chat
+  screen (`ChatScreen.BINDINGS`, `src/pcli/tui/screens/chat.py:72`).
+
 ## Gateway errors
 
 When a turn fails against the gateway (`GatewayError`), pcli shows a system

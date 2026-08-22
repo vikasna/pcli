@@ -90,6 +90,13 @@ class DockerSandbox(Sandbox):
             except TimeoutError:
                 pass
             stdout_bytes, stderr_bytes = b"", b"[pcli] command timed out and was killed"
+        except asyncio.CancelledError:
+            # See the identical comment in subprocess_backend.py: this fires
+            # on caller-initiated cancellation (e.g. Esc+Esc), not our own
+            # wait_for's timeout — without killing here, the `docker run`
+            # process (and likely its container) is left running.
+            proc.kill()
+            raise
 
         return ExecResult(
             stdout=_truncate(stdout_bytes, self._max_output_bytes),
