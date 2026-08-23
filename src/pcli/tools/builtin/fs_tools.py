@@ -20,7 +20,12 @@ def _resolve(raw_path: str, ctx: ToolContext) -> Path:
 async def _read_file(arguments: dict, ctx: ToolContext) -> ToolResult:
     resolved = _resolve(arguments["path"], ctx)
     if not resolved.exists():
-        return ToolResult(output=f"File not found: {resolved}", is_error=True)
+        return ToolResult(
+            output=f"File not found: {resolved}\n"
+            "[pcli] Suggestion: if you're not sure of the exact path, use list_dir on its "
+            "parent directory or glob_search to locate it.",
+            is_error=True,
+        )
     if not resolved.is_file():
         return ToolResult(output=f"Not a file: {resolved}", is_error=True)
     data = resolved.read_bytes()
@@ -87,7 +92,13 @@ async def _edit_file(arguments: dict, ctx: ToolContext) -> ToolResult:
     content = resolved.read_text(encoding="utf-8")
     count = content.count(old_string)
     if count == 0:
-        return ToolResult(output="old_string not found in file.", is_error=True)
+        return ToolResult(
+            output="old_string not found in file.\n"
+            "[pcli] Suggestion: the file may have changed since you last saw it (e.g. an "
+            "earlier edit_file/write_file call already changed this part) — read_file to see "
+            "its current content before retrying.",
+            is_error=True,
+        )
     if count > 1:
         return ToolResult(
             output=f"old_string is not unique ({count} occurrences) — include more "
@@ -124,7 +135,11 @@ EDIT_FILE = ToolSpec(
 async def _list_dir(arguments: dict, ctx: ToolContext) -> ToolResult:
     resolved = _resolve(arguments.get("path", "."), ctx)
     if not resolved.is_dir():
-        return ToolResult(output=f"Not a directory: {resolved}", is_error=True)
+        return ToolResult(
+            output=f"Not a directory: {resolved}\n"
+            "[pcli] Suggestion: list_dir its parent to confirm the correct name/path.",
+            is_error=True,
+        )
     entries = sorted(resolved.iterdir(), key=lambda p: p.name)
     lines = [f"{'d' if e.is_dir() else 'f'}  {e.name}" for e in entries]
     return ToolResult(output="\n".join(lines) or "(empty directory)")
@@ -149,7 +164,11 @@ async def _glob_search(arguments: dict, ctx: ToolContext) -> ToolResult:
     resolved_base = _resolve(arguments.get("path", "."), ctx)
     pattern = arguments["pattern"]
     if not resolved_base.is_dir():
-        return ToolResult(output=f"Not a directory: {resolved_base}", is_error=True)
+        return ToolResult(
+            output=f"Not a directory: {resolved_base}\n"
+            "[pcli] Suggestion: list_dir its parent to confirm the correct name/path.",
+            is_error=True,
+        )
     matches = sorted(
         str(p.relative_to(resolved_base)) for p in resolved_base.glob(pattern) if p.is_file()
     )

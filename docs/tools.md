@@ -25,6 +25,9 @@ the file is larger, and decodes with `errors="replace"`.
 - **Permission:** not required (`needs_permission=False`).
 - **Guardrail:** `path` is checked against `fs_allowed_roots`/`fs_deny_paths`
   regardless.
+- **File-not-found** gets an appended suggestion to try `list_dir` on the
+  parent directory or `glob_search` if the exact path isn't certain
+  (`src/pcli/tools/builtin/fs_tools.py:23`).
 
 ## write_file
 
@@ -49,9 +52,10 @@ exactly (including whitespace) and occur exactly once.
   `write_file`.
 - **Errors cleanly** (not a crash) in three cases
   (`src/pcli/tools/builtin/fs_tools.py:79`): the file doesn't exist (message
-  points at `write_file` to create it instead), `old_string` isn't found, or
-  `old_string` matches more than once (asks for more surrounding context to
-  disambiguate).
+  points at `write_file` to create it instead), `old_string` isn't found
+  (appends a suggestion to `read_file` first, in case an earlier
+  `edit_file`/`write_file` call already changed that part), or `old_string`
+  matches more than once (asks for more surrounding context to disambiguate).
 
 ## list_dir
 
@@ -61,6 +65,8 @@ by name.
 - **Parameters:** `path` (string, optional, default: working directory).
 - **Permission:** not required.
 - **Guardrail:** `path` checked.
+- **Not-a-directory** gets an appended suggestion to `list_dir` the parent
+  to confirm the correct name/path (`src/pcli/tools/builtin/fs_tools.py:138`).
 
 ## glob_search
 
@@ -72,6 +78,8 @@ Returns up to 500 matches (sorted, relative to the base), with a
   base directory).
 - **Permission:** not required.
 - **Guardrail:** `path` checked.
+- **Not-a-directory** gets the same `list_dir`-the-parent suggestion as
+  `list_dir` above (`src/pcli/tools/builtin/fs_tools.py:167`).
 
 ## grep
 
@@ -86,6 +94,10 @@ implementation, not a wrapper around system `grep`/`ripgrep`). Scans up to
   optional base directory), `glob` (string, optional file filter).
 - **Permission:** not required.
 - **Guardrail:** `path` checked.
+- **Invalid regex** gets an appended suggestion to escape the special
+  character(s) or fall back to a plain substring search if regex features
+  aren't actually needed; **not-a-directory** gets the same `list_dir`-the-
+  parent suggestion as above (`src/pcli/tools/builtin/grep_tool.py:28`).
 
 ## run_shell
 
@@ -106,6 +118,25 @@ nonzero or the command timed out.
   if the requested value exceeds it, the timeout is silently clamped and the
   tool output notes the clamp and points at `run_shell_background` instead
   (`src/pcli/tools/builtin/shell_tool.py:20`).
+- **Failures include a corrective suggestion where one exists**
+  (`src/pcli/tools/builtin/shell_tool.py:24`), appended to the error output
+  as `\n[pcli] Suggestion: ...`:
+  - **Timeout:** if `timeout_s` was below the guardrail ceiling, suggests
+    raising it; if already at/near the ceiling, suggests
+    `run_shell_background` instead (since it doesn't block the turn) — e.g.
+    a command run with `timeout_s=30` that times out gets "the command timed
+    out at timeout_s=30s. Try raising timeout_s (up to the guardrail ceiling
+    of 300s) if it just needs more time, or use run_shell_background if it
+    has no natural end...".
+  - **Nonzero exit:** the combined stdout/stderr is pattern-matched
+    (`_shell_failure_suggestion`) against three failure signatures confirmed
+    from a real debugged session — bare `pip` not recognized (→ use
+    `python -m pip`), the Windows "`python3` not found"/Microsoft Store stub
+    error (→ use plain `python`), and `ModuleNotFoundError` (→ check the
+    active interpreter via `python -c "import sys; print(sys.executable)"`,
+    since a prior successful `pip install` doesn't guarantee it targeted the
+    interpreter actually running the script). An unmatched failure gets no
+    suggestion appended.
 
 ## run_shell_background, read_background_output, stop_background_process
 
@@ -144,12 +175,18 @@ requesting a larger `max_chars`.
   last offset).
 - **Permission:** not required (`needs_permission=False`) — read-only.
   `needs_sandbox=True`.
+- **Unknown `job_id`** gets an appended suggestion to re-check the "Started
+  background job '...'" message from `run_shell_background`, since ids
+  aren't recoverable any other way (`src/pcli/tools/builtin/shell_tool.py:18`,
+  shared with `stop_background_process` below).
 
 **`stop_background_process`** kills a background job.
 
 - **Parameters:** `job_id` (string, required).
 - **Permission:** required. `needs_sandbox=True`. `risk_description`:
   "Kills a running background process."
+- **Unknown `job_id`** gets the same suggestion as `read_background_output`
+  above.
 
 ## register_toolbox_tool
 
@@ -173,6 +210,11 @@ for the underlying `path` mechanics.
   standing execution rights." This is also called out explicitly in the
   tool's description string and in the system prompt
   (`src/pcli/tools/builtin/toolbox_register_tool.py:35`).
+- **Discovery failures** get an appended, situation-specific suggestion
+  (`src/pcli/tools/builtin/toolbox_register_tool.py:25`): a `path` that
+  wasn't found suggests `write_file`-ing the script first or double-checking
+  the path; other failure shapes get their own targeted suggestion (e.g.
+  checking the script has a working `--help`).
 
 ## search_python
 
@@ -201,6 +243,9 @@ first-line docstring, optionally filtered by a `query` substring. Capped at
 - **Guardrail:** the module's top-level name is checked against
   `python_module_denylist` (default: `os`, `sys`, `subprocess`, `ctypes`,
   `shutil`, `socket`, `importlib`, `multiprocessing`, `threading`, `pty`).
+- **Import/module-not-found failures** get an appended suggestion to run
+  `search_python` first to confirm the exact module name is actually
+  installed (`src/pcli/tools/pydiscovery/search.py:66`).
 
 ## call_python
 
@@ -218,6 +263,12 @@ capped at 2000 chars).
   "Executes an arbitrary Python function call in a subprocess."
 - **Guardrail:** `qualified_name`'s top-level module checked against the same
   `python_module_denylist`.
+- **Call failures** get an appended, error-specific suggestion
+  (`src/pcli/tools/pydiscovery/invoke.py:137`): an import/module-not-found
+  error suggests `search_python` to confirm the exact module name; "not
+  callable" suggests `inspect_python_module` to see what's actually callable
+  there; other failures (bad args/types) suggest checking the signature via
+  `inspect_python_module`.
 
 ## spawn_subagent
 
@@ -242,6 +293,12 @@ filtered out of the tool registry a subagent runs with (by name, in
 - **Live progress:** while running, reports task/tool-call-count/last-tool to
   `ActivityTracker`, which the TUI's status bar renders as a second line (see
   [`tui-guide.md`](tui-guide.md)).
+- **Failures get a suggestion, not just the raw error**
+  (`src/pcli/tools/builtin/subagent_tool.py:39`): if subagents aren't
+  available in this context (no gateway/tools/permissions configured), the
+  suggestion is to handle the task directly instead of delegating; if the
+  subagent itself raised an exception, the suggestion is to retry with a
+  narrower task description or handle it directly.
 
 ## write_todos
 
@@ -254,6 +311,22 @@ more than one `in_progress` item at a time.
   "in_progress" | "completed"}`, required).
 - **Permission:** not required.
 - Requires `ctx.session` to be set (errors otherwise).
+- **Flags dropped completed work.** Before applying the update, the old
+  list's `completed` items are compared against the new list's content via
+  `difflib.SequenceMatcher` (`_still_represented`,
+  `src/pcli/tools/builtin/todo_tool.py:31`) — fuzzy text matching, threshold
+  `_SIMILARITY_THRESHOLD = 0.45`, tolerant of ordinary rewording but not of
+  wholesale replacement with an unrelated task. The update still applies
+  either way (this is a nudge, not a block — a genuine restart is sometimes
+  correct); but if any completed items have no reasonably-similar counterpart
+  in the new list, the success output gets an appended note: `[pcli] Note: N
+  previously completed item(s) no longer appear in this list (...). If you're
+  deliberately restarting or changing approach, that's fine — record_decision
+  helps track why. If not, the underlying work may already be done and
+  doesn't need redoing.` Motivated by a real debugged session where the model
+  silently replaced 4 verified-complete items with 3 new pending ones for a
+  superficially similar task and redid already-finished work. Also called out
+  in the system prompt's `# Tracking work` section (`src/pcli/agent/prompt.py`).
 
 ## record_decision
 
@@ -274,7 +347,10 @@ does for `write_todos`.
 - Requires `ctx.session` to be set (errors otherwise: "No session available to
   record decisions in.").
 - Errors if either `decision` or `rationale` is missing/empty: "Both
-  'decision' and 'rationale' are required."
+  'decision' and 'rationale' are required." — with an appended suggestion
+  restating the two fields directly: `decision` is what was decided, stated
+  plainly; `rationale` is why, including supporting evidence when there is
+  any (`src/pcli/tools/builtin/decision_tool.py:28`).
 - The system prompt's `# Recording decisions` section
   (`src/pcli/agent/prompt.py`) instructs the model to reserve this for
   consequential decisions (not routine tool calls) and to include the
@@ -296,6 +372,10 @@ truncation mechanism below.
 - **Permission:** not required.
 - Returns the `[offset:offset+limit]` slice plus a footer noting the next
   offset to use if more remains.
+- **Unknown `artifact_id`** gets an appended suggestion to re-check the
+  original tool result's "archived as artifact_id='art_...'" note rather
+  than guessing, since ids aren't derivable any other way
+  (`src/pcli/tools/builtin/artifact_tool.py:19`).
 
 ## Artifact archiving
 

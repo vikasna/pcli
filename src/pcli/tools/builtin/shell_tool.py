@@ -15,6 +15,47 @@ _BACKGROUND_UNSUPPORTED = (
     "Background execution is only supported by the 'subprocess' sandbox backend "
     "(not available with the current backend)."
 )
+_UNKNOWN_JOB_SUGGESTION = (
+    "check the \"Started background job '...'\" message from when run_shell_background was "
+    "called — job ids aren't recoverable any other way."
+)
+
+
+def _timeout_suggestion(timeout_s: float, max_timeout_s: float) -> str:
+    if timeout_s < max_timeout_s:
+        return (
+            f"the command timed out at timeout_s={timeout_s:g}s. Try raising timeout_s (up to "
+            f"the guardrail ceiling of {max_timeout_s:g}s) if it just needs more time, or use "
+            "run_shell_background if it has no natural end (a dev server, a watcher) or you'd "
+            "rather keep working while it runs."
+        )
+    return (
+        f"the command timed out even at the guardrail ceiling of {max_timeout_s:g}s. Use "
+        "run_shell_background instead — it starts the command without blocking the turn, and "
+        "read_background_output lets you check on it."
+    )
+
+
+def _shell_failure_suggestion(output: str) -> str | None:
+    """Pattern-matched against a small set of failure signatures confirmed
+    from a real debugged session: the identical Windows "'pip' is not
+    recognized" and "Python was not found" (python3-vs-python) errors each
+    got hit twice in a row before the model self-corrected by trial and
+    error, and a ModuleNotFoundError happened despite an earlier pip
+    install having reported "already satisfied" - for a different Python
+    interpreter than the one actually running the script."""
+    lowered = output.lower()
+    if "'pip' is not recognized" in lowered or "pip: command not found" in lowered:
+        return "'pip' isn't directly on PATH here — use 'python -m pip' instead."
+    if "python was not found" in lowered and "microsoft store" in lowered:
+        return "this system's Python launcher is 'python', not 'python3' — retry with 'python'."
+    if "modulenotfounderror" in lowered:
+        return (
+            'a prior "pip install" succeeding doesn\'t guarantee it targeted the same '
+            'interpreter running this script — check which one is actually active: '
+            'python -c "import sys; print(sys.executable)".'
+        )
+    return None
 
 
 async def _run_shell(arguments: dict, ctx: ToolContext) -> ToolResult:
@@ -37,8 +78,15 @@ async def _run_shell(arguments: dict, ctx: ToolContext) -> ToolResult:
             "run_shell_background instead."
         )
 
-    summary = f"[exit_code={result.exit_code}, backend={result.backend_used}]\n{output}"
     is_error = result.exit_code != 0 or result.timed_out
+    if result.timed_out:
+        output += f"\n[pcli] Suggestion: {_timeout_suggestion(timeout_s, max_timeout_s)}"
+    elif is_error:
+        suggestion = _shell_failure_suggestion(output)
+        if suggestion:
+            output += f"\n[pcli] Suggestion: {suggestion}"
+
+    summary = f"[exit_code={result.exit_code}, backend={result.backend_used}]\n{output}"
     return ToolResult(output=summary, is_error=is_error)
 
 
@@ -114,7 +162,10 @@ async def _read_background_output(arguments: dict, ctx: ToolContext) -> ToolResu
     reset = bool(arguments.get("reset", False))
     read = ctx.sandbox.read_background(job_id, max_chars=max_chars, reset=reset)
     if read is None:
-        return ToolResult(output=f"No background job with id '{job_id}'.", is_error=True)
+        return ToolResult(
+            output=f"No background job with id '{job_id}'.\n[pcli] Suggestion: {_UNKNOWN_JOB_SUGGESTION}",
+            is_error=True,
+        )
     job, new_stdout, new_stderr, has_more = read
 
     status = "running" if job.running else f"exited (exit_code={job.exit_code})"
@@ -162,7 +213,10 @@ async def _stop_background_process(arguments: dict, ctx: ToolContext) -> ToolRes
     job_id = arguments["job_id"]
     stopped = await ctx.sandbox.stop_background(job_id)
     if not stopped:
-        return ToolResult(output=f"No background job with id '{job_id}'.", is_error=True)
+        return ToolResult(
+            output=f"No background job with id '{job_id}'.\n[pcli] Suggestion: {_UNKNOWN_JOB_SUGGESTION}",
+            is_error=True,
+        )
     return ToolResult(output=f"Stopped background job '{job_id}'.")
 
 

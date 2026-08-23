@@ -227,6 +227,8 @@ async def test_read_background_output_tool_unknown_job_is_error(tmp_path: Path):
     ctx = _ctx(tmp_path, sandbox)
     result = await READ_BACKGROUND_OUTPUT.handler({"job_id": "nonexistent"}, ctx)
     assert result.is_error is True
+    assert "[pcli] Suggestion:" in result.output
+    assert "run_shell_background" in result.output
 
 
 @pytest.mark.asyncio
@@ -248,3 +250,5 @@ async def test_stop_background_process_tool_unknown_job_is_error(tmp_path: Path)
     ctx = _ctx(tmp_path, sandbox)
     result = await STOP_BACKGROUND_PROCESS.handler({"job_id": "nonexistent"}, ctx)
     assert result.is_error is True
+    assert "[pcli] Suggestion:" in result.output
+    assert "run_shell_background" in result.output

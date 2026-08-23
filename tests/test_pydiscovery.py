@@ -88,6 +88,24 @@ async def test_call_python_unknown_module_reports_error(tmp_path: Path):
         {"qualified_name": "totally_not_a_real_module_xyz.foo"}, _ctx(tmp_path)
     )
     assert result.is_error is True
+    assert "[pcli] Suggestion:" in result.output
+    assert "search_python" in result.output
+
+
+@pytest.mark.asyncio
+async def test_call_python_not_callable_suggests_inspect_python_module(tmp_path: Path):
+    result = await CALL_PYTHON.handler({"qualified_name": "math.pi"}, _ctx(tmp_path))
+    assert result.is_error is True
+    assert "[pcli] Suggestion:" in result.output
+    assert "inspect_python_module" in result.output
+
+
+@pytest.mark.asyncio
+async def test_call_python_bad_arguments_suggests_checking_signature(tmp_path: Path):
+    result = await CALL_PYTHON.handler({"qualified_name": "math.sqrt", "args": ["not-a-number"]}, _ctx(tmp_path))
+    assert result.is_error is True
+    assert "[pcli] Suggestion:" in result.output
+    assert "signature" in result.output
 
 
 @pytest.mark.asyncio
@@ -95,6 +113,16 @@ async def test_inspect_python_module_finds_members(tmp_path: Path):
     result = await INSPECT_PYTHON_MODULE.handler({"module": "math", "query": "sqrt"}, _ctx(tmp_path))
     assert result.is_error is False
     assert "sqrt" in result.output
+
+
+@pytest.mark.asyncio
+async def test_inspect_python_module_unknown_module_suggests_search_python(tmp_path: Path):
+    result = await INSPECT_PYTHON_MODULE.handler(
+        {"module": "totally_not_a_real_module_xyz"}, _ctx(tmp_path)
+    )
+    assert result.is_error is True
+    assert "[pcli] Suggestion:" in result.output
+    assert "search_python" in result.output
 
 
 def test_guardrails_deny_denylisted_python_module():

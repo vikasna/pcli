@@ -25,7 +25,12 @@ async def _record_decision(arguments: dict, ctx: ToolContext) -> ToolResult:
     decision = arguments.get("decision")
     rationale = arguments.get("rationale")
     if not decision or not rationale:
-        return ToolResult(output="Both 'decision' and 'rationale' are required.", is_error=True)
+        return ToolResult(
+            output="Both 'decision' and 'rationale' are required.\n"
+            "[pcli] Suggestion: decision is what was decided, stated plainly; rationale is "
+            "why, including supporting evidence when there is any.",
+            is_error=True,
+        )
 
     entry = Decision(decision=decision, rationale=rationale)
     ctx.session.decisions.append(entry)

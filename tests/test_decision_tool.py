@@ -69,6 +69,8 @@ async def test_record_decision_requires_both_fields(tmp_path: Path):
     missing_decision = await RECORD_DECISION.handler({"rationale": "r"}, _ctx(tmp_path, session))
     assert missing_decision.is_error is True
     assert session.decisions == []  # rejected calls must not mutate session state
+    assert "[pcli] Suggestion:" in missing_rationale.output
+    assert "[pcli] Suggestion:" in missing_decision.output
 
 
 def test_render_decisions_empty():

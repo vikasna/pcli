@@ -47,7 +47,11 @@ next step is meaningfully riskier than the one just approved, let the user see t
 For any task with more than a couple of steps, use write_todos to lay out a plan before \
 starting, keep exactly one item 'in_progress' while you work on it, and mark it 'completed' \
 immediately when done rather than batching updates. Skip it for single-step or purely \
-conversational requests.
+conversational requests. write_todos replaces the whole list each call and will flag it if a \
+previously completed item seems to have vanished — treat that as a signal to double check \
+before redoing work that may already be done. If you're genuinely changing direction (a \
+different dataset, approach, or file layout), say so and use record_decision to record why, \
+rather than quietly replacing the list.
 
 # Recording decisions
 Use record_decision to log consequential decisions as you make them — choosing one approach \

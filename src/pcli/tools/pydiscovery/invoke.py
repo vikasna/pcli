@@ -125,10 +125,25 @@ async def _call_python(arguments: dict, ctx: ToolContext) -> ToolResult:
     try:
         data = await run_bootstrap(ctx, payload)
     except RuntimeError as exc:
-        return ToolResult(output=f"Call to '{qualified_name}' failed: {exc}", is_error=True)
+        return ToolResult(
+            output=f"Call to '{qualified_name}' failed: {exc}\n"
+            "[pcli] Suggestion: use inspect_python_module to confirm the callable actually "
+            "exists under that name before retrying.",
+            is_error=True,
+        )
 
     if not data.get("ok"):
-        return ToolResult(output=data.get("error", "unknown error"), is_error=True)
+        error = data.get("error", "unknown error")
+        if "ImportError" in error or "ModuleNotFoundError" in error:
+            suggestion = "run search_python first to confirm the exact module name is installed."
+        elif "is not callable" in error:
+            suggestion = "use inspect_python_module to see what's actually callable there."
+        else:
+            suggestion = (
+                "double-check the argument names/types against inspect_python_module's "
+                "signature output."
+            )
+        return ToolResult(output=f"{error}\n[pcli] Suggestion: {suggestion}", is_error=True)
 
     result = data["result"]
     if isinstance(result, dict) and set(result) == {"__repr__", "__type__"}:

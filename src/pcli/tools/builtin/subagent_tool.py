@@ -38,7 +38,9 @@ async def _spawn_subagent(arguments: dict, ctx: ToolContext) -> ToolResult:
     if ctx.gateway_client is None or ctx.tool_registry is None or ctx.permission_manager is None:
         return ToolResult(
             output="Subagents aren't available in this context "
-            "(no gateway/tools/permissions configured).",
+            "(no gateway/tools/permissions configured).\n"
+            "[pcli] Suggestion: handle this task directly with the tools you already have "
+            "instead of delegating it.",
             is_error=True,
         )
 
@@ -100,7 +102,13 @@ async def _spawn_subagent(arguments: dict, ctx: ToolContext) -> ToolResult:
                     if message.content:
                         final_text_parts.append(message.content)
     except Exception as exc:  # noqa: BLE001 - surface subagent failure, don't crash the parent turn
-        return ToolResult(output=f"Subagent failed: {exc}", is_error=True, extra_usage=usages)
+        return ToolResult(
+            output=f"Subagent failed: {exc}\n"
+            "[pcli] Suggestion: retry with a narrower, more specific task description, or "
+            "handle it directly yourself instead of delegating.",
+            is_error=True,
+            extra_usage=usages,
+        )
     finally:
         if ctx.activity is not None:
             ctx.activity.finish_subagent()

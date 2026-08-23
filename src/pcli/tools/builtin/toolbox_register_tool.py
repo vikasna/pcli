@@ -23,7 +23,17 @@ async def _register_toolbox_tool(arguments: dict, ctx: ToolContext) -> ToolResul
             name, gateway_client=ctx.gateway_client, model=ctx.model, path=path
         )
     except ToolboxDiscoveryError as exc:
-        return ToolResult(output=str(exc), is_error=True)
+        message = str(exc)
+        if path is not None and ("doesn't exist" in message or "was not found" in message):
+            suggestion = "write_file the script first, or double-check the path is correct."
+        elif path is None:
+            suggestion = (
+                "if this is your own script rather than an installed CLI, pass path= instead "
+                "of relying on PATH lookup."
+            )
+        else:
+            suggestion = "make sure the script has a working --help that prints usage text."
+        return ToolResult(output=f"{message}\n[pcli] Suggestion: {suggestion}", is_error=True)
 
     if ctx.tool_registry is not None:
         loaded = await ctx.toolbox_manager.load_all()

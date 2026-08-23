@@ -419,3 +419,9 @@ back to the top (`scroll_home`).
 
 The pane collapses to zero height (`display: none`) whenever the todo list is
 empty. Subagent progress no longer lives here — see the status bar above.
+
+A `write_todos` call that silently drops previously `completed` items (no
+similar-enough counterpart in the new list) doesn't change how this pane
+renders — it's a note appended to the tool's own result text, shown in the
+normal collapsed tool-result `Collapsible` rather than here. See
+[`tools.md#write_todos`](tools.md#write_todos).

@@ -95,6 +95,8 @@ async def test_spawn_subagent_missing_context_reports_error(tmp_path: Path):
     result = await SPAWN_SUBAGENT.handler({"task": "do something"}, ctx)
     assert result.is_error is True
     assert "aren't available" in result.output
+    assert "[pcli] Suggestion:" in result.output
+    assert "directly" in result.output
 
 
 @pytest.mark.asyncio
@@ -146,6 +148,7 @@ async def test_spawn_subagent_gateway_error_includes_actionable_hint(tmp_path: P
     assert result.is_error is True
     assert "Subagent failed" in result.output
     assert "request_timeout_s" in result.output
+    assert "[pcli] Suggestion:" in result.output  # subagent_tool.py's own generic suggestion
 
 
 @pytest.mark.asyncio

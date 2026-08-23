@@ -42,6 +42,8 @@ async def test_fetch_artifact_unknown_id_reports_error(tmp_path: Path):
     result = await FETCH_ARTIFACT.handler({"artifact_id": "art_missing"}, _ctx(tmp_path, artifacts))
     assert result.is_error is True
     assert "No artifact found" in result.output
+    assert "[pcli] Suggestion:" in result.output
+    assert "artifact_id=" in result.output
 
 
 @pytest.mark.asyncio

@@ -54,6 +54,8 @@ async def test_read_file_not_found(tmp_path: Path):
     ctx = _ctx(tmp_path)
     result = await READ_FILE.handler({"path": "missing.txt"}, ctx)
     assert result.is_error is True
+    assert "[pcli] Suggestion:" in result.output
+    assert "list_dir" in result.output or "glob_search" in result.output
 
 
 @pytest.mark.asyncio
@@ -86,6 +88,8 @@ async def test_edit_file_old_string_not_found_errors(tmp_path: Path):
     )
     assert result.is_error is True
     assert "not found" in result.output
+    assert "[pcli] Suggestion:" in result.output
+    assert "read_file" in result.output
 
 
 @pytest.mark.asyncio
@@ -109,6 +113,16 @@ async def test_list_dir(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_list_dir_not_a_directory_suggests_checking_parent(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("x")
+    ctx = _ctx(tmp_path)
+    result = await LIST_DIR.handler({"path": "a.txt"}, ctx)
+    assert result.is_error is True
+    assert "[pcli] Suggestion:" in result.output
+    assert "list_dir" in result.output
+
+
+@pytest.mark.asyncio
 async def test_glob_search(tmp_path: Path):
     (tmp_path / "foo.py").write_text("")
     (tmp_path / "bar.txt").write_text("")
@@ -116,6 +130,16 @@ async def test_glob_search(tmp_path: Path):
     result = await GLOB_SEARCH.handler({"pattern": "*.py"}, ctx)
     assert "foo.py" in result.output
     assert "bar.txt" not in result.output
+
+
+@pytest.mark.asyncio
+async def test_glob_search_not_a_directory_suggests_checking_parent(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("x")
+    ctx = _ctx(tmp_path)
+    result = await GLOB_SEARCH.handler({"pattern": "*.py", "path": "a.txt"}, ctx)
+    assert result.is_error is True
+    assert "[pcli] Suggestion:" in result.output
+    assert "list_dir" in result.output
 
 
 @pytest.mark.asyncio
@@ -133,6 +157,18 @@ async def test_grep_invalid_regex(tmp_path: Path):
     ctx = _ctx(tmp_path)
     result = await GREP.handler({"pattern": "("}, ctx)
     assert result.is_error is True
+    assert "[pcli] Suggestion:" in result.output
+    assert "substring" in result.output
+
+
+@pytest.mark.asyncio
+async def test_grep_not_a_directory_suggests_list_dir(tmp_path: Path):
+    (tmp_path / "file.txt").write_text("x")
+    ctx = _ctx(tmp_path)
+    result = await GREP.handler({"pattern": "x", "path": "file.txt"}, ctx)
+    assert result.is_error is True
+    assert "[pcli] Suggestion:" in result.output
+    assert "list_dir" in result.output
 
 
 @pytest.mark.asyncio
@@ -187,3 +223,121 @@ async def test_run_shell_timeout_s_under_the_ceiling_is_unaffected(tmp_path: Pat
     assert sandbox.last_request is not None
     assert sandbox.last_request.timeout_s == 45
     assert "clamped" not in result.output
+
+
+# --- Corrective suggestions on failure ---
+#
+# Regression coverage for a real debugged session where the same mistakes
+# got rediscovered by trial and error instead of being headed off: three
+# separate run_shell timeouts each cost a full extra round-trip even though
+# a longer timeout_s had already worked earlier in the same session, and a
+# Windows "python3 not found" error was hit twice in a row before the model
+# tried plain "python".
+
+
+@pytest.mark.asyncio
+async def test_run_shell_timeout_under_ceiling_suggests_raising_timeout_s(tmp_path: Path):
+    sandbox = _StubShellSandbox(
+        ExecResult(stdout="", stderr="", exit_code=15, timed_out=True, backend_used="stub")
+    )
+    guardrails = GuardrailsConfig(max_shell_timeout_s=300)
+    ctx = ToolContext(sandbox=sandbox, guardrails=guardrails, cwd=tmp_path)
+
+    result = await RUN_SHELL.handler({"command": "python train.py", "timeout_s": 30}, ctx)
+
+    assert result.is_error is True
+    assert "[pcli] Suggestion:" in result.output
+    assert "timeout_s" in result.output
+    assert "run_shell_background" in result.output
+
+
+@pytest.mark.asyncio
+async def test_run_shell_timeout_at_ceiling_suggests_background_instead(tmp_path: Path):
+    sandbox = _StubShellSandbox(
+        ExecResult(stdout="", stderr="", exit_code=15, timed_out=True, backend_used="stub")
+    )
+    guardrails = GuardrailsConfig(max_shell_timeout_s=60)
+    ctx = ToolContext(sandbox=sandbox, guardrails=guardrails, cwd=tmp_path)
+
+    result = await RUN_SHELL.handler({"command": "python train.py", "timeout_s": 60}, ctx)
+
+    assert result.is_error is True
+    assert "run_shell_background" in result.output
+    assert "even at the guardrail ceiling" in result.output
+
+
+@pytest.mark.asyncio
+async def test_run_shell_bare_pip_not_recognized_suggests_python_dash_m_pip(tmp_path: Path):
+    sandbox = _StubShellSandbox(
+        ExecResult(
+            stdout="",
+            stderr="'pip' is not recognized as an internal or external command,\n"
+            "operable program or batch file.",
+            exit_code=1,
+            timed_out=False,
+            backend_used="stub",
+        )
+    )
+    ctx = ToolContext(sandbox=sandbox, guardrails=GuardrailsConfig(), cwd=tmp_path)
+
+    result = await RUN_SHELL.handler({"command": "pip install pandas"}, ctx)
+
+    assert "[pcli] Suggestion:" in result.output
+    assert "python -m pip" in result.output
+
+
+@pytest.mark.asyncio
+async def test_run_shell_python3_windows_store_stub_suggests_plain_python(tmp_path: Path):
+    sandbox = _StubShellSandbox(
+        ExecResult(
+            stdout="",
+            stderr="Python was not found; run without arguments to install from the "
+            "Microsoft Store, or disable this shortcut from Settings > Apps.",
+            exit_code=9009,
+            timed_out=False,
+            backend_used="stub",
+        )
+    )
+    ctx = ToolContext(sandbox=sandbox, guardrails=GuardrailsConfig(), cwd=tmp_path)
+
+    result = await RUN_SHELL.handler({"command": "python3 script.py"}, ctx)
+
+    assert "[pcli] Suggestion:" in result.output
+    assert "'python', not 'python3'" in result.output
+
+
+@pytest.mark.asyncio
+async def test_run_shell_module_not_found_suggests_checking_the_interpreter(tmp_path: Path):
+    sandbox = _StubShellSandbox(
+        ExecResult(
+            stdout="",
+            stderr="Traceback (most recent call last):\n"
+            "ModuleNotFoundError: No module named 'pandas'",
+            exit_code=1,
+            timed_out=False,
+            backend_used="stub",
+        )
+    )
+    ctx = ToolContext(sandbox=sandbox, guardrails=GuardrailsConfig(), cwd=tmp_path)
+
+    result = await RUN_SHELL.handler({"command": "python script.py"}, ctx)
+
+    assert "[pcli] Suggestion:" in result.output
+    assert "sys.executable" in result.output
+
+
+@pytest.mark.asyncio
+async def test_run_shell_unrecognized_failure_gets_no_suggestion(tmp_path: Path):
+    """A failure that doesn't match any known pattern must not get a
+    fabricated suggestion — only real matches should add one."""
+    sandbox = _StubShellSandbox(
+        ExecResult(
+            stdout="", stderr="ValueError: shapes not aligned", exit_code=1, timed_out=False, backend_used="stub"
+        )
+    )
+    ctx = ToolContext(sandbox=sandbox, guardrails=GuardrailsConfig(), cwd=tmp_path)
+
+    result = await RUN_SHELL.handler({"command": "python train.py"}, ctx)
+
+    assert result.is_error is True
+    assert "[pcli] Suggestion:" not in result.output

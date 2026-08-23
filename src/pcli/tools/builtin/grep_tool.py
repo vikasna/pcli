@@ -25,10 +25,19 @@ async def _grep(arguments: dict, ctx: ToolContext) -> ToolResult:
     try:
         regex = re.compile(arguments["pattern"])
     except re.error as exc:
-        return ToolResult(output=f"Invalid regex: {exc}", is_error=True)
+        return ToolResult(
+            output=f"Invalid regex: {exc}\n"
+            "[pcli] Suggestion: if you don't need regex features, escape the special "
+            "character(s) or search for a plain substring instead.",
+            is_error=True,
+        )
 
     if not resolved_base.is_dir():
-        return ToolResult(output=f"Not a directory: {resolved_base}", is_error=True)
+        return ToolResult(
+            output=f"Not a directory: {resolved_base}\n"
+            "[pcli] Suggestion: list_dir its parent to confirm the correct name/path.",
+            is_error=True,
+        )
 
     matches: list[str] = []
     scanned = 0

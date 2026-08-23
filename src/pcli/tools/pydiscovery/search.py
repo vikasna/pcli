@@ -63,10 +63,20 @@ async def _inspect_python_module(arguments: dict, ctx: ToolContext) -> ToolResul
     try:
         data = await run_bootstrap(ctx, payload)
     except RuntimeError as exc:
-        return ToolResult(output=f"Failed to inspect module '{module}': {exc}", is_error=True)
+        return ToolResult(
+            output=f"Failed to inspect module '{module}': {exc}\n"
+            "[pcli] Suggestion: run search_python first to confirm the exact module name is "
+            "actually installed.",
+            is_error=True,
+        )
 
     if not data.get("ok"):
-        return ToolResult(output=data.get("error", "unknown error"), is_error=True)
+        return ToolResult(
+            output=f"{data.get('error', 'unknown error')}\n"
+            "[pcli] Suggestion: run search_python first to confirm the exact module name is "
+            "actually installed.",
+            is_error=True,
+        )
 
     members = data["members"]
     if not members:

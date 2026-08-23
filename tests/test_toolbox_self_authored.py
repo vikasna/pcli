@@ -220,9 +220,13 @@ async def test_register_toolbox_tool_without_toolbox_manager_is_a_clean_error(tm
 
 
 @pytest.mark.asyncio
-async def test_register_toolbox_tool_missing_script_is_a_clean_error(tmp_path: Path):
+async def test_register_toolbox_tool_missing_script_suggests_write_file(tmp_path: Path):
     manager = ToolboxManager(cwd=tmp_path)
     registry = ToolRegistry()
     ctx = _ctx_with_toolbox(tmp_path, manager, registry)
     result = await REGISTER_TOOLBOX_TOOL.handler({"name": "mytool", "path": "nope.py"}, ctx)
     assert result.is_error is True
+    assert "[pcli] Suggestion:" in result.output
+    assert "write_file" in result.output
+
+

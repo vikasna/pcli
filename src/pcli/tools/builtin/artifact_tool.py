@@ -16,7 +16,13 @@ async def _fetch_artifact(arguments: dict, ctx: ToolContext) -> ToolResult:
     artifact_id = arguments["artifact_id"]
     content = ctx.artifact_store.get(artifact_id)
     if content is None:
-        return ToolResult(output=f"No artifact found with id '{artifact_id}'.", is_error=True)
+        return ToolResult(
+            output=f"No artifact found with id '{artifact_id}'.\n"
+            "[pcli] Suggestion: re-check the \"archived as artifact_id='art_...'\" note in the "
+            "original tool result rather than guessing an id — artifact ids aren't derivable "
+            "any other way.",
+            is_error=True,
+        )
 
     offset = max(0, int(arguments.get("offset") or 0))
     limit = int(arguments.get("limit") or _DEFAULT_FETCH_CHARS)

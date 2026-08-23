@@ -6,10 +6,19 @@ exports/imports, and survives resuming a session, same as everything else."""
 
 from __future__ import annotations
 
+import difflib
+
 from pcli.session.models import TodoItem
 from pcli.tools.base import ToolContext, ToolResult, ToolSpec
 
 _STATUS_ICONS = {"pending": "[ ]", "in_progress": "[~]", "completed": "[x]"}
+
+# Below this similarity ratio, a new todo's content is treated as a
+# different task from an old one, not a reworded version of the same task —
+# see _dropped_completed_items. Threshold picked to tolerate ordinary
+# rewording (e.g. tightening a task's phrasing as it's understood better)
+# while still catching wholesale replacement with an unrelated task.
+_SIMILARITY_THRESHOLD = 0.45
 
 
 def render_todos(todos: list[TodoItem]) -> str:
@@ -17,6 +26,25 @@ def render_todos(todos: list[TodoItem]) -> str:
         return "Todo list is empty."
     lines = [f"{_STATUS_ICONS.get(t.status, '[ ]')} {t.content}" for t in todos]
     return "\n".join(lines)
+
+
+def _still_represented(old_content: str, new_contents: list[str]) -> bool:
+    return any(
+        difflib.SequenceMatcher(None, old_content.lower(), nc.lower()).ratio() >= _SIMILARITY_THRESHOLD
+        for nc in new_contents
+    )
+
+
+def _dropped_completed_items(old: list[TodoItem], new: list[TodoItem]) -> list[TodoItem]:
+    """Old 'completed' items with no reasonably-similar counterpart in the
+    new list — a real debugged case: a model silently replaced a todo list
+    that had 4 completed items (real, already-verified work) with 3 brand
+    new pending ones for a superficially similar but different task,
+    without any explanation, and proceeded to redo the finished work. This
+    doesn't block the update (a genuine restart is sometimes correct) — it
+    just surfaces the loss so the model can catch its own mistake."""
+    new_contents = [t.content for t in new]
+    return [t for t in old if t.status == "completed" and not _still_represented(t.content, new_contents)]
 
 
 async def _write_todos(arguments: dict, ctx: ToolContext) -> ToolResult:
@@ -40,8 +68,18 @@ async def _write_todos(arguments: dict, ctx: ToolContext) -> ToolResult:
             is_error=True,
         )
 
+    dropped = _dropped_completed_items(ctx.session.todos, todos)
     ctx.session.todos = todos
-    return ToolResult(output=f"Todo list updated:\n{render_todos(todos)}")
+    output = f"Todo list updated:\n{render_todos(todos)}"
+    if dropped:
+        lost = "; ".join(f'"{t.content}"' for t in dropped[:5])
+        output += (
+            f"\n\n[pcli] Note: {len(dropped)} previously completed item(s) no longer appear "
+            f"in this list ({lost}). If you're deliberately restarting or changing approach, "
+            "that's fine — record_decision helps track why. If not, the underlying work may "
+            "already be done and doesn't need redoing."
+        )
+    return ToolResult(output=output)
 
 
 WRITE_TODOS = ToolSpec(
