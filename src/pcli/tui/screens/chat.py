@@ -23,7 +23,12 @@ from pcli.agent.compaction import maybe_compact
 from pcli.agent.loop import AgentLoop, ToolResultEvent
 from pcli.agent.prompt import build_system_prompt
 from pcli.config.settings import Settings, get_settings, update_config_file
-from pcli.cost.context import ContextLimitTable, current_context_usage
+from pcli.cost.context import (
+    ContextLimitTable,
+    current_context_usage,
+    looks_like_context_ceiling,
+    set_model_context_limit,
+)
 from pcli.cost.pricing_table import ModelPricing, PricingTable
 from pcli.cost.tracker import CostTracker
 from pcli.llm.client import GatewayClient
@@ -131,7 +136,7 @@ class ChatScreen(Screen):
             yield StatusBar(id="status-bar")
             yield PasteInput(
                 placeholder="Ask pcli... (/sessions, /export, /toolbox, /models, /compact, "
-                "/timeout, !shell, !!quiet-shell, !!!interactive)",
+                "/timeout, /context-limit, !shell, !!quiet-shell, !!!interactive)",
                 id="input-box",
                 expand_full_paste=True,
             )
@@ -413,6 +418,8 @@ class ChatScreen(Screen):
             self._manual_compact()
         elif command == "timeout":
             self._handle_timeout_command(rest or None)
+        elif command == "context-limit":
+            self._handle_context_limit_command(rest or None)
         else:
             message_view.add_message("system", f"Unknown command: /{command}")
 
@@ -446,6 +453,43 @@ class ChatScreen(Screen):
         message_view.add_message(
             "system", f"request_timeout_s set to {seconds:g}s — takes effect on the next gateway request."
         )
+
+    def _handle_context_limit_command(self, arg: str | None) -> None:
+        """`/context-limit [tokens]` — sets or shows the context-window size
+        pcli assumes for the current model (ContextLimitTable, cost/context.py).
+        Wrong by default for any model without a built-in or user-configured
+        entry (silently falls back to a generic 128000-token guess), which
+        disables auto-compaction for a model with a much smaller real
+        window — see the context-ceiling notice in _run_one_turn, which
+        points here. Persists to context_limits.toml and reloads the table
+        immediately, so it takes effect without a restart."""
+        message_view = self.query_one(MessageView)
+        model = self._session.model or self._settings.default_model
+        if not model:
+            message_view.add_message("system", "No model configured to set a context limit for.")
+            return
+
+        if not arg:
+            current = self._context_limit_table.lookup(model)
+            message_view.add_message(
+                "system",
+                f"Assumed context limit for '{model}': {current:,} tokens. Usage: "
+                "/context-limit <tokens>",
+            )
+            return
+
+        try:
+            limit = int(arg)
+        except ValueError:
+            message_view.add_message("system", f"'{arg}' isn't a valid number of tokens.")
+            return
+        if limit <= 0:
+            message_view.add_message("system", "Context limit must be greater than 0.")
+            return
+
+        set_model_context_limit(model, limit)
+        self._context_limit_table = ContextLimitTable.load()
+        message_view.add_message("system", f"Context limit for '{model}' set to {limit:,} tokens.")
 
     def _handle_toolbox_command(self, rest: str) -> None:
         message_view = self.query_one(MessageView)
@@ -829,11 +873,25 @@ class ChatScreen(Screen):
             # never got to an actual answer or tool call). Previously this
             # looked identical to pcli having silently failed to do anything.
             suffix = ' (see "Thinking" above)' if had_any_reasoning else ""
-            message_view.add_message(
-                "system",
-                f"The model didn't produce a reply or tool call this turn{suffix}. "
-                "Try again, or ask something more focused.",
-            )
+            note = f"The model didn't produce a reply or tool call this turn{suffix}."
+            if looks_like_context_ceiling(self._session):
+                # A real debugged case: pcli's assumed context limit for this
+                # model was wrong (silently falling back to a generic 128k
+                # guess), so the fraction-based auto-compact trigger never
+                # fired even though the session had actually exhausted the
+                # model's real, much smaller window. total_tokens plateauing
+                # near its highest-ever value for this session, turn after
+                # turn, is the tell — see looks_like_context_ceiling.
+                assumed = self._context_limit_table.lookup(self._session.model)
+                note += (
+                    f" This looks like it may have hit the model's real context limit — pcli "
+                    f"is currently assuming {assumed:,} tokens for '{self._session.model}', "
+                    "which may be wrong. Try /context-limit <tokens> to correct it (so "
+                    "auto-compaction can kick in), or /compact to free up space now."
+                )
+            else:
+                note += " Try again, or ask something more focused."
+            message_view.add_message("system", note)
         self._store.save(self._session)
 
         if self._settings.auto_compact_enabled:

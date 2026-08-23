@@ -194,6 +194,17 @@ as a normal system message instead.
   very next gateway call, no restart needed — and persists it to
   `config.toml`, the same way `/models <model-id>` persists `default_model`.
   Rejects non-numeric input and values that aren't greater than 0.
+- **`/context-limit [tokens]`** — with no argument, reports the context-
+  window size pcli currently assumes for the active model (the session's
+  model, falling back to `default_model`) — see
+  [`configuration.md`](configuration.md#context-limit-detection-and-correction).
+  With an argument (`/context-limit 16384`), sets it and persists it to
+  `context_limits.toml`'s `[models]` table — creating the file if needed,
+  preserving any other entries already there — the same file manual edits
+  already target. The running `ContextLimitTable` is reloaded immediately
+  after, so the corrected value applies starting with the very next turn, no
+  restart needed. Rejects non-numeric input and values that aren't greater
+  than 0.
 
 Any other `/word` prints "Unknown command: /word".
 
@@ -349,6 +360,18 @@ reply or tool call this turn (see "Thinking" above). Try again, or ask
 something more focused." (the parenthetical is omitted if no reasoning panel
 was shown either). If you see this, it usually means the model ran out of
 room to answer — try again, or rephrase as a more focused ask.
+
+The same notice also checks for a more specific, diagnosable cause:
+`looks_like_context_ceiling` (`src/pcli/cost/context.py`, see
+[`configuration.md`](configuration.md#context-limit-detection-and-correction))
+looks at the session's own turn-by-turn token usage for the fingerprint of a
+real, gateway-enforced context ceiling — independent of whatever limit pcli
+itself is currently assuming for the model. When it fires, the notice
+instead reads: "This looks like it may have hit the model's real context
+limit — pcli is currently assuming N tokens for '<model>', which may be
+wrong. Try /context-limit <tokens> to correct it (so auto-compaction can
+kick in), or /compact to free up space now." — pointing straight at
+[`/context-limit`](#slash-commands) as the fix.
 
 ## Decision log
 

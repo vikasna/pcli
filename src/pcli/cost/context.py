@@ -91,3 +91,71 @@ def current_context_usage(
     limit_table = limit_table or ContextLimitTable.load()
     used = session.cost.turns[-1].usage.total_tokens if session.cost.turns else 0
     return ContextUsage(used_tokens=used, limit_tokens=limit_table.lookup(session.model))
+
+
+_CEILING_MIN_TOTAL_TOKENS = 2000
+_CEILING_STALL_RATIO = 0.1
+
+
+def looks_like_context_ceiling(session: Session) -> bool:
+    """True if, compared to the immediately preceding turn, prompt_tokens
+    grew (more history got sent, as it always does turn over turn) but
+    total_tokens barely moved — meaning completion_tokens got squeezed down
+    to compensate. That's the fingerprint of a real, gateway-enforced
+    context ceiling being hit, independent of whatever limit_tokens pcli
+    itself assumed via ContextLimitTable (which is silently wrong — falls
+    back to a generic 128000-token guess — for any model without a built-in
+    or user-configured entry, so the fraction-based auto-compact trigger
+    alone can't catch this: a session that's actually 100% full can read as
+    a small fraction of an assumed limit that's far too large). Ordinary
+    turn-to-turn variation has *both* prompt_tokens and total_tokens growing
+    together; only a real ceiling clamps total_tokens while prompt_tokens
+    keeps climbing.
+
+    Confirmed against a real debugged session: three consecutive turns each
+    landed on total_tokens=16384 (or within a few tokens of it) despite
+    prompt_tokens climbing every turn — the model's real ~16k window, for a
+    model pcli had no entry for (it was assuming 128000, i.e. reading the
+    session as ~13% full when it was actually exhausted)."""
+    turns = session.cost.turns
+    if len(turns) < 2:
+        return False
+    current = turns[-1].usage
+    previous = turns[-2].usage
+    if current.total_tokens < _CEILING_MIN_TOTAL_TOKENS:
+        return False
+    prompt_growth = current.prompt_tokens - previous.prompt_tokens
+    if prompt_growth <= 0:
+        return False
+    total_growth = current.total_tokens - previous.total_tokens
+    return total_growth <= prompt_growth * _CEILING_STALL_RATIO
+
+
+def set_model_context_limit(model: str, limit: int) -> None:
+    """Persists a per-model context-window override to context_limits.toml's
+    [models] table (creating the file if it doesn't exist yet), so a wrong
+    built-in guess — or no entry at all — can be corrected without hand-
+    editing the file. Exact model-name match, not a wildcard pattern:
+    simpler and more predictable for a single correction than guessing a
+    sensible glob. Used by the TUI's /context-limit command."""
+    path = context_limits_file()
+    raw: dict = {}
+    if path.exists():
+        raw = dict(tomllib.loads(path.read_text(encoding="utf-8")))
+
+    default_limit = _DEFAULT_LIMIT
+    existing_default = raw.get("default")
+    if isinstance(existing_default, dict) and "limit" in existing_default:
+        default_limit = int(existing_default["limit"])
+
+    models = dict(raw.get("models", {}))
+    models[model] = limit
+
+    def _escape(value: str) -> str:
+        return value.replace("\\", "\\\\").replace('"', '\\"')
+
+    lines = ["[default]", f"limit = {default_limit}", "", "[models]"]
+    lines.extend(f'"{_escape(pattern)}" = {value}' for pattern, value in models.items())
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")

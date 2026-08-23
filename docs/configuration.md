@@ -122,6 +122,55 @@ Recompaction needs no special-casing: a later compaction naturally includes
 a prior compaction's own summary message among the older messages it folds
 into a fresh combined summary.
 
+## Context-limit detection and correction
+
+`ContextLimitTable` (`src/pcli/cost/context.py`) is itself just an assumption
+— a small built-in pattern table (`_BUILTIN_LIMITS`,
+`src/pcli/cost/context.py:33`) matched against the model name, or a user
+override from `context_limits.toml`'s `[models]` table, falling back to a
+generic `_DEFAULT_LIMIT` of 128,000 tokens (`src/pcli/cost/context.py:49`)
+for any model matching neither. `current_context_usage()`
+(`src/pcli/cost/context.py:88`) and the `auto_compact_threshold` trigger
+described above are only as accurate as that assumption — for a model with
+no matching entry and a real window much smaller than 128,000, the
+fraction-based trigger can read a session as mostly empty when the model has
+actually run out of room.
+
+`looks_like_context_ceiling(session)` (`src/pcli/cost/context.py:100`) is a
+second, independent check for exactly that failure mode: instead of trusting
+`ContextLimitTable`'s assumed limit at all, it looks at the session's own
+turn-by-turn usage history (`Session.cost.turns`). Ordinary turn-to-turn
+growth has both `prompt_tokens` and `total_tokens` climbing together; a real,
+gateway-enforced context ceiling instead clamps `total_tokens` (because
+`completion_tokens` gets squeezed down to compensate) while `prompt_tokens`
+keeps growing as more history gets resent. Comparing the two most recent
+turns, if `prompt_tokens` grew but `total_tokens` grew by no more than 10% of
+that growth (`_CEILING_STALL_RATIO`) — and the current turn's `total_tokens`
+is at least 2,000 (`_CEILING_MIN_TOTAL_TOKENS`, avoiding false positives on
+trivial early turns) — that's the fingerprint of a real ceiling. This was
+confirmed against a real debugged session with `google/gemma-4-12b-qat` (no
+built-in table entry, so pcli was assuming the generic 128,000-token
+default): three consecutive turns each landed on `total_tokens` around
+16,384 despite `prompt_tokens` climbing every turn — the model's real ~16k
+window — while pcli read the session as only ~13% full, so auto-compaction
+never fired and the model kept getting cut off with almost no room left to
+reply.
+
+`ChatScreen._run_one_turn` (`src/pcli/tui/screens/chat.py:877`) calls this
+heuristic whenever a turn ends with no visible reply, and if it fires, the
+"model didn't produce a reply" notice (see
+[`tui-guide.md`](tui-guide.md#when-a-turn-produces-no-reply-at-all)) names
+the currently assumed limit and points at the fix:
+[`/context-limit <tokens>`](tui-guide.md#slash-commands). That command calls
+`set_model_context_limit(model, limit)` (`src/pcli/cost/context.py:134`),
+which persists an exact-model-name entry to `context_limits.toml`'s
+`[models]` table — creating the file if it doesn't exist yet, preserving any
+other entries already there — the same file manual edits already target, so
+hand-editing it and `/context-limit` are two paths to the same effect.
+`ChatScreen` reloads its `ContextLimitTable` immediately afterward, so the
+corrected limit is used starting with the very next turn — no restart
+needed.
+
 ## Local-API mode
 
 `--local-api` doesn't fit the "overwrite this key" model above: passing it
