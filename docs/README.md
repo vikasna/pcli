@@ -43,6 +43,9 @@ TUI (ChatScreen) -> AgentLoop -> GatewayClient (LLM gateway)
   export/import, and cost/context tracking.
 - [`toolbox-plugins.md`](toolbox-plugins.md) — discovering OS/software tools
   (kubectl, SGE, Kafka, httpd, ...) for the agent to use.
+- [`agent-tools-guide.md`](agent-tools-guide.md) — how to create and register
+  a named, reusable subagent persona (an "agent tool") via
+  `register_agent_tool`, or add a new built-in default.
 - [`development.md`](development.md) — dev environment setup, running tests,
   linting, and test-layout tour.
 

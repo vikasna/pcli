@@ -220,7 +220,10 @@ for the underlying `path` mechanics.
 
 Lets the model itself define a new named subagent persona — a fixed system
 prompt plus a fixed, restricted set of already-existing tool names — callable
-afterward as an ordinary tool taking one `query` argument. Built on the same
+afterward as an ordinary tool taking one `query` argument. See
+[`agent-tools-guide.md`](agent-tools-guide.md) for a how-to walkthrough
+(creating one, a worked example, and scoping/`plan_mode_safe` guidance) — this
+section is the parameter/behavior reference only. Built on the same
 underlying mechanism as `spawn_subagent` and the three built-in
 `explore_*` tools below (`make_agent_tool`,
 `src/pcli/tools/agent_tools.py`), the difference being the persona/allowed-
