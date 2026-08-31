@@ -24,6 +24,19 @@ def test_prompt_mentions_register_toolbox_tool_and_that_it_is_permission_gated()
     assert "permission" in section
 
 
+def test_prompt_instructs_not_circumventing_guardrails():
+    assert "# Respecting guardrails" in BASE_SYSTEM_PROMPT
+    section_start = BASE_SYSTEM_PROMPT.index("# Respecting guardrails")
+    section_end = BASE_SYSTEM_PROMPT.index("# Surfacing side effects")
+    section = BASE_SYSTEM_PROMPT[section_start:section_end]
+    # Covers the three concrete guardrail mechanisms in permissions/guardrails.py
+    # plus the permission-prompt escalation path, so the instruction is
+    # grounded in real enforcement rather than a vague "be safe" platitude.
+    assert "denylist" in section
+    assert "permission" in section
+    assert "workaround" in section or "route around" in section
+
+
 def test_prompt_instructs_surfacing_side_effects_of_suggested_changes():
     assert "# Surfacing side effects" in BASE_SYSTEM_PROMPT
     section_start = BASE_SYSTEM_PROMPT.index("# Surfacing side effects")
