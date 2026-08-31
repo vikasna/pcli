@@ -103,7 +103,66 @@ import modal (`id="import-path-input"`,
 rather than a message box, a multi-line clipboard is truncated to its first
 line instead, matching Textual's own `Input._on_paste` behavior.
 
-### Esc+Esc: cancel turn
+## Mouse and clipboard
+
+Scroll-wheel scrolling and click-drag text selection/copy in the message view
+work out of the box — none of this is pcli-specific code, it's all Textual
+8.2.8 default behavior:
+
+- **Scroll wheel** works because Textual's `Driver.__init__` defaults
+  `mouse=True`, and `PcliApp(settings).run()` (`src/pcli/cli.py`) never
+  overrides it.
+- **Click-drag selection** works because `Widget.ALLOW_SELECT`,
+  `Screen.ALLOW_SELECT`, and `App.ALLOW_SELECT` all default to `True` in
+  Textual 8.2.8.
+- **Ctrl+C / Cmd+C copies the selection** via `Screen.BINDINGS`'s built-in
+  `ctrl+c`/`super+c` -> `action_copy_text`, which sends the selected text to
+  the terminal over a real **OSC 52** escape sequence
+  (`App.copy_to_clipboard`) rather than an in-process-only clipboard — so it
+  also works over SSH. `ChatScreen.BINDINGS` doesn't declare a conflicting
+  `ctrl+c` of its own (see "Quitting" above), so this reaches Textual's
+  built-in handler unobstructed; it's unrelated to Ctrl+C not quitting the
+  app — that's a separate `App`-level binding, not something that "uses up"
+  Ctrl+C here.
+
+**Caveat:** per Textual's own docstring, OSC 52 "does not work on macOS
+Terminal.app" — there's no way to copy via Ctrl+C on that terminal. Fall back
+to the terminal's own native selection instead: hold **Shift** while
+click-dragging, which (on most terminal emulators) bypasses the app's mouse
+capture in favor of the terminal's own copy mechanism.
+
+### Inside tmux or screen
+
+Mouse actions (scroll, click-drag select/copy) can stop working when pcli
+runs inside a `tmux` or GNU `screen` session, because the multiplexer sits
+between the real terminal and pcli and has to explicitly forward both raw
+mouse events and the OSC 52 clipboard sequence through — many default
+configs don't. For tmux, add to `~/.tmux.conf`:
+
+```
+set -g mouse on
+set -g set-clipboard on
+```
+
+`mouse on` makes tmux forward click/drag/scroll to the app that requested
+mouse tracking (pcli does, by default) instead of consuming them for pane
+selection/resizing. `set-clipboard on` makes tmux relay the OSC 52 sequence
+through to the real terminal's clipboard instead of swallowing it. Reload
+with `tmux source-file ~/.tmux.conf` (or restart the session). Also worth
+checking `TERM` inside tmux is something sane like `tmux-256color` — a stale
+`TERM` can cause mouse escape codes to be misinterpreted. The local terminal
+emulator outside tmux also needs to support receiving OSC 52 itself (most
+modern ones do — Windows Terminal, iTerm2, kitty, alacritty, WezTerm — some
+don't, by default or at all).
+
+GNU screen's mouse/OSC 52 passthrough support is much weaker and less
+reliable than tmux's, with no equivalent high-confidence config to give — if
+switching to tmux is an option, that's the more reliable path. Otherwise,
+**Shift-drag** for the terminal's own native selection (above) is the most
+reliable fallback regardless of multiplexer, since it's handled entirely by
+the terminal and never passes through the multiplexer or pcli at all.
+
+## Esc+Esc: cancel turn
 
 Pressing **Escape twice within 0.6 seconds**
 (`_ESCAPE_DOUBLE_PRESS_WINDOW_S`, `src/pcli/tui/screens/chat.py:58`) while a
