@@ -24,6 +24,18 @@ def test_prompt_mentions_register_toolbox_tool_and_that_it_is_permission_gated()
     assert "permission" in section
 
 
+def test_prompt_instructs_surfacing_side_effects_of_suggested_changes():
+    assert "# Surfacing side effects" in BASE_SYSTEM_PROMPT
+    section_start = BASE_SYSTEM_PROMPT.index("# Surfacing side effects")
+    section_end = BASE_SYSTEM_PROMPT.index("# Tracking work")
+    section = BASE_SYSTEM_PROMPT[section_start:section_end]
+    # Covers all four categories the user asked for: operations, settings,
+    # commands, code.
+    assert "config" in section or "setting" in section
+    assert "command" in section
+    assert "signature" in section or "code" in section
+
+
 def test_build_system_prompt_appends_extra_sections():
     result = build_system_prompt(extra_sections=["# Extra\nSomething."])
     assert result.startswith(BASE_SYSTEM_PROMPT)
