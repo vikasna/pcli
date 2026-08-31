@@ -15,7 +15,7 @@ from textual.app import App
 from pcli.config.settings import Settings
 from pcli.session.store import SessionStore
 from pcli.tui.screens.chat import ChatScreen
-from pcli.tui.widgets.paste_input import PasteInput
+from pcli.tui.widgets.chat_input import ChatInput
 
 
 class _HostApp(App):
@@ -63,18 +63,18 @@ async def test_submitting_a_pasted_placeholder_sends_the_full_clipboard_text(
         await pilot.pause()
         assert screen._client is not None  # on_mount succeeded
 
-        field = screen.query_one(PasteInput)
+        field = screen.query_one(ChatInput)
         assert field.id == "input-box"
 
-        import pcli.tui.widgets.paste_input as paste_module
+        import pcli.tui.widgets.chat_input as chat_input_module
 
         clipboard_text = "def add(a, b):\n    return a + b\n\nprint(add(1, 2))"
-        monkeypatch.setattr(paste_module.pyperclip, "paste", lambda: clipboard_text)
+        monkeypatch.setattr(chat_input_module.pyperclip, "paste", lambda: clipboard_text)
 
         field.focus()
         field.action_paste_from_os_clipboard()
         await pilot.pause()
-        assert field.value == "[Pasted 4 lines]"
+        assert field.text == "[Pasted 4 lines]"
 
         await pilot.press("enter")
         for _ in range(10):
@@ -107,13 +107,13 @@ async def test_terminal_intercepted_paste_also_sends_the_full_clipboard_text(tmp
         await pilot.pause()
         assert screen._client is not None
 
-        field = screen.query_one(PasteInput)
+        field = screen.query_one(ChatInput)
         field.focus()
 
         clipboard_text = "line one\nline two\nline three"
         field.post_message(events.Paste(text=clipboard_text))
         await pilot.pause()
-        assert field.value == "[Pasted 3 lines]"
+        assert field.text == "[Pasted 3 lines]"
 
         await pilot.press("enter")
         for _ in range(10):

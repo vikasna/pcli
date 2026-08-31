@@ -40,6 +40,8 @@ from textual import events
 from textual.binding import Binding, BindingType
 from textual.widgets import Input
 
+from pcli.tui.widgets.paste_marker import PendingPaste, decide_paste
+
 
 class PasteInput(Input):
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -49,8 +51,7 @@ class PasteInput(Input):
     def __init__(self, *args, expand_full_paste: bool = False, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._expand_full_paste = expand_full_paste
-        self._pending_paste_text: str | None = None
-        self._pending_paste_marker: str | None = None
+        self._pending_paste = PendingPaste()
 
     def _on_paste(self, event: events.Paste) -> None:
         """Overrides Input's own bracketed-paste handler — see module
@@ -84,32 +85,15 @@ class PasteInput(Input):
             self._apply_pasted_text(text)
 
     def _apply_pasted_text(self, text: str) -> None:
-        lines = text.splitlines()
-        if not lines:
+        decision = decide_paste(text, expand_full_paste=self._expand_full_paste)
+        if decision is None:
             return
-
-        if not self._expand_full_paste or len(lines) <= 1:
-            line = lines[0]
-            if not line:
-                return
-            start, end = self.selection
-            self.replace(line, start, end)
-            return
-
-        marker = f"[Pasted {len(lines)} lines]"
-        self._pending_paste_text = text
-        self._pending_paste_marker = marker
+        if decision.pending_marker is not None:
+            self._pending_paste.set(decision.pending_marker, decision.pending_full_text)
         start, end = self.selection
-        self.replace(marker, start, end)
+        self.replace(decision.text_to_insert, start, end)
 
     def consume_pending_paste(self, text: str) -> str:
         """Expands a still-present placeholder marker back to the full
-        clipboard text it stands in for. Always clears the pending state —
-        a submitted turn resets it either way, so an edited-away or
-        already-used marker can't leak into a later, unrelated paste."""
-        pending_text, marker = self._pending_paste_text, self._pending_paste_marker
-        self._pending_paste_text = None
-        self._pending_paste_marker = None
-        if pending_text is not None and marker is not None and marker in text:
-            return text.replace(marker, pending_text)
-        return text
+        clipboard text it stands in for — see PendingPaste.consume."""
+        return self._pending_paste.consume(text)

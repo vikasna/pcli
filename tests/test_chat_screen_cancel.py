@@ -16,8 +16,8 @@ from textual.app import App
 from pcli.config.settings import Settings
 from pcli.session.store import SessionStore
 from pcli.tui.screens.chat import ChatScreen
+from pcli.tui.widgets.chat_input import ChatInput
 from pcli.tui.widgets.message_view import MessageView
-from pcli.tui.widgets.paste_input import PasteInput
 
 
 class _HostApp(App):
@@ -61,9 +61,9 @@ async def _start_a_slow_turn(screen, pilot, release_event: asyncio.Event):
 
     respx.post("http://fake-gateway.test/v1/chat/completions").mock(side_effect=side_effect)
 
-    field = screen.query_one(PasteInput)
+    field = screen.query_one(ChatInput)
     field.focus()
-    field.value = "hello"
+    field.text = "hello"
     await pilot.press("enter")
     for _ in range(5):
         await pilot.pause()

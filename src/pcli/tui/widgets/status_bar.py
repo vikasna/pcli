@@ -42,6 +42,8 @@ class StatusBar(Static):
     subagent_task: reactive[str | None] = reactive(None)
     subagent_tool_calls: reactive[int] = reactive(0)
     subagent_last_tool: reactive[str | None] = reactive(None)
+    # True while /plan is active (see ChatScreen) — read/explore tools only.
+    plan_mode: reactive[bool] = reactive(False)
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -72,7 +74,9 @@ class StatusBar(Static):
                 f"{format_token_count(self.context_limit_tokens)} ({pct:.0f}%)   "
             )
         spinner_part = f"{_SPINNER_FRAMES[self._spinner_index]} Working...   " if self.busy else ""
+        plan_part = "[PLAN MODE]   " if self.plan_mode else ""
         return (
+            f"{plan_part}"
             f"{spinner_part}"
             f"model: {self.model or '-'}   "
             f"cost: ${self.session_cost_usd:.4f}   "

@@ -546,6 +546,123 @@ async def test_agent_loop_max_tool_iterations_none_is_unlimited(tmp_path: Path):
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_dispatch_denies_a_non_plan_mode_safe_tool_when_ctx_plan_mode_is_true(tmp_path: Path):
+    """The dispatch-time backstop: even if a non-plan_mode_safe tool is
+    (deliberately, here) still present in the registry, ctx.plan_mode=True
+    must deny it — proving the backstop isn't just relying on the registry
+    having been filtered."""
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(200, content=_sse(*_first_two_tool_call_chunks())),
+        httpx.Response(200, content=_sse(*_final_text_chunks("done"))),
+    ]
+
+    registry = ToolRegistry()
+    registry.register(ECHO_TOOL)  # plan_mode_safe=False (the default)
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    sandbox = FakeSandbox()
+
+    async with GatewayClient(_settings()) as client:
+        loop = AgentLoop(
+            client,
+            tool_registry=registry,
+            permission_manager=permission_manager,
+            tool_context_factory=lambda: ToolContext(
+                sandbox=sandbox,
+                guardrails=permission_manager.guardrails,
+                cwd=tmp_path,
+                plan_mode=True,
+            ),
+        )
+        events = []
+        async for event in loop.run_turn([ChatMessage(role="user", content="use the tool")]):
+            events.append(event)
+
+    tool_results = [e for e in events if isinstance(e, ToolResultEvent)]
+    assert len(tool_results) == 1
+    assert tool_results[0].is_error is True
+    assert "plan mode" in tool_results[0].output
+    assert sandbox.calls == []  # never reached the tool handler
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_dispatch_allows_a_plan_mode_safe_tool_when_ctx_plan_mode_is_true(tmp_path: Path):
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(200, content=_sse(*_first_two_tool_call_chunks())),
+        httpx.Response(200, content=_sse(*_final_text_chunks("done"))),
+    ]
+
+    plan_safe_echo = ToolSpec(
+        name="echo_tool",
+        description="Echoes text back.",
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+        handler=_echo_handler,
+        needs_permission=False,
+        plan_mode_safe=True,
+    )
+    registry = ToolRegistry()
+    registry.register(plan_safe_echo)
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+
+    async with GatewayClient(_settings()) as client:
+        loop = AgentLoop(
+            client,
+            tool_registry=registry,
+            permission_manager=permission_manager,
+            tool_context_factory=lambda: ToolContext(
+                sandbox=FakeSandbox(),
+                guardrails=permission_manager.guardrails,
+                cwd=tmp_path,
+                plan_mode=True,
+            ),
+        )
+        events = []
+        async for event in loop.run_turn([ChatMessage(role="user", content="use the tool")]):
+            events.append(event)
+
+    tool_results = [e for e in events if isinstance(e, ToolResultEvent)]
+    assert len(tool_results) == 1
+    assert tool_results[0].is_error is False
+    assert tool_results[0].output == "echoed: hi"
+
+
+@pytest.mark.asyncio
+async def test_set_tool_registry_takes_effect_on_the_next_run_turn(tmp_path: Path):
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    async with GatewayClient(_settings()) as client:
+        loop = AgentLoop(
+            client,
+            tool_registry=None,
+            permission_manager=permission_manager,
+            tool_context_factory=lambda: ToolContext(
+                sandbox=FakeSandbox(), guardrails=permission_manager.guardrails, cwd=tmp_path
+            ),
+        )
+        assert loop._tool_registry is None
+
+        registry = ToolRegistry()
+        registry.register(ECHO_TOOL)
+        loop.set_tool_registry(registry)
+
+        assert loop._tool_registry is registry
+        tools = loop._tool_registry.to_openai_tools()
+        assert tools[0].function["name"] == "echo_tool"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_reasoning_content_passes_through_but_is_never_folded_into_message_content(
     tmp_path: Path,
 ):

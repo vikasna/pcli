@@ -51,6 +51,11 @@ class ToolContext:
     toolbox_manager: ToolboxManager | None = None
     """Lets register_toolbox_tool trigger toolbox discovery directly,
     mirroring what the /toolbox discover slash command does."""
+    plan_mode: bool = False
+    """True while the session is in plan mode — checked by AgentLoop as a
+    dispatch-time backstop (see _dispatch_tool_call) independent of whatever
+    registry the caller happened to build, and by spawn_subagent to keep a
+    nested subagent from being used as a plan-mode bypass."""
 
 
 @dataclass
@@ -86,6 +91,11 @@ class ToolSpec:
     """Name of the argument holding a (possibly dotted) Python module/qualified
     name, if any — its top-level module is checked against the module denylist
     regardless of needs_permission."""
+    plan_mode_safe: bool = False
+    """Explicit opt-in for use while plan mode is active. Deliberately NOT
+    derived from needs_permission — needs_permission=False is not an accurate
+    read-only proxy (e.g. write_todos/record_decision mutate session state
+    but don't need permission)."""
 
     def to_openai_tool(self) -> ToolDefinition:
         return ToolDefinition(

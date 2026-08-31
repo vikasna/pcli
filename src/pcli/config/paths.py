@@ -37,6 +37,10 @@ def toolbox_dir() -> Path:
     return path
 
 
+def agent_tools_file() -> Path:
+    return data_dir() / "agent_tools.json"
+
+
 def config_file() -> Path:
     return config_dir() / "config.toml"
 

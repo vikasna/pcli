@@ -86,4 +86,5 @@ GREP = ToolSpec(
     handler=_grep,
     needs_permission=False,
     guardrail_path_arg="path",
+    plan_mode_safe=True,
 )

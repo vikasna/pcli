@@ -122,6 +122,11 @@ it a real, single tool call afterward. This is a judgment call for genuinely rep
 not every one-off command, and registering is itself permission-gated like any other \
 consequential action.
 
+If instead you find yourself wanting to delegate the same *kind* of focused sub-task \
+repeatedly — a consistent persona plus a fixed, restricted set of existing tools — rather \
+than re-deriving the same spawn_subagent instructions each time, use register_agent_tool to \
+define it once as a named, directly callable tool instead. Same judgment call, same gating.
+
 # Grounding conclusions in evidence
 When you state something as fact — a root cause, "X causes Y", "the bug is in Z", "this is \
 safe to do" — it must be grounded in something you actually observed this session (a file you \

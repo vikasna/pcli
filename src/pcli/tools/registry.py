@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from pcli.llm.models import ToolDefinition
 from pcli.tools.base import ToolSpec
 
@@ -16,6 +18,16 @@ class ToolRegistry:
     def merge(self, other: ToolRegistry) -> None:
         for tool in other:
             self.register(tool)
+
+    def filtered(self, predicate: Callable[[ToolSpec], bool]) -> ToolRegistry:
+        """A new registry containing only the tools predicate(tool) accepts —
+        the shared subsetting primitive behind spawn_subagent's allowed_tools,
+        plan mode's tool filtering, and agent tools' fixed allowed-tool sets."""
+        subset = ToolRegistry()
+        for tool in self:
+            if predicate(tool):
+                subset.register(tool)
+        return subset
 
     def get(self, name: str) -> ToolSpec | None:
         return self._tools.get(name)
@@ -34,6 +46,8 @@ class ToolRegistry:
 
 
 def build_default_registry() -> ToolRegistry:
+    from pcli.tools.agent_tools import EXPLORE_CODEBASE, EXPLORE_FILES, EXPLORE_LOGS
+    from pcli.tools.builtin.agent_tool_register_tool import REGISTER_AGENT_TOOL
     from pcli.tools.builtin.artifact_tool import FETCH_ARTIFACT
     from pcli.tools.builtin.decision_tool import RECORD_DECISION
     from pcli.tools.builtin.fs_tools import EDIT_FILE, GLOB_SEARCH, LIST_DIR, READ_FILE, WRITE_FILE
@@ -70,6 +84,10 @@ def build_default_registry() -> ToolRegistry:
         RECORD_DECISION,
         FETCH_ARTIFACT,
         REGISTER_TOOLBOX_TOOL,
+        EXPLORE_CODEBASE,
+        EXPLORE_FILES,
+        EXPLORE_LOGS,
+        REGISTER_AGENT_TOOL,
     ):
         registry.register(tool)
     return registry

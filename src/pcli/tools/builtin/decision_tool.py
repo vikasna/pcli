@@ -63,4 +63,5 @@ RECORD_DECISION = ToolSpec(
     },
     handler=_record_decision,
     needs_permission=False,
+    plan_mode_safe=True,
 )

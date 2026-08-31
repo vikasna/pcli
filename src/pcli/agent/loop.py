@@ -92,6 +92,9 @@ class AgentLoop:
     def set_model(self, model: str | None) -> None:
         self._model = model
 
+    def set_tool_registry(self, tool_registry: ToolRegistry | None) -> None:
+        self._tool_registry = tool_registry
+
     async def run_turn(
         self, messages: list[ChatMessage], *, ask: AskCallback | None = None
     ) -> AsyncIterator[AgentEvent]:
@@ -230,6 +233,13 @@ class AgentLoop:
         # free) so check() can attach a PermissionGrant to ctx.session when
         # the user picks "remember for session/always".
         ctx = self._tool_context_factory()
+
+        # Defense in depth: the registry not exposing a tool is necessary but
+        # not sufficient on its own — this is the real backstop against a
+        # stale/hallucinated tool call slipping through while plan mode is
+        # active, independent of whatever registry happens to be wired up.
+        if ctx.plan_mode and not tool.plan_mode_safe:
+            return "Denied: not available in plan mode.", True, [], None
 
         command = arguments.get(tool.guardrail_command_arg) if tool.guardrail_command_arg else None
         path = arguments.get(tool.guardrail_path_arg) if tool.guardrail_path_arg else None

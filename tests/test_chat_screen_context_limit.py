@@ -88,11 +88,11 @@ async def test_empty_turn_with_plateaued_usage_shows_context_ceiling_notice(tmp_
         await pilot.pause()
         assert screen._client is not None
 
-        from pcli.tui.widgets.paste_input import PasteInput
+        from pcli.tui.widgets.chat_input import ChatInput
 
-        field = screen.query_one(PasteInput)
+        field = screen.query_one(ChatInput)
         field.focus()
-        field.value = "continue"
+        field.text = "continue"
         await pilot.press("enter")
         for _ in range(10):
             await pilot.pause()
@@ -123,11 +123,11 @@ async def test_empty_turn_without_plateau_shows_generic_notice(tmp_path: Path):
         await pilot.pause()
         assert screen._client is not None
 
-        from pcli.tui.widgets.paste_input import PasteInput
+        from pcli.tui.widgets.chat_input import ChatInput
 
-        field = screen.query_one(PasteInput)
+        field = screen.query_one(ChatInput)
         field.focus()
-        field.value = "hello"
+        field.text = "hello"
         await pilot.press("enter")
         for _ in range(10):
             await pilot.pause()

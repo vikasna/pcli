@@ -51,6 +51,7 @@ READ_FILE = ToolSpec(
     handler=_read_file,
     needs_permission=False,
     guardrail_path_arg="path",
+    plan_mode_safe=True,
 )
 
 
@@ -157,6 +158,7 @@ LIST_DIR = ToolSpec(
     handler=_list_dir,
     needs_permission=False,
     guardrail_path_arg="path",
+    plan_mode_safe=True,
 )
 
 
@@ -195,4 +197,5 @@ GLOB_SEARCH = ToolSpec(
     handler=_glob_search,
     needs_permission=False,
     guardrail_path_arg="path",
+    plan_mode_safe=True,
 )

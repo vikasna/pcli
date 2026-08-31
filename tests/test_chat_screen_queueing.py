@@ -21,7 +21,7 @@ from textual.app import App
 from pcli.config.settings import Settings
 from pcli.session.store import SessionStore
 from pcli.tui.screens.chat import ChatScreen
-from pcli.tui.widgets.paste_input import PasteInput
+from pcli.tui.widgets.chat_input import ChatInput
 
 
 class _HostApp(App):
@@ -79,9 +79,9 @@ async def test_second_message_submitted_mid_turn_is_queued_not_cancelled(tmp_pat
         await pilot.pause()
         assert screen._client is not None
 
-        field = screen.query_one(PasteInput)
+        field = screen.query_one(ChatInput)
         field.focus()
-        field.value = "first"
+        field.text = "first"
         await pilot.press("enter")
 
         # Let the worker start and reach the (currently blocked) gateway call.
@@ -91,7 +91,7 @@ async def test_second_message_submitted_mid_turn_is_queued_not_cancelled(tmp_pat
 
         # Submitted while the first turn is still in flight: must be queued,
         # not start a second worker that would cancel the first.
-        field.value = "second"
+        field.text = "second"
         await pilot.press("enter")
         await pilot.pause()
 
@@ -136,9 +136,9 @@ async def test_other_exclusive_worker_no_longer_cancels_an_in_flight_turn(tmp_pa
         await pilot.pause()
         assert screen._client is not None
 
-        field = screen.query_one(PasteInput)
+        field = screen.query_one(ChatInput)
         field.focus()
-        field.value = "hello"
+        field.text = "hello"
         await pilot.press("enter")
         for _ in range(5):
             await pilot.pause()
@@ -178,9 +178,9 @@ async def test_manual_compact_is_rejected_while_a_turn_is_in_progress(tmp_path: 
 
         from pcli.tui.widgets.message_view import MessageView
 
-        field = screen.query_one(PasteInput)
+        field = screen.query_one(ChatInput)
         field.focus()
-        field.value = "hello"
+        field.text = "hello"
         await pilot.press("enter")
         for _ in range(5):
             await pilot.pause()

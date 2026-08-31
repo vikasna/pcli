@@ -225,6 +225,47 @@ async def test_spawn_subagent_respects_allowed_tools_filter(tmp_path: Path):
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_spawn_subagent_excludes_non_plan_mode_safe_tools_when_parent_is_in_plan_mode(
+    tmp_path: Path,
+):
+    """A subagent spawned while the parent is in plan mode can't be used as
+    a bypass: it inherits the same plan_mode_safe restriction the parent's
+    own registry filtering would apply."""
+    captured_registries: list[ToolRegistry] = []
+    original_init = AgentLoop.__init__
+
+    def _spying_init(self, *args, **kwargs):
+        captured_registries.append(kwargs.get("tool_registry"))
+        return original_init(self, *args, **kwargs)
+
+    import pcli.tools.builtin.subagent_tool as subagent_module
+
+    subagent_module.AgentLoop.__init__ = _spying_init  # type: ignore[method-assign]
+
+    try:
+        respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+            return_value=_text_response("done")
+        )
+        permission_manager = PermissionManager(
+            guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+        )
+        # echo_tool is plan_mode_safe=False (the default) - only SPAWN_SUBAGENT
+        # itself (plan_mode_safe=True) should survive the filter, and it's
+        # excluded anyway by the "never spawn further subagents" rule.
+        registry = _make_registry_with_echo_and_subagent()
+
+        async with GatewayClient(_settings()) as client:
+            ctx = replace(_make_ctx(tmp_path, registry, client, permission_manager), plan_mode=True)
+            await SPAWN_SUBAGENT.handler({"task": "do something"}, ctx)
+    finally:
+        subagent_module.AgentLoop.__init__ = original_init  # type: ignore[method-assign]
+
+    assert len(captured_registries) == 1
+    assert len(captured_registries[0]) == 0  # echo_tool filtered out, spawn_subagent excluded too
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_spawn_subagent_can_actually_call_a_tool(tmp_path: Path):
     route = respx.post("http://fake-gateway.test/v1/chat/completions")
     route.side_effect = [

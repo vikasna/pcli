@@ -216,6 +216,54 @@ for the underlying `path` mechanics.
   the path; other failure shapes get their own targeted suggestion (e.g.
   checking the script has a working `--help`).
 
+## register_agent_tool
+
+Lets the model itself define a new named subagent persona — a fixed system
+prompt plus a fixed, restricted set of already-existing tool names — callable
+afterward as an ordinary tool taking one `query` argument. Built on the same
+underlying mechanism as `spawn_subagent` and the three built-in
+`explore_*` tools below (`make_agent_tool`,
+`src/pcli/tools/agent_tools.py`), the difference being the persona/allowed-
+tools are baked in once at registration time instead of being chosen by the
+calling model on every call — useful when the model finds itself wanting to
+delegate the same kind of focused sub-task repeatedly instead of re-spelling
+the same instructions to `spawn_subagent` each time.
+
+- **Parameters:** `name` (string, required — the tool name it'll be callable
+  by afterward), `description` (string, required — shown to the calling
+  model as the new tool's description), `persona_prompt` (string, required —
+  system prompt for the nested subagent: its role and how it should approach
+  its task), `allowed_tools` (array of strings, required — fixed set of
+  *existing* tool names the nested subagent is restricted to),
+  `plan_mode_safe` (boolean, optional, default `false` — whether the new
+  tool should stay usable while [plan mode](tui-guide.md#plan-mode) is
+  active; only meaningful set `true` if every tool in `allowed_tools` is
+  itself read-only/exploration-only).
+- **Permission:** required **unconditionally**, same stance as
+  `register_toolbox_tool` above — `needs_permission=True` with no
+  risk-based exception. `risk_description`: "Registers a new tool the model
+  can call in later turns — grants standing execution rights to a nested
+  subagent, a bigger action than running one command."
+- **Unknown tool names** in `allowed_tools` (anything not already present in
+  the caller's own tool registry) fail cleanly with a suggestion to only
+  reference tools that actually exist, rather than registering a broken
+  persona (`src/pcli/tools/builtin/agent_tool_register_tool.py:28`).
+- **Persisted across restarts:** a successful registration is both saved to
+  `agent_tools.json` in the data dir (`save_agent_tool`,
+  `src/pcli/tools/agent_tools_store.py`) and registered live into the
+  current session's tool registry, so it's callable immediately in the same
+  session *and* still there after a restart. `ChatScreen.on_mount` calls
+  `load_persisted_agent_tools()` at startup and merges every previously
+  registered agent tool back into the registry, announcing "Loaded N
+  previously-registered agent tool(s)." if any were found.
+- Like `spawn_subagent`, a nested agent tool can never itself spawn further
+  subagents or register more agent tools beyond what `allowed_tools`
+  explicitly lists — and if the parent turn is in
+  [plan mode](tui-guide.md#plan-mode), the nested subagent's own effective
+  tool set is *also* filtered down to `plan_mode_safe` tools only
+  (`make_agent_tool`'s `_allowed` check), so plan mode can't be bypassed by
+  routing a mutating call through a nested agent tool.
+
 ## search_python
 
 "Tier 1" Python package/module discovery: searches a cached name+summary
@@ -299,6 +347,55 @@ filtered out of the tool registry a subagent runs with (by name, in
   suggestion is to handle the task directly instead of delegating; if the
   subagent itself raised an exception, the suggestion is to retry with a
   narrower task description or handle it directly.
+
+## explore_codebase, explore_files, explore_logs
+
+Three ready-made agent tools registered by default in
+`build_default_registry()`, each a thin, fixed-persona/fixed-toolset wrapper
+around the same nested-`AgentLoop` mechanism `spawn_subagent` uses
+(`make_agent_tool`, `src/pcli/tools/agent_tools.py`) — the difference from
+`spawn_subagent` is that the persona prompt and the allowed-tool set are
+baked in ahead of time rather than supplied per-call by the model, so calling
+one of these is a single-argument `query` call rather than spelling out a
+task description, a persona, and an `allowed_tools` list every time. All
+three run their nested subagent with `ctx.gateway_client`/
+`ctx.permission_manager` shared from the parent, and — like
+`spawn_subagent` — can never spawn further subagents or register more agent
+tools themselves.
+
+- **Parameters (all three):** `query` (string, required — a clear,
+  self-contained description of what to look into and what to report back).
+- **Permission (all three):** required. `risk_description`: "Runs a nested
+  agent (`<name>`) that can call tools within its fixed allowed set on its
+  own."
+- **Live progress:** same `ActivityTracker`/status-bar reporting as
+  `spawn_subagent` — see [`tui-guide.md`](tui-guide.md#status-bar).
+- **`plan_mode_safe=True`** for all three (`src/pcli/tools/agent_tools.py`) —
+  they stay available while [plan mode](tui-guide.md#plan-mode) is active,
+  since every tool each one is restricted to is itself read-only.
+
+**`explore_codebase`** — delegates a focused code-exploration question (e.g.
+"how is auth implemented", "where is X defined") to a subagent restricted to
+`read_file`, `list_dir`, `glob_search`, `grep`, `search_python`,
+`inspect_python_module`.
+
+**`explore_files`** — delegates a focused question about file/directory
+layout or contents (e.g. "find the config files", "what's in this directory
+tree") to a subagent restricted to `list_dir`, `glob_search`, `read_file`.
+
+**`explore_logs`** — delegates a focused question about on-disk log file
+contents (e.g. "find the first error in this log", "summarize what happened
+around timestamp X") to a subagent restricted to just `read_file` and
+`grep`. `run_shell` is deliberately excluded — even though it would be a
+natural fit for something like `tail`ing a log — specifically to keep this
+tool uniformly read-only, unlike `explore_codebase`/`explore_files` which
+don't have a shell tool in their allowed set to begin with either, but where
+the exclusion is worth calling out explicitly here since a log-exploration
+task is the one most tempted to reach for a shell command.
+
+New personas following this same shape can be defined at runtime by the
+model itself via `register_agent_tool` (above), or by extending
+`build_default_registry()` directly for ones that should always be present.
 
 ## write_todos
 

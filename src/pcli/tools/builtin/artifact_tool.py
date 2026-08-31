@@ -132,4 +132,5 @@ FETCH_ARTIFACT = ToolSpec(
     },
     handler=_fetch_artifact,
     needs_permission=False,
+    plan_mode_safe=True,
 )

@@ -73,7 +73,7 @@ async def test_triple_bang_dispatches_to_interactive_not_passthrough(tmp_path: P
     app = _HostApp(screen)
     async with app.run_test() as pilot:
         input_box = screen.query_one("#input-box")
-        input_box.value = "!!!echo hi"
+        input_box.text = "!!!echo hi"
         await pilot.press("enter")
         await pilot.pause()
 

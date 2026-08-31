@@ -204,6 +204,7 @@ READ_BACKGROUND_OUTPUT = ToolSpec(
     handler=_read_background_output,
     needs_permission=False,
     needs_sandbox=True,
+    plan_mode_safe=True,
 )
 
 

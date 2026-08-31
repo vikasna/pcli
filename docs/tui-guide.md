@@ -53,55 +53,113 @@ still busy, each message queues up and runs in turn, back-to-back, with
 nothing lost or interrupted along the way — the same queued-input behavior
 you may know from opencode or Claude Code.
 
-The input box is a `PasteInput` (`src/pcli/tui/widgets/paste_input.py`), a
-thin `Input` subclass making Shift+Insert (and middle-click, and
-Ctrl+Shift+V) paste the real OS clipboard, via two delivery paths that
-terminals split across unpredictably:
+The input box is a `ChatInput` (`src/pcli/tui/widgets/chat_input.py`), a
+`TextArea` subclass — Textual's `Input` is fundamentally single-line (there's
+no incremental path to multi-line from it), so an auto-growing, multi-line-
+capable box needed a different base widget. `ChatInput` layers three things
+on top of plain `TextArea`: Enter-to-submit with an explicit newline key,
+auto-grow, and paste collapsing (all below), plus Up/Down history recall (see
+"Command history" below).
+
+### Enter to send, Ctrl+J/Alt+Enter for a newline
+
+Plain **Enter** submits the message, same as before. To insert a literal
+newline instead — for a multi-line message — use **Ctrl+J** or **Alt+Enter**.
+Ctrl+J is the primary binding: it's the raw LF byte, so it works identically
+across terminals regardless of whether Shift+Enter/Alt+Enter can even be
+distinguished from plain Enter there (many terminals need the kitty-keyboard
+protocol for that, which not all support). `ChatInput._on_key` intercepts
+`enter` to post a `Submitted` message instead of letting `TextArea` insert a
+newline, and intercepts `ctrl+j`/`alt+enter` to insert `"\n"` directly instead
+of falling through to `TextArea`'s own bindings.
+
+### Auto-growing box
+
+The box starts at one visible line and grows as you type real newlines (via
+Ctrl+J/Alt+Enter, or line-wrapped input from `TextArea`'s own `soft_wrap`),
+up to a cap of **10 visible lines** (`_MAX_VISIBLE_LINES`,
+`src/pcli/tui/widgets/chat_input.py`) — `_on_text_area_changed` recalculates
+`self.styles.height` from the document's line count, clamped to
+`[1, 10]`, on every change, and shrinks back down the same way as lines are
+removed.
+
+### Paste never grows the box
+
+A **paste is never inserted as real multi-line text**, however large it is —
+if it grew the box the same way typed newlines do, pasting something huge
+(a stack trace, a whole file) would balloon the input to its 10-line cap
+instantly. Instead, a multi-line paste is collapsed to a compact one-line
+placeholder like `[Pasted 4 lines]` while you keep composing, and the real
+full text is substituted back in only at submit time — a single-line
+clipboard is still inserted directly, with no placeholder involved. This
+placeholder/substitution logic (`decide_paste`/`PendingPaste`,
+`src/pcli/tui/widgets/paste_marker.py`) is shared with `PasteInput`
+(`src/pcli/tui/widgets/paste_input.py`), the plain-`Input`-based widget used
+for the import-path field in `/sessions`'s import modal — the two widgets
+differ in how they actually insert text (`Input.replace()` vs.
+`TextArea.replace()`) but share one placeholder/expansion implementation
+rather than two diverging copies. On `ChatScreen.on_chat_input_submitted`,
+`event.chat_input.consume_pending_paste(text)` runs before any `!`/`!!`/`!!!`/
+`/` dispatch, expanding a still-present placeholder back to the original
+clipboard text — so what's actually sent to the model and stored in the
+session is always the full pasted text, never the placeholder string.
+Editing the placeholder away, or pasting again before submitting, just clears
+the stale pending state.
+
+Two delivery paths funnel into this same paste logic, since terminals split
+paste delivery across them unpredictably:
 
 - **Terminal-intercepted paste** — most terminals (Windows Terminal, xterm,
-  GNOME Terminal, ...) intercept the paste gesture themselves and deliver the
-  clipboard over the bracketed-paste channel Textual already has enabled,
-  which Textual turns into an `events.Paste` message. `PasteInput` overrides
-  `_on_paste` to apply its own logic here instead of falling through to
-  `Input`'s built-in handler, which is always first-line-only. This is the
-  path that fires in practice on most setups, including Windows Terminal.
+  GNOME Terminal, ...) intercept the paste gesture themselves (Shift+Insert,
+  middle-click, Ctrl+Shift+V) and deliver the clipboard over the
+  bracketed-paste channel Textual already has enabled, which Textual turns
+  into an `events.Paste` message. `ChatInput` overrides `_on_paste` to apply
+  its own logic here instead of falling through to `TextArea`'s built-in
+  handler. This is the path that fires in practice on most setups, including
+  Windows Terminal.
 - **Literal keystroke** — terminals that instead pass Shift+Insert through as
   a plain keystroke leave Textual with nothing bound to it by default, so
-  `PasteInput` also adds an explicit **Shift+Insert** binding
+  `ChatInput` also adds an explicit **Shift+Insert** binding
   (`action_paste_from_os_clipboard`) that reads the OS clipboard directly via
   the `pyperclip` package, as a fallback for this case. If `pyperclip` can't
   reach a clipboard mechanism (e.g. a minimal Linux setup without
   `xclip`/`xsel`/`wl-clipboard`), an error toast is shown instead of
   crashing; an empty clipboard is a silent no-op.
 
-Both paths funnel into the same insertion logic, so the behavior described
-below is the same regardless of which one a given terminal uses. Both are
-also distinct from Textual's built-in Ctrl+V, which only reflects text
-copied *within* the app (Textual's `App.clipboard` explicitly doesn't track
-the OS clipboard) and so does nothing useful for text copied from outside
-pcli (a browser, another terminal, an editor). All of `Input`'s other
-bindings (arrow keys, Ctrl+C copy, etc.) are unaffected — Textual merges a
-subclass's `BINDINGS` with the parent's rather than replacing them.
+Both are also distinct from Textual's built-in Ctrl+V, which only reflects
+text copied *within* the app (Textual's `App.clipboard` explicitly doesn't
+track the OS clipboard) and so does nothing useful for text copied from
+outside pcli (a browser, another terminal, an editor). All of `TextArea`'s
+other bindings (arrow keys, cursor movement, etc.) are unaffected — Textual
+merges a subclass's `BINDINGS` with the parent's rather than replacing them.
 
-Since the input box is single-line, a multi-line clipboard can't be shown
-inline. The chat input is constructed with `expand_full_paste=True`, so a
-single-line clipboard is still inserted directly, but a multi-line one is
-kept off-screen and a compact placeholder like `[Pasted 4 lines]` is
-inserted in its place while you keep composing. The placeholder is
-display-only: `ChatScreen.on_input_submitted` calls
-`event.input.consume_pending_paste(text)` before doing anything else with
-the submitted text (including `!`/`!!`/`!!!`/`/` dispatch), which expands a
-still-present placeholder back to the original clipboard text — so what's
-actually sent to the model and stored in the session is always the full
-pasted text, never the placeholder string. Editing the placeholder away, or
-pasting again before submitting, just clears the stale pending state.
+### Command history: Up/Down
 
-The same `PasteInput` is also used, with the default
-`expand_full_paste=False`, for the import-path field in `/sessions`'s
-import modal (`id="import-path-input"`,
-`src/pcli/tui/screens/sessions.py`) — there, being a single-value path field
-rather than a message box, a multi-line clipboard is truncated to its first
-line instead, matching Textual's own `Input._on_paste` behavior.
+**Up** and **Down** recall previously-submitted messages, shell-style —
+oldest-to-newest walking up, back down toward whatever you'd been composing
+before you started browsing history. This only kicks in **while the current
+draft has no newline in it**: the moment a draft has a real newline (from
+Ctrl+J/Alt+Enter), Up/Down instead move the cursor within that multi-line
+text like you'd expect from a normal text box, rather than trying to reason
+about soft-wrapped visual rows vs. logical lines
+(`ChatInput.action_cursor_up`/`action_cursor_down`,
+`src/pcli/tui/widgets/chat_input.py`). Pressing Up from a fresh, empty box
+starts at the most recently submitted message; continuing to press Up walks
+further back; Down walks forward again and, one press past the newest
+history entry, restores whatever draft you had in progress before you
+started browsing (`_draft_before_history`) rather than leaving you on the
+newest history entry forever. History is populated by
+`ChatScreen.on_chat_input_submitted` calling `add_to_history(text)` right
+after handling any submission — plain text, `/command`, or `!shell` alike —
+and is in-memory only (not persisted across restarts).
+
+The import-path field in `/sessions`'s import modal
+(`id="import-path-input"`, `src/pcli/tui/screens/sessions.py`) still uses the
+older `PasteInput` (`Input`-based) with the default
+`expand_full_paste=False` — there, being a single-value path field rather
+than a message box, a multi-line clipboard is truncated to its first line
+instead, matching Textual's own `Input._on_paste` behavior, and there's no
+auto-grow or history recall since it's a single-line field.
 
 ## Mouse and clipboard
 
@@ -264,8 +322,69 @@ as a normal system message instead.
   after, so the corrected value applies starting with the very next turn, no
   restart needed. Rejects non-numeric input and values that aren't greater
   than 0.
+- **`/rename [name]`** — with no argument, reports the session's current
+  title (`Session.derive_title()` — the value shown in `/sessions`'s list).
+  With an argument (`/rename my-feature-branch`), sets `Session.title`
+  directly to the rest of the line and saves the session immediately
+  (`ChatScreen._handle_rename_command`, `src/pcli/tui/screens/chat.py`).
+  `derive_title()` prefers an explicitly-set title over the auto-derived
+  snippet of the first message, so a renamed session keeps that name in the
+  session list even as the conversation moves on.
+- **`/plan`** / **`/build`** — toggle plan mode: a restricted mode for
+  investigating and proposing an approach without the model being able to
+  make any changes. See [Plan mode](#plan-mode) below for the full behavior.
 
 Any other `/word` prints "Unknown command: /word".
+
+## Plan mode
+
+`/plan` enters plan mode; `/build` exits it back to normal ("build") mode
+(`ChatScreen._set_plan_mode`, `src/pcli/tui/screens/chat.py`). While active,
+only read-only/exploration tools are available to the model — everything
+that writes, edits, or executes is denied. Running the command already
+matching the current mode (e.g. `/plan` while already in plan mode) is a
+no-op that just reports "Already in plan mode."
+
+Allowed in plan mode (every tool with `plan_mode_safe=True`,
+`src/pcli/tools/base.py`'s `ToolSpec.plan_mode_safe` field): `read_file`,
+`list_dir`, `glob_search`, `grep`, `search_python`, `inspect_python_module`,
+`fetch_artifact`, `read_background_output`, `write_todos`, `record_decision`,
+`spawn_subagent`, plus the registered agent tools (`explore_codebase`,
+`explore_files`, `explore_logs`, and any `register_agent_tool`-defined ones
+marked `plan_mode_safe`) — see [`tools.md`](tools.md) for what each does.
+Everything else — `write_file`, `edit_file`, `run_shell`,
+`run_shell_background`, `stop_background_process`, `call_python`,
+`register_toolbox_tool`, `register_agent_tool` itself, and any
+toolbox-discovered tool — is unavailable while plan mode is active.
+
+Three independent layers enforce this, deliberately redundant (defense in
+depth) rather than relying on any single one:
+
+1. **Tool registry filtering** — `ChatScreen._effective_tool_registry`
+   returns `self._tool_registry.filtered(lambda t: t.plan_mode_safe)` while
+   plan mode is on, so the model never even sees a disallowed tool in its
+   tool list. This is the primary mechanism.
+2. **Dispatch-time backstop** — `AgentLoop._dispatch_tool_call`
+   (`src/pcli/agent/loop.py`) independently checks `ctx.plan_mode and not
+   tool.plan_mode_safe` and returns "Denied: not available in plan mode." if
+   so, regardless of what registry happens to be wired up — protecting
+   against a stale registry or a hallucinated tool call that somehow reached
+   dispatch. `ToolContext.plan_mode` (`src/pcli/tools/base.py`) carries the
+   current mode down into every tool call.
+3. **Per-turn prompt reinforcement** — while plan mode is active, each turn
+   gets an ephemeral `_PLAN_MODE_REINFORCEMENT` system message appended
+   (`src/pcli/tui/screens/chat.py`) reminding the model it's in plan mode and
+   should investigate/propose rather than act or try to route around the
+   restriction. This is injected fresh per turn and **never persisted** to
+   `session.messages`, so it can't drift out of sync via compaction and
+   doesn't pollute exports/resumption.
+
+Toggling either command swaps the live `AgentLoop`'s tool registry
+immediately via `AgentLoop.set_tool_registry` — no restart, and it takes
+effect starting with the very next turn. The status bar shows a `[PLAN
+MODE]` tag at the start of its first line while active (`StatusBar.plan_mode`
+reactive, `src/pcli/tui/widgets/status_bar.py`) — see
+[Status bar](#status-bar) below.
 
 ## Auto-compaction
 
@@ -465,12 +584,15 @@ One line normally, growing to two while a subagent is running
 (`StatusBar._sync_height`, `src/pcli/tui/widgets/status_bar.py`):
 
 ```
-⠋ Working...   model: gpt-4o   cost: $0.0123   ctx: 3.2k/128.0k (2%)   tokens: 4.1k   sandbox: docker
+[PLAN MODE]   ⠋ Working...   model: gpt-4o   cost: $0.0123   ctx: 3.2k/128.0k (2%)   tokens: 4.1k   sandbox: docker
 ⟳ Subagent: investigate failing test — 3 tool call(s), last: run_shell
 ```
 
 Line 1:
 
+- `[PLAN MODE]` tag — shown at the very start of the line, only while
+  [plan mode](#plan-mode) is active (`StatusBar.plan_mode` reactive, set by
+  `ChatScreen._set_plan_mode`). Absent entirely in normal ("build") mode.
 - Spinner (braille frames, ticks at 10fps) — shown only while `busy` (set for
   the whole duration of a turn: waiting on the LLM, streaming, running tool
   calls — cleared once the response is fully printed).

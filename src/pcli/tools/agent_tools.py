@@ -1,0 +1,188 @@
+"""make_agent_tool: builds a ToolSpec around a fixed persona + fixed
+allowed-tool set, calling into a fresh nested AgentLoop exactly the way
+spawn_subagent does — the difference is the persona/allowed-tools are baked
+in at registration time instead of supplied by the calling model per-call.
+
+Used both for the three built-in exploration agent tools registered in
+build_default_registry() and for user/model-defined ones persisted via
+register_agent_tool (tools/builtin/agent_tool_register_tool.py).
+"""
+
+from __future__ import annotations
+
+from dataclasses import replace
+
+from pcli.agent.loop import AgentLoop, ToolStartEvent, TurnCompleteEvent
+from pcli.llm.models import ChatMessage, Usage, UsageEvent
+from pcli.tools.base import ToolContext, ToolResult, ToolSpec
+
+_DEFAULT_MAX_ITERATIONS = 15
+
+
+def make_agent_tool(
+    name: str,
+    description: str,
+    persona_prompt: str,
+    allowed_tool_names: list[str],
+    *,
+    plan_mode_safe: bool = False,
+) -> ToolSpec:
+    async def _handler(arguments: dict, ctx: ToolContext) -> ToolResult:
+        if ctx.gateway_client is None or ctx.tool_registry is None or ctx.permission_manager is None:
+            return ToolResult(
+                output=f"'{name}' isn't available in this context "
+                "(no gateway/tools/permissions configured).\n"
+                "[pcli] Suggestion: handle this task directly with the tools you already have "
+                "instead of delegating it.",
+                is_error=True,
+            )
+
+        query = arguments["query"]
+        max_iterations = (
+            min(ctx.max_tool_iterations, _DEFAULT_MAX_ITERATIONS)
+            if ctx.max_tool_iterations is not None
+            else _DEFAULT_MAX_ITERATIONS
+        )
+
+        def _allowed(tool: ToolSpec) -> bool:
+            if tool.name not in allowed_tool_names:
+                return False
+            # Same plan-mode inheritance as spawn_subagent: a nested agent
+            # tool can't be used as a bypass while the parent is restricted.
+            return not (ctx.plan_mode and not tool.plan_mode_safe)
+
+        sub_registry = ctx.tool_registry.filtered(_allowed)
+
+        child_ctx = replace(ctx, tool_registry=sub_registry, subagent_depth=ctx.subagent_depth + 1)
+        sub_loop = AgentLoop(
+            ctx.gateway_client,
+            model=ctx.model,
+            tool_registry=sub_registry,
+            permission_manager=ctx.permission_manager,
+            tool_context_factory=lambda: child_ctx,
+            max_tool_iterations=max_iterations,
+        )
+
+        messages = [
+            ChatMessage(role="system", content=persona_prompt),
+            ChatMessage(role="user", content=query),
+        ]
+
+        final_text_parts: list[str] = []
+        tool_call_count = 0
+        usages: list[Usage] = []
+        if ctx.activity is not None:
+            ctx.activity.start_subagent(f"{name}: {query}")
+        try:
+            async for event in sub_loop.run_turn(messages, ask=ctx.ask):
+                if isinstance(event, UsageEvent):
+                    usages.append(event.usage)
+                elif isinstance(event, ToolStartEvent):
+                    if ctx.activity is not None:
+                        ctx.activity.record_subagent_tool_call(event.tool_call.function.name)
+                elif isinstance(event, TurnCompleteEvent):
+                    for message in event.new_messages:
+                        if message.role != "assistant":
+                            continue
+                        if message.tool_calls:
+                            tool_call_count += len(message.tool_calls)
+                        if message.content:
+                            final_text_parts.append(message.content)
+        except Exception as exc:  # noqa: BLE001 - surface failure, don't crash the parent turn
+            return ToolResult(
+                output=f"'{name}' failed: {exc}\n"
+                "[pcli] Suggestion: retry with a narrower, more specific query, or handle it "
+                "directly yourself instead of delegating.",
+                is_error=True,
+                extra_usage=usages,
+            )
+        finally:
+            if ctx.activity is not None:
+                ctx.activity.finish_subagent()
+
+        result_text = "\n\n".join(part for part in final_text_parts if part).strip()
+        if not result_text:
+            result_text = f"({name} produced no final text output)"
+        summary = f"[{name} made {tool_call_count} tool call(s)]\n{result_text}"
+        return ToolResult(output=summary, extra_usage=usages)
+
+    return ToolSpec(
+        name=name,
+        description=description,
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "A clear, self-contained description of what to look into "
+                    "and what to report back.",
+                }
+            },
+            "required": ["query"],
+        },
+        handler=_handler,
+        needs_permission=True,
+        risk_description=f"Runs a nested agent ({name}) that can call tools within its "
+        "fixed allowed set on its own.",
+        plan_mode_safe=plan_mode_safe,
+    )
+
+
+_EXPLORE_CODEBASE_PERSONA = (
+    "You are a code exploration subagent spawned by another AI agent (pcli) to answer a "
+    "specific question about a codebase. Use the tools available to you to investigate, then "
+    "give a clear, self-contained final answer — reference file_path:line where it helps. The "
+    "parent agent only sees your final text, not your intermediate steps."
+)
+
+_EXPLORE_FILES_PERSONA = (
+    "You are a file/directory exploration subagent spawned by another AI agent (pcli) to "
+    "answer a specific question about the layout or contents of files/directories. Use the "
+    "tools available to you to investigate, then give a clear, self-contained final answer. "
+    "The parent agent only sees your final text, not your intermediate steps."
+)
+
+_EXPLORE_LOGS_PERSONA = (
+    "You are a log exploration subagent spawned by another AI agent (pcli) to answer a "
+    "specific question about the contents of on-disk log files. Use the tools available to "
+    "you to investigate, then give a clear, self-contained final answer — reference "
+    "file_path:line where it helps. The parent agent only sees your final text, not your "
+    "intermediate steps."
+)
+
+EXPLORE_CODEBASE = make_agent_tool(
+    name="explore_codebase",
+    description="Delegate a focused code-exploration question (e.g. 'how is auth implemented', "
+    "'where is X defined') to a subagent restricted to read-only code search/inspection tools. "
+    "Use this to isolate exploratory work without cluttering the main conversation.",
+    persona_prompt=_EXPLORE_CODEBASE_PERSONA,
+    allowed_tool_names=[
+        "read_file",
+        "list_dir",
+        "glob_search",
+        "grep",
+        "search_python",
+        "inspect_python_module",
+    ],
+    plan_mode_safe=True,
+)
+
+EXPLORE_FILES = make_agent_tool(
+    name="explore_files",
+    description="Delegate a focused question about file/directory layout or contents (e.g. "
+    "'find the config files', 'what's in this directory tree') to a subagent restricted to "
+    "read-only filesystem tools.",
+    persona_prompt=_EXPLORE_FILES_PERSONA,
+    allowed_tool_names=["list_dir", "glob_search", "read_file"],
+    plan_mode_safe=True,
+)
+
+EXPLORE_LOGS = make_agent_tool(
+    name="explore_logs",
+    description="Delegate a focused question about on-disk log file contents (e.g. 'find the "
+    "first error in this log', 'summarize what happened around timestamp X') to a subagent "
+    "restricted to read_file/grep — deliberately excludes run_shell so it stays read-only.",
+    persona_prompt=_EXPLORE_LOGS_PERSONA,
+    allowed_tool_names=["read_file", "grep"],
+    plan_mode_safe=True,
+)

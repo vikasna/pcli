@@ -20,7 +20,6 @@ from dataclasses import replace
 from pcli.agent.loop import AgentLoop, ToolStartEvent, TurnCompleteEvent
 from pcli.llm.models import ChatMessage, Usage, UsageEvent
 from pcli.tools.base import ToolContext, ToolResult, ToolSpec
-from pcli.tools.registry import ToolRegistry
 
 SPAWN_SUBAGENT_TOOL_NAME = "spawn_subagent"
 
@@ -58,13 +57,16 @@ async def _spawn_subagent(arguments: dict, ctx: ToolContext) -> ToolResult:
     else:
         max_iterations = min(ctx.max_tool_iterations, _DEFAULT_MAX_ITERATIONS)
 
-    sub_registry = ToolRegistry()
-    for tool in ctx.tool_registry:
+    def _allowed(tool: ToolSpec) -> bool:
         if tool.name == SPAWN_SUBAGENT_TOOL_NAME:
-            continue  # subagents can never spawn further subagents
+            return False  # subagents can never spawn further subagents
         if allowed_tool_names is not None and tool.name not in allowed_tool_names:
-            continue
-        sub_registry.register(tool)
+            return False
+        # A subagent spawned while the parent is in plan mode can't be used
+        # as a bypass — it inherits the same restriction.
+        return not (ctx.plan_mode and not tool.plan_mode_safe)
+
+    sub_registry = ctx.tool_registry.filtered(_allowed)
 
     child_ctx = replace(ctx, tool_registry=sub_registry, subagent_depth=ctx.subagent_depth + 1)
     sub_loop = AgentLoop(
@@ -152,4 +154,5 @@ SPAWN_SUBAGENT = ToolSpec(
     handler=_spawn_subagent,
     needs_permission=True,
     risk_description="Spawns a subagent that can call tools (including sandboxed ones) on its own.",
+    plan_mode_safe=True,
 )

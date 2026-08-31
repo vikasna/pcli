@@ -16,7 +16,6 @@ from textual.app import ComposeResult, SuspendNotSupported
 from textual.binding import BindingType
 from textual.containers import Vertical
 from textual.screen import Screen
-from textual.widgets import Input
 
 from pcli.agent.activity import ActivityTracker
 from pcli.agent.compaction import maybe_compact
@@ -33,7 +32,7 @@ from pcli.cost.pricing_table import ModelPricing, PricingTable
 from pcli.cost.tracker import CostTracker
 from pcli.llm.client import GatewayClient
 from pcli.llm.errors import GatewayError
-from pcli.llm.models import Usage
+from pcli.llm.models import ChatMessage, Usage
 from pcli.permissions.guardrails import GuardrailsConfig
 from pcli.permissions.manager import AskCallback, PermissionManager
 from pcli.sandbox.base import Sandbox, SandboxSecurityError
@@ -42,14 +41,15 @@ from pcli.sandbox.subprocess_backend import RestrictedSubprocessSandbox
 from pcli.session.export import export_session
 from pcli.session.models import Message, Session, ToolInvocation
 from pcli.session.store import SessionStore
+from pcli.tools.agent_tools_store import load_persisted_agent_tools
 from pcli.tools.artifacts import SessionArtifactStore
 from pcli.tools.base import ToolContext
 from pcli.tools.registry import ToolRegistry, build_default_registry
 from pcli.tools.toolbox.manager import ToolboxDiscoveryError, ToolboxManager
 from pcli.tui.screens.permission_modal import ask_via_modal
 from pcli.tui.shell_passthrough import run_passthrough_command
+from pcli.tui.widgets.chat_input import ChatInput
 from pcli.tui.widgets.message_view import MessageView
-from pcli.tui.widgets.paste_input import PasteInput
 from pcli.tui.widgets.status_bar import StatusBar
 from pcli.tui.widgets.status_pane import StatusPane
 
@@ -61,6 +61,21 @@ _FREE_PRICING_TABLE = PricingTable(entries={}, default=ModelPricing())
 # How long a second Escape press has to land after the first to count as a
 # "confirm cancel" double-press (see ChatScreen.action_cancel_turn).
 _ESCAPE_DOUBLE_PRESS_WINDOW_S = 0.6
+
+# Ephemeral, per-turn reinforcement injected only while plan mode is active
+# (see _run_one_turn) — never persisted to session.messages, so it can't be
+# "forgotten" via compaction drift and never pollutes exports/resumption.
+# The tool registry itself already blocks non-plan_mode_safe tools (and
+# AgentLoop's dispatch-time backstop denies them even if one slipped through
+# a stale registry) — this is a second, prompt-level layer on top of that,
+# not the actual safety boundary.
+_PLAN_MODE_REINFORCEMENT = (
+    "# Plan mode active\n"
+    "You are in plan mode: only read-only/exploration tools are available (writes, edits, "
+    "shell commands, and other mutating actions will be denied if attempted). Investigate, "
+    "explain your findings, and propose an approach — do not try to make changes or route "
+    "around this restriction. The user will switch to /build before asking you to act on it."
+)
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +127,7 @@ class ChatScreen(Screen):
         self._turn_in_progress = False
         self._has_queued_followup = False
         self._last_escape_at = 0.0
+        self._plan_mode = False
 
         if session is not None:
             self._session = session
@@ -134,11 +150,11 @@ class ChatScreen(Screen):
             yield StatusPane(id="status-pane")
             yield MessageView(id="message-view")
             yield StatusBar(id="status-bar")
-            yield PasteInput(
+            yield ChatInput(
                 placeholder="Ask pcli... (/sessions, /export, /toolbox, /models, /compact, "
-                "/timeout, /context-limit, !shell, !!quiet-shell, !!!interactive)",
+                "/timeout, /context-limit, /rename, /plan, /build, !shell, !!quiet-shell, "
+                "!!!interactive — Enter to send, Ctrl+J for a newline)",
                 id="input-box",
-                expand_full_paste=True,
             )
 
     def _refresh_cost_display(self, status_bar: StatusBar) -> None:
@@ -168,7 +184,7 @@ class ChatScreen(Screen):
         status_bar.subagent_last_tool = sub.last_tool if sub else None
 
     async def on_mount(self) -> None:
-        self.query_one(Input).focus()
+        self.query_one(ChatInput).focus()
         status_bar = self.query_one(StatusBar)
         status_bar.model = self._session.model or self._settings.default_model
         self._refresh_cost_display(status_bar)
@@ -235,6 +251,13 @@ class ChatScreen(Screen):
                 "system", f"Loaded {len(toolbox_tools)} previously-discovered toolbox tool(s)."
             )
 
+        agent_tools = load_persisted_agent_tools()
+        self._tool_registry.merge(agent_tools)
+        if len(agent_tools):
+            message_view.add_message(
+                "system", f"Loaded {len(agent_tools)} previously-registered agent tool(s)."
+            )
+
         self._client = GatewayClient(self._settings)
         self._agent_loop = AgentLoop(
             self._client,
@@ -246,6 +269,17 @@ class ChatScreen(Screen):
             artifact_threshold_chars=self._settings.artifact_threshold_chars,
         )
 
+    def _effective_tool_registry(self) -> ToolRegistry | None:
+        """self._tool_registry filtered to plan_mode_safe tools while plan
+        mode is active, recomputed fresh each time (rather than cached)
+        since self._tool_registry itself can grow after startup, e.g. via
+        register_toolbox_tool/register_agent_tool)."""
+        if self._tool_registry is None:
+            return None
+        if self._plan_mode:
+            return self._tool_registry.filtered(lambda t: t.plan_mode_safe)
+        return self._tool_registry
+
     def _make_tool_context(self) -> ToolContext:
         assert self._sandbox is not None
         return ToolContext(
@@ -254,7 +288,7 @@ class ChatScreen(Screen):
             cwd=self._cwd,
             gateway_client=self._client,
             model=self._settings.default_model or None,
-            tool_registry=self._tool_registry,
+            tool_registry=self._effective_tool_registry(),
             permission_manager=self._permission_manager,
             ask=self._current_ask,
             max_tool_iterations=self._effective_max_tool_iterations(),
@@ -262,6 +296,7 @@ class ChatScreen(Screen):
             artifact_store=self._artifact_store,
             activity=self._activity,
             toolbox_manager=self._toolbox_manager,
+            plan_mode=self._plan_mode,
         )
 
     async def on_unmount(self) -> None:
@@ -303,13 +338,13 @@ class ChatScreen(Screen):
                 "system", "Press Esc again to cancel the current turn."
             )
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
+    def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         text = event.value.strip()
-        if isinstance(event.input, PasteInput):
-            text = event.input.consume_pending_paste(text)
+        text = event.chat_input.consume_pending_paste(text)
         if not text:
             return
-        event.input.value = ""
+        event.chat_input.text = ""
+        event.chat_input.add_to_history(text)
 
         if text.startswith("!!!"):
             self._run_interactive_shell(text[3:].strip())
@@ -420,6 +455,12 @@ class ChatScreen(Screen):
             self._handle_timeout_command(rest or None)
         elif command == "context-limit":
             self._handle_context_limit_command(rest or None)
+        elif command == "rename":
+            self._handle_rename_command(rest or None)
+        elif command == "plan":
+            self._set_plan_mode(True)
+        elif command == "build":
+            self._set_plan_mode(False)
         else:
             message_view.add_message("system", f"Unknown command: /{command}")
 
@@ -490,6 +531,49 @@ class ChatScreen(Screen):
         set_model_context_limit(model, limit)
         self._context_limit_table = ContextLimitTable.load()
         message_view.add_message("system", f"Context limit for '{model}' set to {limit:,} tokens.")
+
+    def _handle_rename_command(self, arg: str | None) -> None:
+        """`/rename [name]` — sets Session.title, which derive_title() (used
+        by the /sessions list) prefers over the auto-derived first-message
+        snippet. No-arg shows the current title."""
+        message_view = self.query_one(MessageView)
+        if not arg:
+            message_view.add_message(
+                "system", f"Current session title: '{self._session.derive_title()}'. Usage: /rename <name>"
+            )
+            return
+
+        self._session.title = arg
+        self._store.save(self._session)
+        message_view.add_message("system", f"Session renamed to '{arg}'.")
+
+    def _set_plan_mode(self, enabled: bool) -> None:
+        """`/plan` (enter) / `/build` (exit) — restricts the agent to
+        plan_mode_safe tools (read/explore only, no writes/edits/shell). The
+        registry swap is the primary mechanism (the model never even sees a
+        disallowed tool); AgentLoop's dispatch-time backstop and the
+        per-turn prompt reinforcement (_PLAN_MODE_REINFORCEMENT) are the
+        additional layers on top, not the boundary itself."""
+        message_view = self.query_one(MessageView)
+        if enabled == self._plan_mode:
+            message_view.add_message(
+                "system", f"Already in {'plan' if enabled else 'build'} mode."
+            )
+            return
+
+        self._plan_mode = enabled
+        self.query_one(StatusBar).plan_mode = enabled
+        if self._agent_loop is not None:
+            self._agent_loop.set_tool_registry(self._effective_tool_registry())
+
+        if enabled:
+            message_view.add_message(
+                "system",
+                "Plan mode enabled: only read-only/exploration tools are available. "
+                "Use /build to exit and allow writes/edits/shell commands again.",
+            )
+        else:
+            message_view.add_message("system", "Build mode restored: all tools are available again.")
 
     def _handle_toolbox_command(self, rest: str) -> None:
         message_view = self.query_one(MessageView)
@@ -805,6 +889,8 @@ class ChatScreen(Screen):
 
         try:
             chat_messages = [m.to_chat_message() for m in self._session.messages]
+            if self._plan_mode:
+                chat_messages.append(ChatMessage(role="system", content=_PLAN_MODE_REINFORCEMENT))
             async for chunk in self._agent_loop.run_turn(chat_messages, ask=ask):
                 if chunk.kind == "text_delta":
                     had_any_content = True
