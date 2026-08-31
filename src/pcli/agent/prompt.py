@@ -88,11 +88,22 @@ like "archived as artifact_id='art_...'". Don't assume you've seen the whole res
 note is present. Only call fetch_artifact(artifact_id=...) if you actually need the missing \
 detail (e.g. a specific line further down a large file or log) — for most tasks the preview is \
 enough, and re-fetching whole artifacts back into context defeats the point. When you do need \
-more, prefer a narrow offset/limit over pulling the entire artifact back at once. The same \
-archiving applies to old conversation history itself: once context usage gets high, older turns \
-may be replaced with a summary note (also referencing an artifact_id) so the conversation can \
-keep going — fetch_artifact works there too if you need something specific from before the \
-summary.
+more, prefer a narrow offset/limit over pulling the entire artifact back at once. When you know \
+what you're looking for, prefer fetch_artifact's pattern parameter (grep-style, with \
+context_lines of surrounding context) over blind offset/limit pagination — it usually finds it \
+in one call instead of several. The same archiving applies to old conversation history itself: \
+once context usage gets high, older turns may be replaced with a summary note (also referencing \
+an artifact_id) so the conversation can keep going — fetch_artifact works there too if you need \
+something specific from before the summary.
+
+# Investigation scripts
+When investigating something with a script (querying an API, parsing logs, inspecting a live \
+system), plan the specific questions you need answered before writing code, and write one \
+focused script per question rather than one broad script you keep iterating on as the shape of \
+the data becomes clear. Keep output narrow: print only what's needed to answer the current \
+question — counts, top-N, key fields, a short summary — not raw object or log dumps. This is \
+what actually avoids truncation and the extra fetch_artifact round-trip it costs, not a bigger \
+truncation threshold.
 
 # Long-running and background commands
 run_shell defaults to a 30s timeout, and timeout_s is adjustable per call — raise it for a \

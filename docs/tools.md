@@ -365,17 +365,45 @@ does for `write_todos`.
 ## fetch_artifact
 
 Retrieves (a windowed slice of) content previously archived by the automatic
-truncation mechanism below.
+truncation mechanism below. Supports two mutually exclusive modes: a
+character-slice mode (`offset`/`limit`) and a grep-style search mode
+(`pattern`/`context_lines`).
 
 - **Parameters:** `artifact_id` (string, required), `offset` (integer,
-  optional, default 0), `limit` (integer, optional, default 4000).
+  optional, default 0), `limit` (integer, optional, default 4000), `pattern`
+  (string regex, optional), `context_lines` (integer, optional, default 2).
 - **Permission:** not required.
-- Returns the `[offset:offset+limit]` slice plus a footer noting the next
-  offset to use if more remains.
+- **Default mode (`pattern` omitted):** unchanged from before — returns the
+  `[offset:offset+limit]` slice plus a footer noting the next offset to use
+  if more remains.
+- **Pattern mode (`pattern` given):** instead of a character slice, greps the
+  archived content — finds every line matching the regex, keeps
+  `context_lines` lines of surrounding context per match (like `grep -C`),
+  and merges overlapping/adjacent context windows so nearby matches don't
+  duplicate shared lines; separate (non-adjacent) blocks are joined with a
+  `--` separator line, matching real `grep`'s own convention
+  (`_grep_with_context`, `src/pcli/tools/builtin/artifact_tool.py:16`).
+  `offset` is silently ignored in this mode — it only applies to the
+  character-slice mode, and pattern mode has no meaningful use for a raw
+  offset. `limit` is reused (not a new parameter) as an output-size cap,
+  truncating with `[...output truncated to max_chars...]` if exceeded.
+  Matches are capped at 50 (`_MAX_PATTERN_MATCHES`); output is prefixed with
+  a header like "3 matching line(s):" (with "(showing first 50)" appended
+  when the cap is hit), or "No lines matching '...' found in this artifact."
+  if nothing matched.
+- **Invalid regex** in `pattern` gets a clean error, not a crash, in the same
+  style as the `grep` tool's own: "Invalid regex: ... [pcli] Suggestion: if
+  you don't need regex features, escape the special character(s) or search
+  for a plain substring instead." (`src/pcli/tools/builtin/artifact_tool.py:71`).
 - **Unknown `artifact_id`** gets an appended suggestion to re-check the
   original tool result's "archived as artifact_id='art_...'" note rather
   than guessing, since ids aren't derivable any other way
-  (`src/pcli/tools/builtin/artifact_tool.py:19`).
+  (`src/pcli/tools/builtin/artifact_tool.py:56`).
+- The system prompt's `# Managing context` section recommends `pattern` over
+  blind offset/limit pagination when you already know what you're looking
+  for, and the `# Investigation scripts` section covers keeping script
+  output narrow so a broad, truncated result is less likely in the first
+  place (`src/pcli/agent/prompt.py`).
 
 ## Artifact archiving
 

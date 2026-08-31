@@ -49,6 +49,27 @@ def test_prompt_instructs_surfacing_side_effects_of_suggested_changes():
     assert "signature" in section or "code" in section
 
 
+def test_prompt_managing_context_mentions_the_pattern_parameter():
+    section_start = BASE_SYSTEM_PROMPT.index("# Managing context")
+    section_end = BASE_SYSTEM_PROMPT.index("# Investigation scripts")
+    section = BASE_SYSTEM_PROMPT[section_start:section_end]
+    assert "pattern" in section
+    assert "context_lines" in section
+
+
+def test_prompt_instructs_planning_investigation_scripts_and_narrow_output():
+    assert "# Investigation scripts" in BASE_SYSTEM_PROMPT
+    section_start = BASE_SYSTEM_PROMPT.index("# Investigation scripts")
+    section_end = BASE_SYSTEM_PROMPT.index("# Long-running and background commands")
+    section = BASE_SYSTEM_PROMPT[section_start:section_end]
+    # Generalized guidance, not Kubernetes-specific - pcli is a domain-generic
+    # coding agent, so the base prompt shouldn't bake in one domain's tooling.
+    assert "kubernetes" not in section.lower()
+    assert "k8s" not in section.lower()
+    assert "one focused script per question" in section
+    assert "truncation" in section
+
+
 def test_build_system_prompt_appends_extra_sections():
     result = build_system_prompt(extra_sections=["# Extra\nSomething."])
     assert result.startswith(BASE_SYSTEM_PROMPT)
