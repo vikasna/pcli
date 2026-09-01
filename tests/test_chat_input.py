@@ -91,6 +91,32 @@ async def test_box_grows_up_to_max_and_no_further():
 
 
 @pytest.mark.asyncio
+async def test_a_long_single_line_that_soft_wraps_grows_the_box_not_a_scrollbar():
+    """Regression test: growth must be driven by wrapped_document.height
+    (visual rows, accounting for soft-wrap) rather than document.line_count
+    (logical "\\n" count) - a plain typed sentence with no explicit newline
+    but long enough to wrap across several visual rows previously left the
+    box at its 1-line minimum and showed TextArea's own internal scrollbar
+    instead of growing to fit."""
+    app = _ChatInputApp()
+    async with app.run_test(size=(40, 20)) as pilot:
+        ci = app.query_one(ChatInput)
+        ci.focus()
+        long_text = (
+            "this is a long sentence typed without any newline that should "
+            "wrap across several visual rows because the box is narrower "
+            "than the text"
+        )
+        ci.insert(long_text)
+        await pilot.pause()
+
+        assert ci.document.line_count == 1  # no "\n" was ever inserted
+        assert ci.wrapped_document.height > 1  # but it wraps to multiple rows
+        assert int(ci.styles.height.value) == ci.wrapped_document.height + _BASE_HEIGHT - 1
+        assert ci.show_vertical_scrollbar is False
+
+
+@pytest.mark.asyncio
 async def test_multiline_paste_does_not_grow_the_box():
     """The specific behavior corrected in review: a large paste must stay
     collapsed behind the [Pasted N lines] placeholder, never expand the

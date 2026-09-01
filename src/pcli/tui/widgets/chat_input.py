@@ -80,8 +80,13 @@ class ChatInput(TextArea):
         await super()._on_key(event)
 
     def _on_text_area_changed(self, event: TextArea.Changed) -> None:
-        line_count = self.document.line_count
-        clamped = max(1, min(line_count, _MAX_VISIBLE_LINES))
+        # wrapped_document.height (visual row count, accounting for
+        # soft-wrap) rather than document.line_count (logical "\n" count) -
+        # a single long typed line that wraps across several visual rows
+        # needs the box to grow just as much as an explicit newline would,
+        # otherwise TextArea shows its own internal scrollbar instead.
+        visual_line_count = self.wrapped_document.height
+        clamped = max(1, min(visual_line_count, _MAX_VISIBLE_LINES))
         self.styles.height = clamped + _BORDER_ROWS
 
     def action_cursor_up(self) -> None:
