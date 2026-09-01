@@ -77,6 +77,51 @@ _PLAN_MODE_REINFORCEMENT = (
     "around this restriction. The user will switch to /build before asking you to act on it."
 )
 
+# Static reference shown by /help — kept as one literal string (not built from
+# the _handle_command dispatch table) since the wording needs full sentences,
+# not just the bare command list already in ChatInput's placeholder text.
+_HELP_TEXT = """\
+# Commands
+
+- **/help** — show this help.
+- **/sessions** — browse, switch, or import previous sessions.
+- **/export [path]** — export the current session (default: pcli's data \
+directory).
+- **/models [name]** — switch models. With no argument, lists models \
+available from the configured gateway and lets you pick one.
+- **/compact** — manually summarize the conversation so far to free up \
+context space (also happens automatically as the context fills up).
+- **/timeout [seconds]** — view or set the per-request timeout to the \
+gateway.
+- **/context-limit [tokens]** — view or set the context window pcli assumes \
+for the current model (used for the context-usage display and \
+auto-compaction).
+- **/rename [name]** — view or set the current session's title (shown in \
+/sessions).
+- **/plan** — enter plan mode: the agent can only use read-only/exploration \
+tools (no writes, edits, or shell commands) until you exit.
+- **/build** — exit plan mode, restoring full tool access.
+- **/toolbox** — discover, list, or remove toolbox tools (CLI programs/\
+scripts wrapped as callable tools): `/toolbox discover NAME [path]`, \
+`/toolbox list`, `/toolbox remove NAME`.
+
+# Shell passthrough
+
+- **!command** — run a shell command directly (bypasses the model), showing \
+its output.
+- **!!command** — same, but hides the output.
+- **!!!command** — hand off a real interactive terminal to the command \
+(passwords, REPLs, editors, ssh — anything needing a real TTY).
+
+# Input box
+
+- **Enter** sends your message; **Ctrl+J** or **Alt+Enter** inserts a \
+newline for a multi-line message. The box grows to fit what you type (up \
+to 10 lines) and shrinks back down; a paste never grows it.
+- **Up** / **Down** recall previously-sent messages, while the current \
+draft has no newline in it.
+"""
+
 logger = logging.getLogger(__name__)
 
 
@@ -151,9 +196,8 @@ class ChatScreen(Screen):
             yield MessageView(id="message-view")
             yield StatusBar(id="status-bar")
             yield ChatInput(
-                placeholder="Ask pcli... (/sessions, /export, /toolbox, /models, /compact, "
-                "/timeout, /context-limit, /rename, /plan, /build, !shell, !!quiet-shell, "
-                "!!!interactive — Enter to send, Ctrl+J for a newline)",
+                placeholder="Ask pcli... (/help for all commands — Enter to send, "
+                "Ctrl+J for a newline)",
                 id="input-box",
             )
 
@@ -461,6 +505,8 @@ class ChatScreen(Screen):
             self._set_plan_mode(True)
         elif command == "build":
             self._set_plan_mode(False)
+        elif command == "help":
+            self._handle_help_command()
         else:
             message_view.add_message("system", f"Unknown command: /{command}")
 
@@ -574,6 +620,13 @@ class ChatScreen(Screen):
             )
         else:
             message_view.add_message("system", "Build mode restored: all tools are available again.")
+
+    def _handle_help_command(self) -> None:
+        """`/help` — a static reference of every slash command and shell
+        prefix, rendered as Markdown (message_view._render_message already
+        runs every system message through rich.markdown.Markdown)."""
+        message_view = self.query_one(MessageView)
+        message_view.add_message("system", _HELP_TEXT)
 
     def _handle_toolbox_command(self, rest: str) -> None:
         message_view = self.query_one(MessageView)

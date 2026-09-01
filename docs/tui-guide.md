@@ -274,6 +274,13 @@ as a normal system message instead.
 
 ## Slash commands
 
+- **`/help`** — prints a static Markdown reference (`_HELP_TEXT`,
+  `src/pcli/tui/screens/chat.py`) covering every slash command below, the
+  `!`/`!!`/`!!!` shell passthrough tiers, and the Enter/Ctrl+J and Up/Down
+  input-box behavior — the same information as this section and the two below
+  it, condensed for in-app lookup. The input box's placeholder text points
+  here (`"Ask pcli... (/help for all commands — Enter to send, Ctrl+J for a
+  newline)"`) rather than spelling out every command inline.
 - **`/sessions`** — opens the session list screen (`SessionListScreen`):
   browse previously stored sessions (title, model, cost, last-updated),
   `Enter` resumes one in a fresh `ChatScreen`, `e` exports the highlighted
@@ -456,8 +463,10 @@ Behavior differs from `!`/`!!` everywhere interactivity matters:
   shell handoff isn't supported in this terminal environment."
 
 Like `!`/`!!`, `!!!` bypasses the LLM, the sandbox, permissions, and
-session/artifact recording entirely. The input box's placeholder text
-mentions it as `!!!interactive`.
+session/artifact recording entirely. It's documented in the `/help` output
+(see [Slash commands](#slash-commands) above) rather than spelled out in the
+input box's placeholder text, which just points at `/help` for the full
+command/shell-passthrough reference.
 
 ## Permission prompts
 
