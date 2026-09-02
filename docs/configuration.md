@@ -202,7 +202,12 @@ verified in-code rather than toggled via `Settings` fields:
    used for that screen's `PermissionManager` — a `0` there already means
    "unlimited" in both enforcement points. The *security* guardrails (shell
    denylist, fs `allowed_roots`/`deny_paths`, python `module_denylist`) are
-   untouched and still fully enforced.
+   untouched and still fully enforced. Both limits can also be viewed or set
+   live from the TUI, without hand-editing `guardrails.toml`, via
+   [`/max-tool-calls-per-turn` and
+   `/max-tool-calls-per-minute`](tui-guide.md#slash-commands) — though in
+   local-api mode a new value only persists for later, since this force-copy
+   keeps the running session unlimited regardless.
 3. **Cost is forced to $0.** The `CostTracker` is built with a module-level
    `_FREE_PRICING_TABLE` (`PricingTable(entries={}, default=ModelPricing())`)
    instead of the real `PricingTable.load()` — see

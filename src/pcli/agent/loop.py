@@ -95,6 +95,13 @@ class AgentLoop:
     def set_tool_registry(self, tool_registry: ToolRegistry | None) -> None:
         self._tool_registry = tool_registry
 
+    def set_max_tool_iterations(self, max_tool_iterations: int | None) -> None:
+        """None means unlimited (local-api mode) — see __init__."""
+        self._max_tool_iterations = max_tool_iterations
+
+    def set_artifact_threshold_chars(self, artifact_threshold_chars: int) -> None:
+        self._artifact_threshold_chars = artifact_threshold_chars
+
     async def run_turn(
         self, messages: list[ChatMessage], *, ask: AskCallback | None = None
     ) -> AsyncIterator[AgentEvent]:

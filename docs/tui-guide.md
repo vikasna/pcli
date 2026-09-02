@@ -329,6 +329,72 @@ as a normal system message instead.
   after, so the corrected value applies starting with the very next turn, no
   restart needed. Rejects non-numeric input and values that aren't greater
   than 0.
+- **`/max-tool-iterations [n]`** — with no argument, reports the current
+  `max_tool_iterations` (default 25), which caps how many tool-call
+  round-trips a single turn can make before `AgentLoop.run_turn`'s iteration
+  guardrail cuts it off — and, while in
+  [local-api mode](configuration.md#local-api-mode), also notes "(currently
+  uncapped: local-api mode)", since `is_local_api()` sessions always run
+  unlimited regardless of this setting (`_effective_max_tool_iterations`
+  returns `None` there). With an argument (`/max-tool-iterations 40`), sets
+  it and persists it to `config.toml` the same way `/timeout` persists
+  `request_timeout_s`, and pushes the new value live into the running
+  `AgentLoop` via `AgentLoop.set_max_tool_iterations()` so it applies
+  starting with the very next turn, no restart needed — except in local-api
+  mode, where the response says as much ("This session is in local-api mode,
+  so it stays uncapped until that changes.") and the value is still saved
+  for whenever local-api mode is off. Rejects non-numeric input and values
+  that aren't greater than 0.
+- **`/artifact-threshold [chars]`** — with no argument, reports the current
+  `artifact_threshold_chars` (default 4000) — the tool-output length beyond
+  which a result is truncated out of the live conversation and archived to
+  the artifact library, retrievable via the `fetch_artifact` tool (see
+  `AgentLoop._archive_if_large` and
+  [`tools.md`](tools.md#artifact-archiving)). With an argument
+  (`/artifact-threshold 8000`), sets it, persists it to `config.toml` the
+  same way `/timeout` persists `request_timeout_s`, and pushes the new value
+  live into the running `AgentLoop` via
+  `AgentLoop.set_artifact_threshold_chars()` so it applies starting with the
+  very next tool result, no restart needed. Rejects non-numeric input and
+  values that aren't greater than 0.
+- **`/max-tool-calls-per-turn [n]`** — with no argument, reports the current
+  `max_tool_calls_per_turn` (default 25, `GuardrailsConfig`,
+  `src/pcli/permissions/guardrails.py`) — a hard guardrail cap
+  `AgentLoop.run_turn` enforces on how many tool calls a single turn may
+  dispatch, separate from (and evaluated independently of) the softer
+  `/max-tool-iterations` round-trip cap above; once it's hit, further tool
+  calls in that turn are denied outright (rather than executed) and the turn
+  ends with a "reached the guardrail limit of N tool call(s)" notice. `0`
+  means unlimited — a real, intentional value, not treated as invalid — and
+  while in [local-api mode](configuration.md#local-api-mode) the report also
+  notes "(currently forced unlimited: local-api mode)", since
+  `ChatScreen.__init__` already force-copies both this and
+  `max_tool_calls_per_minute` to `0` for the whole session there. With an
+  argument (`/max-tool-calls-per-turn 10`), sets it and persists it to a new
+  `guardrails.toml` file (separate from `config.toml`) via
+  `update_guardrails_limits()`, which — unlike `update_config_file` — writes
+  `0` as a real value instead of skipping it as falsy, and leaves the
+  `[shell]`/`[fs]`/`[python]` tables and any other `[limits]` keys untouched.
+  Outside local-api mode the new value also applies live to the running
+  `PermissionManager.guardrails`, taking effect on the next turn; in
+  local-api mode it's still saved to `guardrails.toml` for later, but the
+  response says the session "stays unlimited until that changes" rather than
+  implying it took effect. Rejects non-numeric input and negative values (0
+  is allowed).
+- **`/max-tool-calls-per-minute [n]`** — same view/set shape as
+  `/max-tool-calls-per-turn` above, but for `max_tool_calls_per_minute`
+  (default 60) — a sliding 60-second-window rate cap enforced by
+  `PermissionManager._within_rate_limit` (`src/pcli/permissions/manager.py`)
+  and shared across every tool call the session's `PermissionManager` gates,
+  including a subagent's, since it's handed the same instance. Also read
+  from and persisted to `guardrails.toml`'s `[limits]` table via the same
+  `update_guardrails_limits()`, with the same `0`-means-unlimited semantics
+  and the same local-api force-unlimited caveat (reported as "(currently
+  forced unlimited: local-api mode)" with no argument, and "stays unlimited
+  until that changes" after a set). Outside local-api mode, a new value
+  applies live and takes effect on the next tool call rather than the next
+  turn, since a rate limit has no per-turn boundary. Rejects non-numeric
+  input and negative values (0 is allowed).
 - **`/rename [name]`** — with no argument, reports the session's current
   title (`Session.derive_title()` — the value shown in `/sessions`'s list).
   With an argument (`/rename my-feature-branch`), sets `Session.title`

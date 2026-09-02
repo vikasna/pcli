@@ -9,10 +9,12 @@ from __future__ import annotations
 import fnmatch
 import tomllib
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel
 
 from pcli.config.paths import guardrails_file
+from pcli.config.settings import _dump_toml
 
 DEFAULT_GUARDRAILS_TOML = """\
 # pcli guardrails — hard limits that are never prompted, only enforced.
@@ -154,6 +156,26 @@ class GuardrailsConfig(BaseModel):
         return GuardrailResult(
             allowed=False, reason=f"path '{resolved}' is outside all allowed roots"
         )
+
+
+def update_guardrails_limits(**limit_updates: Any) -> None:
+    """Persists the given key/value pairs into guardrails.toml's [limits]
+    table, preserving the [shell]/[fs]/[python] tables and any other
+    [limits] keys untouched — mirrors config/settings.py's
+    update_config_file, but for guardrails.toml's fixed 4-table shape
+    instead of config.toml's flatter one.
+
+    Falsy values (None) are skipped rather than written, matching
+    update_config_file's same behavior for optional callers."""
+    path = guardrails_file()
+    if path.exists():
+        raw = dict(tomllib.loads(path.read_text(encoding="utf-8")))
+    else:
+        raw = dict(tomllib.loads(DEFAULT_GUARDRAILS_TOML))
+    limits = dict(raw.get("limits", {}))
+    limits.update({key: value for key, value in limit_updates.items() if value is not None})
+    raw["limits"] = limits
+    path.write_text(_dump_toml(raw), encoding="utf-8")
 
 
 def _is_relative_to(path: Path, other: Path) -> bool:

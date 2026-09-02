@@ -662,6 +662,49 @@ async def test_set_tool_registry_takes_effect_on_the_next_run_turn(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+async def test_set_max_tool_iterations_takes_effect_on_the_next_run_turn(tmp_path: Path):
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    async with GatewayClient(_settings()) as client:
+        loop = AgentLoop(
+            client,
+            permission_manager=permission_manager,
+            tool_context_factory=lambda: ToolContext(
+                sandbox=FakeSandbox(), guardrails=permission_manager.guardrails, cwd=tmp_path
+            ),
+            max_tool_iterations=25,
+        )
+        assert loop._max_tool_iterations == 25
+
+        loop.set_max_tool_iterations(5)
+        assert loop._max_tool_iterations == 5
+
+        loop.set_max_tool_iterations(None)  # local-api mode: unlimited
+        assert loop._max_tool_iterations is None
+
+
+@pytest.mark.asyncio
+async def test_set_artifact_threshold_chars_takes_effect_on_the_next_tool_result(tmp_path: Path):
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    async with GatewayClient(_settings()) as client:
+        loop = AgentLoop(
+            client,
+            permission_manager=permission_manager,
+            tool_context_factory=lambda: ToolContext(
+                sandbox=FakeSandbox(), guardrails=permission_manager.guardrails, cwd=tmp_path
+            ),
+            artifact_threshold_chars=4000,
+        )
+        assert loop._artifact_threshold_chars == 4000
+
+        loop.set_artifact_threshold_chars(8000)
+        assert loop._artifact_threshold_chars == 8000
+
+
+@pytest.mark.asyncio
 @respx.mock
 async def test_reasoning_content_passes_through_but_is_never_folded_into_message_content(
     tmp_path: Path,

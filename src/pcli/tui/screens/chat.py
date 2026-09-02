@@ -33,7 +33,7 @@ from pcli.cost.tracker import CostTracker
 from pcli.llm.client import GatewayClient
 from pcli.llm.errors import GatewayError
 from pcli.llm.models import ChatMessage, Usage
-from pcli.permissions.guardrails import GuardrailsConfig
+from pcli.permissions.guardrails import GuardrailsConfig, update_guardrails_limits
 from pcli.permissions.manager import AskCallback, PermissionManager
 from pcli.sandbox.base import Sandbox, SandboxSecurityError
 from pcli.sandbox.selector import select_sandbox
@@ -96,6 +96,18 @@ gateway.
 - **/context-limit [tokens]** — view or set the context window pcli assumes \
 for the current model (used for the context-usage display and \
 auto-compaction).
+- **/max-tool-iterations [n]** — view or set how many tool-call round-trips \
+a single turn can make before it's cut off (ignored — always uncapped — in \
+local-api mode).
+- **/artifact-threshold [chars]** — view or set the tool-output length \
+beyond which results are archived out of the live conversation and \
+retrieved later via fetch_artifact.
+- **/max-tool-calls-per-turn [n]** — view or set the guardrail cap on tool \
+calls within a single turn (0 = unlimited; ignored — always unlimited — in \
+local-api mode).
+- **/max-tool-calls-per-minute [n]** — view or set the guardrail cap on \
+tool calls per minute, across the whole session (0 = unlimited; ignored \
+— always unlimited — in local-api mode).
 - **/rename [name]** — view or set the current session's title (shown in \
 /sessions).
 - **/plan** — enter plan mode: the agent can only use read-only/exploration \
@@ -499,6 +511,26 @@ class ChatScreen(Screen):
             self._handle_timeout_command(rest or None)
         elif command == "context-limit":
             self._handle_context_limit_command(rest or None)
+        elif command == "max-tool-iterations":
+            self._handle_max_tool_iterations_command(rest or None)
+        elif command == "artifact-threshold":
+            self._handle_artifact_threshold_command(rest or None)
+        elif command == "max-tool-calls-per-turn":
+            self._handle_guardrail_rate_limit_command(
+                rest or None,
+                attr_name="max_tool_calls_per_turn",
+                config_key="max_tool_calls_per_turn",
+                command_name="max-tool-calls-per-turn",
+                window="turn",
+            )
+        elif command == "max-tool-calls-per-minute":
+            self._handle_guardrail_rate_limit_command(
+                rest or None,
+                attr_name="max_tool_calls_per_minute",
+                config_key="max_tool_calls_per_minute",
+                command_name="max-tool-calls-per-minute",
+                window="tool call",
+            )
         elif command == "rename":
             self._handle_rename_command(rest or None)
         elif command == "plan":
@@ -577,6 +609,130 @@ class ChatScreen(Screen):
         set_model_context_limit(model, limit)
         self._context_limit_table = ContextLimitTable.load()
         message_view.add_message("system", f"Context limit for '{model}' set to {limit:,} tokens.")
+
+    def _handle_max_tool_iterations_command(self, arg: str | None) -> None:
+        """`/max-tool-iterations [n]` — caps how many tool-call round-trips
+        a single turn can make before it's cut off (see AgentLoop.run_turn's
+        iteration guardrail). Ignored in local-api mode, which always runs
+        uncapped (_effective_max_tool_iterations returns None there) —
+        still saved for whenever local-api mode is off."""
+        message_view = self.query_one(MessageView)
+        if not arg:
+            current = self._settings.max_tool_iterations
+            note = " (currently uncapped: local-api mode)" if self._settings.is_local_api() else ""
+            message_view.add_message(
+                "system",
+                f"max_tool_iterations is currently {current}{note}. Usage: "
+                "/max-tool-iterations <n>",
+            )
+            return
+
+        try:
+            iterations = int(arg)
+        except ValueError:
+            message_view.add_message("system", f"'{arg}' isn't a valid number of iterations.")
+            return
+        if iterations <= 0:
+            message_view.add_message("system", "max_tool_iterations must be greater than 0.")
+            return
+
+        self._settings.max_tool_iterations = iterations
+        update_config_file(max_tool_iterations=iterations)
+        if self._agent_loop is not None:
+            self._agent_loop.set_max_tool_iterations(self._effective_max_tool_iterations())
+        note = (
+            " This session is in local-api mode, so it stays uncapped until that changes."
+            if self._settings.is_local_api()
+            else " Takes effect on the next turn."
+        )
+        message_view.add_message(
+            "system", f"max_tool_iterations set to {iterations}.{note}"
+        )
+
+    def _handle_artifact_threshold_command(self, arg: str | None) -> None:
+        """`/artifact-threshold [chars]` — tool results longer than this are
+        truncated out of the live conversation and archived to the artifact
+        library, retrievable via fetch_artifact (see AgentLoop._archive_if_large
+        and Settings.artifact_threshold_chars). Persisted the same way
+        /timeout persists request_timeout_s."""
+        message_view = self.query_one(MessageView)
+        if not arg:
+            current = self._settings.artifact_threshold_chars
+            message_view.add_message(
+                "system",
+                f"artifact_threshold_chars is currently {current:,}. Usage: "
+                "/artifact-threshold <chars>",
+            )
+            return
+
+        try:
+            threshold = int(arg)
+        except ValueError:
+            message_view.add_message("system", f"'{arg}' isn't a valid number of characters.")
+            return
+        if threshold <= 0:
+            message_view.add_message("system", "artifact_threshold_chars must be greater than 0.")
+            return
+
+        self._settings.artifact_threshold_chars = threshold
+        update_config_file(artifact_threshold_chars=threshold)
+        if self._agent_loop is not None:
+            self._agent_loop.set_artifact_threshold_chars(threshold)
+        message_view.add_message(
+            "system",
+            f"artifact_threshold_chars set to {threshold:,}. Takes effect on the next tool result.",
+        )
+
+    def _handle_guardrail_rate_limit_command(
+        self, arg: str | None, *, attr_name: str, config_key: str, command_name: str, window: str
+    ) -> None:
+        """Shared by `/max-tool-calls-per-turn` and `/max-tool-calls-per-minute`
+        — both view/set the same-shaped guardrails.toml [limits] key
+        (`GuardrailsConfig`, `src/pcli/permissions/guardrails.py`), where 0
+        means unlimited (see AgentLoop.run_turn's per-turn check and
+        PermissionManager._within_rate_limit's per-minute check).
+
+        In local-api mode, ChatScreen.__init__ already force-copies both of
+        these to 0 (unlimited) for the live guardrails instance — a new
+        value is still persisted here for whenever local-api mode is off,
+        but isn't applied live, so the response says as much rather than
+        implying it silently took effect."""
+        message_view = self.query_one(MessageView)
+        guardrails = self._permission_manager.guardrails
+        if not arg:
+            current = getattr(guardrails, attr_name)
+            if self._settings.is_local_api():
+                note = " (currently forced unlimited: local-api mode)"
+            elif current <= 0:
+                note = " (0 = unlimited)"
+            else:
+                note = ""
+            message_view.add_message(
+                "system",
+                f"{config_key} is currently {current}{note}. Usage: /{command_name} <n> (0 = unlimited)",
+            )
+            return
+
+        try:
+            value = int(arg)
+        except ValueError:
+            message_view.add_message("system", f"'{arg}' isn't a valid number.")
+            return
+        if value < 0:
+            message_view.add_message(
+                "system", f"{config_key} must be 0 or greater (0 means unlimited)."
+            )
+            return
+
+        update_guardrails_limits(**{config_key: value})
+        if self._settings.is_local_api():
+            note = (
+                " This session is in local-api mode, so it stays unlimited until that changes."
+            )
+        else:
+            setattr(guardrails, attr_name, value)
+            note = f" Takes effect on the next {window}."
+        message_view.add_message("system", f"{config_key} set to {value}.{note}")
 
     def _handle_rename_command(self, arg: str | None) -> None:
         """`/rename [name]` — sets Session.title, which derive_title() (used
