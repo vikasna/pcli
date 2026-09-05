@@ -42,6 +42,51 @@ In the TUI, `ChatScreen._stream_response` calls `self._store.save(self._session)
 or `/compact`) is persisted immediately rather than waiting for the next
 turn.
 
+### Pruning empty sessions
+
+`SessionStore.new_session()` calls `save()` **eagerly**, the moment a fresh
+session is constructed — this happens before `ChatScreen.__init__` even
+appends the leading system-prompt message, and that append is in-memory only
+(it isn't re-saved until the first real turn completes or fails, per
+"When a session gets saved" above). So every launch of pcli into a brand-new
+session writes an index entry immediately, and if the user closes pcli
+without ever sending a message, that entry — empty, never touched again —
+was left behind permanently, cluttering `index.json` and `/sessions` a
+little more with every such launch.
+
+`SessionStore.prune_empty_sessions(*, exclude_session_ids=())` fixes this: it
+walks `list_index()` and deletes (via the existing `delete()` method — both
+the session directory and its index entry) every entry with
+`message_count == 0`, except any id passed in `exclude_session_ids`.
+`message_count == 0` is a safe, precise definition of "never had a single
+real exchange" because messages in this codebase are only ever appended,
+never removed — even a turn that fails outright (the `GatewayError` case
+above) persists the system prompt and the user's triggering message first,
+so a session that has taken part in any turn at all, successful or not,
+never shows a zero count. Returns the number of sessions pruned.
+
+Two call sites run this automatically, each excluding the session it must
+not delete out from under itself:
+
+- **`ChatScreen.on_mount`** calls
+  `self._store.prune_empty_sessions(exclude_session_ids=[self._session.id])`
+  as soon as the chat screen mounts — cheap housekeeping that clears out
+  empty sessions left over from *previous* runs every time pcli starts, with
+  no user action needed. It excludes the just-started-or-resumed session
+  itself, since that session may still legitimately have zero messages at
+  this exact point in its lifecycle.
+- **`SessionListScreen.on_mount`** (the `/sessions` list) prunes the same
+  way before displaying the list, via an optional `exclude_session_id`
+  constructor parameter. `ChatScreen`'s `/sessions` command handler passes
+  `SessionListScreen(self._store, exclude_session_id=self._session.id)` for
+  the same reason — e.g. if the user's very first action after opening pcli
+  is typing `/sessions`, the active session is still empty and must not
+  vanish while it's the one on screen.
+
+Note that exclusion only suppresses *deletion*: an excluded session with an
+existing index entry is still listed in `/sessions` like any other, just
+never pruned while it's excluded.
+
 ### What's stored on `Session`
 
 - `messages: list[Message]` — full chat history, including tool-call/tool-

@@ -284,7 +284,10 @@ as a normal system message instead.
 - **`/sessions`** — opens the session list screen (`SessionListScreen`):
   browse previously stored sessions (title, model, cost, last-updated),
   `Enter` resumes one in a fresh `ChatScreen`, `e` exports the highlighted
-  session, `i` prompts for a file path to import, `Esc` goes back.
+  session, `i` prompts for a file path to import, `Esc` goes back. Both this
+  screen and normal pcli startup silently prune any never-used (zero
+  message) sessions first — see
+  [`sessions-and-cost.md`](sessions-and-cost.md#pruning-empty-sessions).
 - **`/export [path]`** — exports the *current* session via `export_session`
   to `path` if given, else `<data_dir>/exports/<session_id>.pcli-session.json`.
 - **`/toolbox discover <name>`**, **`/toolbox list`**, **`/toolbox remove

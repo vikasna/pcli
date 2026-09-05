@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterable
 from pathlib import Path
 
 from pcli.config.paths import sessions_dir
@@ -68,6 +69,24 @@ class SessionStore:
         index = self._read_index()
         entries = [SessionIndexEntry.model_validate(v) for v in index.values()]
         return sorted(entries, key=lambda e: e.updated_at, reverse=True)
+
+    def prune_empty_sessions(self, *, exclude_session_ids: Iterable[str] = ()) -> int:
+        """Deletes every persisted session with zero messages. new_session()
+        saves eagerly the moment a fresh session is created (before the
+        leading system prompt is even appended in ChatScreen.__init__), so
+        closing pcli without ever sending a message leaves a useless,
+        never-touched entry cluttering /sessions — this is the only way a
+        session ends up with message_count == 0, since messages are only
+        ever appended, never removed (even a turn that fails outright still
+        persists the system prompt + the user's message first). Returns how
+        many were pruned."""
+        exclude = set(exclude_session_ids)
+        pruned = 0
+        for entry in self.list_index():
+            if entry.message_count == 0 and entry.id not in exclude:
+                self.delete(entry.id)
+                pruned += 1
+        return pruned
 
     def write_blob(self, session_id: str, invocation_id: str, content: str) -> str:
         blob_name = f"{invocation_id}.txt"

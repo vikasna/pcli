@@ -46,9 +46,10 @@ class SessionListScreen(Screen):
         ("escape", "app.pop_screen", "Back"),
     ]
 
-    def __init__(self, store: SessionStore | None = None) -> None:
+    def __init__(self, store: SessionStore | None = None, *, exclude_session_id: str | None = None) -> None:
         super().__init__()
         self._store = store or SessionStore()
+        self._exclude_session_id = exclude_session_id
         self._on_resume: object = None
 
     def compose(self) -> ComposeResult:
@@ -56,6 +57,12 @@ class SessionListScreen(Screen):
         yield ListView(id="session-list")
 
     def on_mount(self) -> None:
+        # exclude_session_id protects the session that opened this screen -
+        # it may still legitimately have zero messages (e.g. /sessions was
+        # the very first thing typed) and must not be pruned out from under
+        # the still-active ChatScreen holding it in memory.
+        exclude = [self._exclude_session_id] if self._exclude_session_id else []
+        self._store.prune_empty_sessions(exclude_session_ids=exclude)
         self._refresh()
 
     def _refresh(self) -> None:

@@ -245,6 +245,12 @@ class ChatScreen(Screen):
         status_bar.subagent_last_tool = sub.last_tool if sub else None
 
     async def on_mount(self) -> None:
+        # Cheap housekeeping: clears out empty sessions left over from a
+        # previous run (see SessionStore.prune_empty_sessions) so /sessions
+        # doesn't accumulate clutter from every launch that never sent a
+        # message. Excludes the just-started/resumed session itself, which
+        # may still legitimately have zero messages at this exact point.
+        self._store.prune_empty_sessions(exclude_session_ids=[self._session.id])
         self.query_one(ChatInput).focus()
         status_bar = self.query_one(StatusBar)
         status_bar.model = self._session.model or self._settings.default_model
@@ -503,7 +509,9 @@ class ChatScreen(Screen):
         if command == "sessions":
             from pcli.tui.screens.sessions import SessionListScreen
 
-            self.app.push_screen(SessionListScreen(self._store))
+            self.app.push_screen(
+                SessionListScreen(self._store, exclude_session_id=self._session.id)
+            )
         elif command == "export":
             self._export_current(rest or None)
         elif command == "toolbox":
