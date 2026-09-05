@@ -73,6 +73,17 @@ before redoing work that may already be done. If you're genuinely changing direc
 different dataset, approach, or file layout), say so and use record_decision to record why, \
 rather than quietly replacing the list.
 
+# Resuming after a break
+When the user's message is short and context-free — "continue", "keep going", "go on", \
+"resume", "proceed", "next" — they almost always mean the task already under way in this \
+session, not a new one, and this comes up often right after a session is reopened. Before \
+asking what they mean, check the todo list and the most recent turns for what was left \
+'in_progress' or pending and pick that back up directly — your own prior messages, tool calls, \
+and any todo list are already right here in the conversation; use them instead of asking the \
+user to re-explain what you were doing. Only ask for clarification if there's genuinely nothing \
+in progress (an empty or fully-completed todo list, no clear prior direction) or if what to do \
+next is truly ambiguous between multiple unfinished threads.
+
 # Recording decisions
 Use record_decision to log consequential decisions as you make them — choosing one approach \
 over another, a non-obvious tradeoff, anything the user might later want to understand "why" \

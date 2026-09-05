@@ -70,6 +70,20 @@ def test_prompt_instructs_planning_investigation_scripts_and_narrow_output():
     assert "truncation" in section
 
 
+def test_prompt_instructs_resuming_from_a_short_continue_style_message():
+    assert "# Resuming after a break" in BASE_SYSTEM_PROMPT
+    section_start = BASE_SYSTEM_PROMPT.index("# Resuming after a break")
+    section_end = BASE_SYSTEM_PROMPT.index("# Recording decisions")
+    section = BASE_SYSTEM_PROMPT[section_start:section_end]
+    # Covers a few real phrasings, not just the literal word "continue" -
+    # regression coverage for a real gap: a bare "continue" after reopening
+    # a session was previously ambiguous to the model.
+    assert '"continue"' in section
+    assert '"keep going"' in section or '"resume"' in section
+    assert "todo list" in section
+    assert "ask" in section  # tells it when clarification IS still warranted
+
+
 def test_build_system_prompt_appends_extra_sections():
     result = build_system_prompt(extra_sections=["# Extra\nSomething."])
     assert result.startswith(BASE_SYSTEM_PROMPT)
