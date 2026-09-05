@@ -19,6 +19,7 @@ from textual.screen import Screen
 
 from pcli.agent.activity import ActivityTracker
 from pcli.agent.compaction import maybe_compact
+from pcli.agent.context_pruning import extract_purpose, prune_old_tool_results
 from pcli.agent.loop import AgentLoop, ToolResultEvent
 from pcli.agent.prompt import build_system_prompt
 from pcli.config.settings import Settings, get_settings, update_config_file
@@ -108,6 +109,10 @@ local-api mode).
 - **/max-tool-calls-per-minute [n]** — view or set the guardrail cap on \
 tool calls per minute, across the whole session (0 = unlimited; ignored \
 — always unlimited — in local-api mode).
+- **/prune-tool-results [off|on|n]** — view, toggle, or set how many \
+recent turns' tool results stay verbatim before older ones are shrunk to \
+a short placeholder (archived, retrievable via fetch_artifact) to save \
+context — no LLM call involved, runs every turn.
 - **/rename [name]** — view or set the current session's title (shown in \
 /sessions).
 - **/plan** — enter plan mode: the agent can only use read-only/exploration \
@@ -531,6 +536,8 @@ class ChatScreen(Screen):
                 command_name="max-tool-calls-per-minute",
                 window="tool call",
             )
+        elif command == "prune-tool-results":
+            self._handle_prune_tool_results_command(rest or None)
         elif command == "rename":
             self._handle_rename_command(rest or None)
         elif command == "plan":
@@ -733,6 +740,64 @@ class ChatScreen(Screen):
             setattr(guardrails, attr_name, value)
             note = f" Takes effect on the next {window}."
         message_view.add_message("system", f"{config_key} set to {value}.{note}")
+
+    def _handle_prune_tool_results_command(self, arg: str | None) -> None:
+        """`/prune-tool-results [off|on|<n>]` — view/toggle/set the
+        no-LLM-call tool-result pruning pass (see
+        agent/context_pruning.py's prune_old_tool_results, run from
+        _run_one_turn). No-arg reports the current enabled state and
+        keep_recent_turns. `off`/`on` toggles prune_tool_results_enabled.
+        A positive integer sets prune_tool_results_keep_recent_turns and
+        implicitly re-enables it. Persisted to config.toml the same way
+        /timeout persists request_timeout_s; applied live since
+        _run_one_turn reads these settings fresh every turn."""
+        message_view = self.query_one(MessageView)
+        if not arg:
+            state = "enabled" if self._settings.prune_tool_results_enabled else "disabled"
+            message_view.add_message(
+                "system",
+                f"prune_tool_results is {state}, keeping the most recent "
+                f"{self._settings.prune_tool_results_keep_recent_turns} turn(s) verbatim. "
+                "Usage: /prune-tool-results off|on|<n>",
+            )
+            return
+
+        if arg == "off":
+            self._settings.prune_tool_results_enabled = False
+            update_config_file(prune_tool_results_enabled=False)
+            message_view.add_message("system", "prune_tool_results disabled.")
+            return
+
+        if arg == "on":
+            self._settings.prune_tool_results_enabled = True
+            update_config_file(prune_tool_results_enabled=True)
+            message_view.add_message("system", "prune_tool_results enabled.")
+            return
+
+        try:
+            keep_recent_turns = int(arg)
+        except ValueError:
+            message_view.add_message("system", f"'{arg}' isn't 'off', 'on', or a valid number.")
+            return
+        if keep_recent_turns <= 0:
+            message_view.add_message(
+                "system",
+                "keep_recent_turns must be greater than 0 (use /prune-tool-results off to "
+                "disable pruning entirely).",
+            )
+            return
+
+        self._settings.prune_tool_results_enabled = True
+        self._settings.prune_tool_results_keep_recent_turns = keep_recent_turns
+        update_config_file(
+            prune_tool_results_enabled=True,
+            prune_tool_results_keep_recent_turns=keep_recent_turns,
+        )
+        message_view.add_message(
+            "system",
+            f"prune_tool_results_keep_recent_turns set to {keep_recent_turns}. "
+            "Takes effect on the next turn.",
+        )
 
     def _handle_rename_command(self, arg: str | None) -> None:
         """`/rename [name]` — sets Session.title, which derive_title() (used
@@ -1117,10 +1182,11 @@ class ChatScreen(Screen):
                     had_any_content = True
                     flush_reasoning()
                     message_view.finish_streaming()
-                    message_view.add_message(
-                        "tool",
-                        f"→ {chunk.tool_call.function.name}({chunk.tool_call.function.arguments})",
-                    )
+                    purpose = extract_purpose(chunk.tool_call.function.arguments)
+                    label = f"→ {chunk.tool_call.function.name}({chunk.tool_call.function.arguments})"
+                    if purpose:
+                        label += f"  # {purpose}"
+                    message_view.add_message("tool", label)
                     message_view.finish_streaming()
                 elif chunk.kind == "tool_result":
                     self._record_tool_invocation(chunk)
@@ -1188,6 +1254,18 @@ class ChatScreen(Screen):
                 note += " Try again, or ask something more focused."
             message_view.add_message("system", note)
         self._store.save(self._session)
+
+        if self._settings.prune_tool_results_enabled:
+            # Cheap, mechanical, no LLM call - runs before the auto-compact
+            # check so compaction's own (LLM-cost) summarization has less
+            # bulk to work with by the time its threshold is ever reached.
+            pruned_count = prune_old_tool_results(
+                self._session,
+                keep_recent_turns=self._settings.prune_tool_results_keep_recent_turns,
+                artifact_store=self._artifact_store,
+            )
+            if pruned_count:
+                self._store.save(self._session)
 
         if self._settings.auto_compact_enabled:
             usage = current_context_usage(self._session, limit_table=self._context_limit_table)

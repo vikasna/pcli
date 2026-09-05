@@ -15,6 +15,31 @@ choke point described below before going back to the model.
 Each entry lists: what it does, its JSON-schema parameters, whether it
 prompts for permission (`needs_permission`), and any guardrail hook.
 
+## The `purpose` argument
+
+Every tool's advertised schema gets one extra property beyond what's listed
+per-tool below: an optional `purpose` string, injected by
+`ToolSpec.to_openai_tool()` (`src/pcli/tools/base.py`) on a shallow copy of
+`self.parameters` — the real `parameters` used for schema validation is never
+mutated, so this is purely advertised to the model, not a real tool argument.
+It's meant to be a short, one-sentence reason the model is calling the tool
+right now, e.g. `"checking whether pdftotext is installed"`; the system
+prompt's `# Managing context` section (`src/pcli/agent/prompt.py`) encourages
+the model to always include it.
+
+`AgentLoop._dispatch_tool_call` (`src/pcli/agent/loop.py`) pops `"purpose"`
+out of the parsed arguments *before* JSON-schema validation and before the
+tool handler ever runs, on a copy — the original arguments JSON string as the
+model sent it (still containing `"purpose"`) is left untouched in the
+persisted session, which is what lets later code re-extract it. This matters
+for two things: it keeps a toolbox-synthesized tool's auto-generated
+CLI-flag-builder (see [`toolbox-plugins.md`](toolbox-plugins.md)) from
+treating `purpose` as a bogus flag, and it's shown inline next to the tool
+call in the TUI (see [`tui-guide.md`](tui-guide.md#tool-results)) and
+resurfaces later in a pruned tool result's placeholder (see [Artifact
+archiving](#artifact-archiving) below and
+[`tui-guide.md`](tui-guide.md#tool-result-pruning)).
+
 ## read_file
 
 Reads a text file. Resolves relative paths against the working directory,
@@ -549,6 +574,17 @@ view-layer cap used to hide the tail, but not big enough to be archived — for
 truly large, archived output the human sees the same truncated
 preview-plus-`fetch_artifact`-note the model does.
 
+A second, later consumer of this exact same archive-then-retrieve pattern is
+tool-result *pruning* (`agent/context_pruning.py`): once a tool result has
+aged out of the conversation's recent window, its content (already possibly
+this section's own truncated preview, if it was large enough to be archived
+here first) is itself archived via `ArtifactStore.put()` and replaced with a
+short placeholder referencing a `fetch_artifact` call — the same idea as
+above, just applied on a delay based on turn age rather than immediately on
+result size. See [`tui-guide.md`](tui-guide.md#tool-result-pruning) for the
+full mechanism and [`configuration.md`](configuration.md#tool-result-pruning)
+for the settings that control it.
+
 ## Auto-compaction
 
 The same archiving idea applied one level up: to whole conversation history
@@ -562,7 +598,7 @@ call and session-level access to cut turn boundaries, which per-tool-result
 archiving doesn't.
 
 - **What gets compacted:** the oldest messages, cut only at `role=="user"`
-  boundaries (`_turn_boundaries`) so an assistant `tool_calls` message is
+  boundaries (`turn_boundaries`) so an assistant `tool_calls` message is
   never separated from its matching tool-result message. The
   `keep_recent_turns` most-recent user turns (default 2, from
   `auto_compact_keep_recent_turns`) are always left verbatim, and the leading

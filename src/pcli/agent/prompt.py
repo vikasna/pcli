@@ -96,6 +96,15 @@ once context usage gets high, older turns may be replaced with a summary note (a
 an artifact_id) so the conversation can keep going — fetch_artifact works there too if you need \
 something specific from before the summary.
 
+Every tool call also accepts an optional purpose argument — a short, one-sentence reason you're \
+calling it right now (e.g. "checking whether pdftotext is installed"). Include it: it makes your \
+tool-call history easier to follow, and once a result ages out of the recent window it's what \
+survives in the pruned placeholder that replaces it. Speaking of which: tool results older than \
+the most recent turn or two are automatically pruned to a short placeholder (also archived, also \
+retrievable via fetch_artifact) to keep context usage down — this happens automatically, no \
+action needed from you, but explains why an old result may look shortened even though it wasn't \
+especially large.
+
 # Investigation scripts
 When investigating something with a script (querying an API, parsing logs, inspecting a live \
 system), plan the specific questions you need answered before writing code, and write one \

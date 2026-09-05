@@ -124,6 +124,26 @@ class Settings(BaseSettings):
         description="Number of most-recent user turns left untouched (verbatim) by "
         "compaction; only older turns get summarized and archived.",
     )
+    prune_tool_results_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "PCLI_PRUNE_TOOL_RESULTS_ENABLED", "prune_tool_results_enabled"
+        ),
+        description="Whether old tool-call results are automatically shrunk to a compact "
+        "placeholder (see agent/context_pruning.py) to save context, well before "
+        "auto-compaction's own threshold would trigger. No LLM call involved, unlike "
+        "compaction — a purely mechanical pass run every turn.",
+    )
+    prune_tool_results_keep_recent_turns: int = Field(
+        default=1,
+        validation_alias=AliasChoices(
+            "PCLI_PRUNE_TOOL_RESULTS_KEEP_RECENT_TURNS", "prune_tool_results_keep_recent_turns"
+        ),
+        description="Number of most-recent turns whose tool results are left untouched "
+        "(verbatim); older ones are archived and replaced with a short placeholder. "
+        "Deliberately tighter than auto_compact_keep_recent_turns so pruning actually has "
+        "something to do before compaction's threshold is ever reached.",
+    )
 
     @classmethod
     def settings_customise_sources(
@@ -203,9 +223,11 @@ def _dump_toml(data: dict[str, Any]) -> str:
 
 def update_config_file(**updates: Any) -> None:
     """Persists the given key/value pairs into config.toml, preserving any
-    other existing keys/tables. Falsy values (None, "") are skipped rather
-    than written, so callers can pass through optional CLI flags/selections
-    unconditionally without accidentally clearing a saved preference.
+    other existing keys/tables. None and "" are skipped rather than written,
+    so callers can pass through optional CLI flags/selections unconditionally
+    without accidentally clearing a saved preference — but unlike a plain
+    truthy check, a real `False`/`0` value (e.g. prune_tool_results_enabled)
+    is still written, not silently dropped.
 
     Used to remember a gateway URL or model picked via a CLI flag or a TUI
     selection (e.g. /models), so a bare `pcli` picks them up next time.
@@ -214,7 +236,7 @@ def update_config_file(**updates: Any) -> None:
     data: dict[str, Any] = {}
     if path.exists():
         data = dict(tomllib.loads(path.read_text(encoding="utf-8")))
-    data.update({key: value for key, value in updates.items() if value})
+    data.update({key: value for key, value in updates.items() if value is not None and value != ""})
     path.write_text(_dump_toml(data), encoding="utf-8")
 
 

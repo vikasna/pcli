@@ -372,9 +372,13 @@ as a normal system message instead.
   `max_tool_calls_per_minute` to `0` for the whole session there. With an
   argument (`/max-tool-calls-per-turn 10`), sets it and persists it to a new
   `guardrails.toml` file (separate from `config.toml`) via
-  `update_guardrails_limits()`, which — unlike `update_config_file` — writes
-  `0` as a real value instead of skipping it as falsy, and leaves the
-  `[shell]`/`[fs]`/`[python]` tables and any other `[limits]` keys untouched.
+  `update_guardrails_limits()`, which writes `0` as a real value rather than
+  skipping it, and leaves the `[shell]`/`[fs]`/`[python]` tables and any
+  other `[limits]` keys untouched. (`update_config_file` — used for
+  `config.toml` settings like `/prune-tool-results` below — was itself fixed
+  to match this: it now only skips a real `None`/`""`, so a meaningful
+  `False`/`0` value, e.g. `prune_tool_results_enabled = False`, is actually
+  written instead of being silently dropped as if it were falsy.)
   Outside local-api mode the new value also applies live to the running
   `PermissionManager.guardrails`, taking effect on the next turn; in
   local-api mode it's still saved to `guardrails.toml` for later, but the
@@ -395,6 +399,23 @@ as a normal system message instead.
   applies live and takes effect on the next tool call rather than the next
   turn, since a rate limit has no per-turn boundary. Rejects non-numeric
   input and negative values (0 is allowed).
+- **`/prune-tool-results [off|on|<n>]`** — view/toggle/set the automatic
+  tool-result pruning pass (`agent/context_pruning.py`'s
+  `prune_old_tool_results`, run every turn from `ChatScreen._run_one_turn`
+  right after the turn is saved — see [Tool-result
+  pruning](#tool-result-pruning) below for the full mechanism). With no
+  argument, reports whether pruning is enabled (default: enabled) and the
+  current `prune_tool_results_keep_recent_turns` (default 1) — how many of
+  the most recent turns' tool results stay verbatim. `off` disables pruning
+  entirely (`prune_tool_results_enabled = False`); `on` re-enables it without
+  changing `keep_recent_turns`. A positive integer (`/prune-tool-results 3`)
+  sets `prune_tool_results_keep_recent_turns` and implicitly re-enables
+  pruning if it was off. All three forms persist to `config.toml` the same
+  way `/timeout` persists `request_timeout_s`, and apply live starting with
+  the very next turn, since `_run_one_turn` reads these settings fresh each
+  time — no restart needed. Rejects anything that isn't `off`, `on`, or a
+  positive integer (zero and negative values are rejected, with a message
+  pointing at `off` instead of `0` to disable pruning).
 - **`/rename [name]`** — with no argument, reports the session's current
   title (`Session.derive_title()` — the value shown in `/sessions`'s list).
   With an argument (`/rename my-feature-branch`), sets `Session.title`
@@ -473,6 +494,52 @@ that replaces the compacted messages is stored as a `role="system"` message
 and, like the leading system prompt, is never rendered into the message
 view. See [`configuration.md`](configuration.md#auto-compaction) for the
 three settings involved.
+
+## Tool-result pruning
+
+Distinct from auto-compaction above, and much lighter weight: at the end of
+every turn — right after the session is saved, *before* the auto-compact
+threshold check — `ChatScreen._run_one_turn` calls
+`agent/context_pruning.py`'s `prune_old_tool_results` if
+`prune_tool_results_enabled` is on (default: on). This is a purely mechanical
+pass with **no LLM call involved** — it doesn't summarize anything, it just
+shrinks old tool-role message content:
+
+- Any tool-role message older than the most recent
+  `prune_tool_results_keep_recent_turns` turns (default 1 — deliberately
+  tighter than auto-compaction's `auto_compact_keep_recent_turns` default of
+  2, so pruning has something to do before compaction's own threshold is ever
+  reached) has its full content archived via the same `ArtifactStore`
+  mechanism used by [artifact archiving](tools.md#artifact-archiving) and
+  [auto-compaction](#auto-compaction), then replaced in place with a short
+  placeholder:
+
+  ```
+  [Pruned tool result (12,345 chars) to save context. Purpose: checking whether pdftotext is installed. Call fetch_artifact(artifact_id='art_...') if you need it.]
+  ```
+
+  The `Purpose: ...` sentence only appears if the original tool call included
+  the optional `purpose` argument (see [`tools.md`](tools.md#the-purpose-argument))
+  — `prune_old_tool_results` finds it by scanning the session's assistant
+  messages for the matching `tool_call_id` and re-extracting `purpose` from
+  that call's original arguments JSON, which is left untouched even after
+  pruning.
+- Idempotent: once a tool-role message is pruned, `Message.pruned_artifact_id`
+  is set on it, so a later turn's pruning pass skips it rather than
+  re-archiving (and duplicating) the same content.
+- Turn-boundary-safe: it reuses the same `turn_boundaries()` helper
+  auto-compaction uses, so it only ever operates on complete turns and never
+  separates an assistant `tool_calls` message from its matching tool-result
+  message.
+- The archived content is retrievable exactly like any other artifact: call
+  `fetch_artifact(artifact_id='...')` with the id from the placeholder.
+
+Both `prune_tool_results_enabled` and `prune_tool_results_keep_recent_turns`
+persist to `config.toml` and can be viewed or changed live with
+[`/prune-tool-results`](#slash-commands) (unlike auto-compaction's three
+settings, which are env-var/config.toml-only with no slash command) — see
+[`configuration.md`](configuration.md#tool-result-pruning) for the full
+settings reference.
 
 ## Shell passthrough: `!command`, `!!command`, and `!!!command`
 
@@ -555,6 +622,23 @@ for the remainder of the granted scope. See
 decision flow (guardrails still apply and can override an "allow").
 
 ## Tool results
+
+Before a call's result is known, `ChatScreen._run_one_turn` (on a
+`tool_start` stream event) prints a one-line "call" message: `→
+tool_name(<raw arguments JSON>)`, e.g.:
+
+```
+→ read_file({"path": "setup.py"})
+```
+
+If the model included the optional `purpose` argument on this call (see
+[`tools.md`](tools.md#the-purpose-argument)), `extract_purpose`
+(`agent/context_pruning.py`) pulls it back out of that same raw arguments
+JSON and it's appended after two spaces and a `#`:
+
+```
+→ read_file({"path": "setup.py", "purpose": "checking whether pdftotext is a declared dependency"})  # checking whether pdftotext is a declared dependency
+```
 
 Each tool call's result (`MessageView.add_tool_result`,
 `src/pcli/tui/widgets/message_view.py`) renders as a Textual `Collapsible`,

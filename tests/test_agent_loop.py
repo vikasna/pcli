@@ -769,3 +769,114 @@ async def test_reasoning_only_response_ends_the_turn_with_no_content_and_no_tool
     assert turn_complete.new_messages[0].tool_calls is None
     assert [e.text for e in events if e.kind == "reasoning_delta"] == ["thinking a lot"]
     assert route.call_count == 1  # no infinite retry loop on an empty-but-valid response
+
+
+# --- "purpose" argument stripping ---
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_purpose_argument_never_reaches_the_tool_handler(tmp_path: Path):
+    """"purpose" only exists in the advertised schema (ToolSpec.to_openai_tool)
+    for the model's own benefit - AgentLoop must pop it before validation
+    and before the handler ever sees it, so it can never leak into (for
+    example) a toolbox tool's CLI-flag auto-builder."""
+    seen_arguments: list[dict] = []
+
+    async def _spy_handler(arguments: dict, ctx: ToolContext) -> ToolResult:
+        seen_arguments.append(arguments)
+        return ToolResult(output=f"echoed: {arguments['text']}")
+
+    spy_tool = ToolSpec(
+        name="echo_tool",
+        description="Echoes text back.",
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+        handler=_spy_handler,
+        needs_permission=False,
+    )
+
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(
+            200,
+            content=_sse(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_1",
+                                        "function": {
+                                            "name": "echo_tool",
+                                            "arguments": '{"text": "hi", "purpose": "saying hi"}',
+                                        },
+                                    }
+                                ]
+                            },
+                            "finish_reason": None,
+                        }
+                    ]
+                },
+                {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+            ),
+        ),
+        httpx.Response(200, content=_sse(*_final_text_chunks("done"))),
+    ]
+
+    registry = ToolRegistry()
+    registry.register(spy_tool)
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+
+    async with GatewayClient(_settings()) as client:
+        loop = AgentLoop(
+            client,
+            tool_registry=registry,
+            permission_manager=permission_manager,
+            tool_context_factory=lambda: ToolContext(
+                sandbox=FakeSandbox(), guardrails=permission_manager.guardrails, cwd=tmp_path
+            ),
+        )
+        events = []
+        async for event in loop.run_turn([ChatMessage(role="user", content="use the tool")]):
+            events.append(event)
+
+    tool_results = [e for e in events if isinstance(e, ToolResultEvent)]
+    assert tool_results[0].is_error is False
+    assert tool_results[0].output == "echoed: hi"  # succeeded despite the schema not knowing "purpose"
+    assert len(seen_arguments) == 1
+    assert "purpose" not in seen_arguments[0]  # never leaked into the handler
+    assert seen_arguments[0] == {"text": "hi"}
+
+    # The persisted assistant message's raw tool_call arguments JSON is left
+    # untouched (purpose survives there for context_pruning.py to extract
+    # later) - only the ephemeral parsed-dict copy had it popped.
+    turn_complete = next(e for e in events if isinstance(e, TurnCompleteEvent))
+    assistant_message = turn_complete.new_messages[0]
+    assert "purpose" in assistant_message.tool_calls[0].function.arguments
+
+
+def test_to_openai_tool_injects_purpose_without_mutating_the_original_schema():
+    original_parameters = dict(ECHO_TOOL.parameters)
+
+    tool_def = ECHO_TOOL.to_openai_tool()
+
+    assert "purpose" in tool_def.function["parameters"]["properties"]
+    # Deliberately optional, not required - see to_openai_tool's docstring.
+    assert "purpose" not in tool_def.function["parameters"]["required"]
+    # The original ToolSpec.parameters dict is never mutated - repeated
+    # calls must keep producing the same result, and jsonschema validation
+    # against tool.parameters (in AgentLoop._dispatch_tool_call) must never
+    # see "purpose" show up as if it were a real declared argument.
+    assert ECHO_TOOL.parameters == original_parameters
+    assert "purpose" not in ECHO_TOOL.parameters["properties"]
+
+    tool_def_again = ECHO_TOOL.to_openai_tool()
+    assert tool_def.function["parameters"] == tool_def_again.function["parameters"]

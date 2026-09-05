@@ -49,6 +49,8 @@ to `table_key` when reading back, so both shapes round-trip.
 | `auto_compact_enabled` | `PCLI_AUTO_COMPACT_ENABLED` | *(none)* | `auto_compact_enabled` | `true` | Whether old conversation history is automatically summarized/archived once context usage crosses `auto_compact_threshold`; see [Auto-compaction](#auto-compaction) below. |
 | `auto_compact_threshold` | `PCLI_AUTO_COMPACT_THRESHOLD` | *(none)* | `auto_compact_threshold` | `0.8` | Fraction of the model's context limit (`current_context_usage` in `cost/context.py`) at which auto-compaction triggers after a turn completes. |
 | `auto_compact_keep_recent_turns` | `PCLI_AUTO_COMPACT_KEEP_RECENT_TURNS` | *(none)* | `auto_compact_keep_recent_turns` | `2` | Number of most-recent user turns left untouched (verbatim) by compaction; only older turns get summarized and archived. |
+| `prune_tool_results_enabled` | `PCLI_PRUNE_TOOL_RESULTS_ENABLED` | *(none)* | `prune_tool_results_enabled` | `true` | Whether old tool-call results are automatically shrunk to a compact placeholder to save context, well before auto-compaction's own threshold would trigger; see [Tool-result pruning](#tool-result-pruning) below. |
+| `prune_tool_results_keep_recent_turns` | `PCLI_PRUNE_TOOL_RESULTS_KEEP_RECENT_TURNS` | *(none)* | `prune_tool_results_keep_recent_turns` | `1` | Number of most-recent turns whose tool results are left untouched (verbatim); older ones are archived and replaced with a short placeholder. Deliberately tighter than `auto_compact_keep_recent_turns`'s default of `2`. |
 
 `Settings.is_configured()` returns `bool(gateway_base_url)` — the API key is
 deliberately *not* required, so a blank key never blocks startup against an
@@ -121,6 +123,35 @@ untouched and summarizes everything older in one dedicated LLM call.
 Recompaction needs no special-casing: a later compaction naturally includes
 a prior compaction's own summary message among the older messages it folds
 into a fresh combined summary.
+
+## Tool-result pruning
+
+`prune_tool_results_enabled` and `prune_tool_results_keep_recent_turns`
+(table above) control a second, separate context-saving mechanism,
+implemented in `agent/context_pruning.py` and run from
+`ChatScreen._run_one_turn` (see [`tui-guide.md`](tui-guide.md#tool-result-pruning)
+for the user-facing behavior and the `/prune-tool-results` command, and
+[`tools.md`](tools.md#artifact-archiving) for how it reuses the same
+archive-then-`fetch_artifact` pattern as artifact archiving).
+
+Unlike [auto-compaction](#auto-compaction) above, this is a purely mechanical
+pass with **no LLM call**: it runs every turn, right after the turn is saved
+and *before* the auto-compact threshold check, rather than only once context
+usage crosses a threshold. It doesn't touch user/assistant messages or
+summarize anything — it only replaces the `content` of old tool-role messages
+(older than the most recent `prune_tool_results_keep_recent_turns` turns,
+default `1`) with a short placeholder, after archiving the original content
+via the same `ArtifactStore` mechanism. The default `keep_recent_turns` of
+`1` is deliberately tighter than `auto_compact_keep_recent_turns`'s default
+of `2`, so pruning routinely has something to do well before compaction's own
+threshold would ever be reached. `Message.pruned_artifact_id`
+(`src/pcli/session/models.py`) marks an already-pruned message so a later
+turn's pass doesn't re-archive (and duplicate) it.
+
+Unlike the three auto-compaction settings above, both pruning settings *are*
+persisted via a slash command: [`/prune-tool-results`](tui-guide.md#slash-commands)
+writes them to `config.toml` through `update_config_file` and applies them
+live on the very next turn, no restart needed.
 
 ## Context-limit detection and correction
 

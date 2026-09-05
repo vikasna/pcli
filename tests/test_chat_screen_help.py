@@ -58,6 +58,7 @@ async def test_help_lists_every_slash_command(tmp_path: Path):
             "/artifact-threshold",
             "/max-tool-calls-per-turn",
             "/max-tool-calls-per-minute",
+            "/prune-tool-results",
             "/rename",
             "/plan",
             "/build",

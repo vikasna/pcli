@@ -226,6 +226,15 @@ class AgentLoop:
         if not isinstance(arguments, dict):
             return "Tool arguments must be a JSON object.", True, [], None
 
+        # "purpose" only exists in the advertised schema (see
+        # ToolSpec.to_openai_tool) for the model's own benefit - it's never
+        # part of a tool's real parameters, so it must never reach schema
+        # validation or the handler. Popped from this parsed copy only; the
+        # original call.function.arguments JSON string (as persisted in the
+        # session's assistant message) is left untouched, which is what lets
+        # context_pruning.py re-extract it later for a pruned placeholder.
+        arguments.pop("purpose", None)
+
         try:
             jsonschema.validate(arguments, tool.parameters)
         except jsonschema.ValidationError as exc:

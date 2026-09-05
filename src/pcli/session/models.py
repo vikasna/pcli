@@ -25,6 +25,12 @@ class Message(BaseModel):
     tool_call_id: str | None = None
     name: str | None = None
     created_at: datetime = Field(default_factory=_utcnow)
+    pruned_artifact_id: str | None = None
+    """Set when this tool-role message's content has been replaced with a
+    compact placeholder by agent/context_pruning.py's prune_old_tool_results
+    — the original full content was archived first (retrievable via
+    fetch_artifact), and this field is the idempotency guard preventing a
+    message from being re-archived/re-pruned on a later call."""
 
     def to_chat_message(self) -> ChatMessage:
         return ChatMessage(

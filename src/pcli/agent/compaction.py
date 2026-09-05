@@ -34,12 +34,16 @@ class CompactionResult:
     usage: Usage
 
 
-def _turn_boundaries(messages: list[Message]) -> list[int]:
+def turn_boundaries(messages: list[Message]) -> list[int]:
     """Indices of role=='user' messages — the only safe places to cut, since
     a full turn's tool_calls/tool-result pairs always live entirely between
     one user message and the next. Cutting anywhere else risks splitting an
     assistant(tool_calls=...) from its matching tool-role response, which
-    breaks the chat-completions wire format."""
+    breaks the chat-completions wire format.
+
+    Shared with agent/context_pruning.py — the same turn-boundary-safety
+    reasoning applies to pruning old tool results, not just full-turn
+    compaction."""
     return [i for i, m in enumerate(messages) if m.role == "user"]
 
 
@@ -79,7 +83,7 @@ async def maybe_compact(
     """Compacts the oldest turns of session.messages in place, returning
     None if there isn't enough history to safely compact yet (fewer than
     keep_recent_turns+1 user turns)."""
-    boundaries = _turn_boundaries(session.messages)
+    boundaries = turn_boundaries(session.messages)
     if len(boundaries) <= keep_recent_turns:
         return None
 

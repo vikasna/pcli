@@ -8,8 +8,8 @@ import respx
 from pcli.agent.compaction import (
     _render_transcript,
     _system_prompt_prefix_len,
-    _turn_boundaries,
     maybe_compact,
+    turn_boundaries,
 )
 from pcli.config.settings import Settings
 from pcli.llm.client import GatewayClient
@@ -50,7 +50,7 @@ def _make_messages() -> list[Message]:
 
 
 def test_turn_boundaries_finds_user_message_indices():
-    assert _turn_boundaries(_make_messages()) == [1, 3, 5]
+    assert turn_boundaries(_make_messages()) == [1, 3, 5]
 
 
 def test_system_prompt_prefix_len():

@@ -98,10 +98,31 @@ class ToolSpec:
     but don't need permission)."""
 
     def to_openai_tool(self) -> ToolDefinition:
+        """The advertised schema gets an extra, optional "purpose" property
+        injected on top of self.parameters — a shallow copy, never mutating
+        self.parameters itself, which stays the schema AgentLoop validates
+        real arguments against (see _dispatch_tool_call, which pops
+        "purpose" out before that validation and before the tool handler
+        ever sees it — this property exists purely for the model's benefit,
+        not as a real tool argument)."""
+        parameters = self.parameters
+        if "properties" in parameters:
+            parameters = {
+                **parameters,
+                "properties": {
+                    **parameters["properties"],
+                    "purpose": {
+                        "type": "string",
+                        "description": "Optional: a short, one-sentence reason you're calling "
+                        "this tool right now (e.g. 'checking whether pdftotext is installed'). "
+                        "Helps keep tool-call history readable and prunable.",
+                    },
+                },
+            }
         return ToolDefinition(
             function={
                 "name": self.name,
                 "description": self.description,
-                "parameters": self.parameters,
+                "parameters": parameters,
             }
         )
