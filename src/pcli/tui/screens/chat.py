@@ -1183,10 +1183,11 @@ class ChatScreen(Screen):
                     flush_reasoning()
                     message_view.finish_streaming()
                     purpose = extract_purpose(chunk.tool_call.function.arguments)
-                    label = f"→ {chunk.tool_call.function.name}({chunk.tool_call.function.arguments})"
-                    if purpose:
-                        label += f"  # {purpose}"
-                    message_view.add_message("tool", label)
+                    message_view.add_tool_call(
+                        chunk.tool_call.function.name,
+                        chunk.tool_call.function.arguments,
+                        purpose=purpose,
+                    )
                     message_view.finish_streaming()
                 elif chunk.kind == "tool_result":
                     self._record_tool_invocation(chunk)

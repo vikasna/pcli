@@ -28,6 +28,24 @@ _ROLE_LABELS = {
 # duplicate frames. 20fps is smooth to read and gentle on any terminal.
 _MIN_REFRESH_INTERVAL_S = 1 / 20
 
+# Tool name -> the argument holding its "payload" (real, unescaped multi-line
+# text worth syntax-highlighting on its own) rather than a short scalar like
+# a path. edit_file is handled separately since it has two such arguments
+# (old_string/new_string). Anything not listed here just gets its whole
+# arguments dict pretty-printed as indented JSON instead.
+_CODE_ARG_BY_TOOL = {
+    "write_file": "content",
+    "run_shell": "command",
+    "run_shell_background": "command",
+}
+
+# A tool call rendered larger than this (in characters of its formatted body)
+# is collapsed by default, same threshold spirit as tool *results* — small,
+# common calls (read_file, grep, list_dir, ...) stay visible inline, only
+# genuinely large payloads (a big write_file/edit_file, a long script) get
+# tucked behind a click.
+_LARGE_TOOL_CALL_THRESHOLD_CHARS = 500
+
 
 def _format_tool_output(output: str) -> RenderableType:
     """Pretty-prints/syntax-highlights JSON tool output; otherwise renders
@@ -44,6 +62,58 @@ def _format_tool_output(output: str) -> RenderableType:
             pretty = json.dumps(parsed, indent=2, ensure_ascii=False)
             return Syntax(pretty, "json", word_wrap=True, background_color="default")
     return Text(output, no_wrap=False, overflow="fold")
+
+
+def _guess_lexer(path: str | None, code: str, default: str = "text") -> str:
+    if path:
+        try:
+            return Syntax.guess_lexer(path, code=code)
+        except Exception:  # noqa: BLE001, S110 - lexer guessing is cosmetic, never fatal
+            pass
+    return default
+
+
+def _format_tool_call_body(tool_name: str, arguments: dict[str, Any]) -> tuple[RenderableType, int]:
+    """Returns (renderable, char_count) — char_count drives the collapse
+    threshold in add_tool_call, measured from the actual formatted content
+    (code/JSON), not the raw arguments JSON string, so it reflects what the
+    user would actually see."""
+    path = arguments.get("path") if isinstance(arguments.get("path"), str) else None
+
+    if tool_name == "edit_file" and "old_string" in arguments and "new_string" in arguments:
+        remaining = {k: v for k, v in arguments.items() if k not in ("old_string", "new_string")}
+        old_code = str(arguments["old_string"])
+        new_code = str(arguments["new_string"])
+        lexer = _guess_lexer(path, old_code)
+        parts: list[RenderableType] = []
+        if remaining:
+            parts.append(Text(_format_remaining_args(remaining), style="dim"))
+        parts.append(Text("- old_string", style="bold red"))
+        parts.append(Syntax(old_code, lexer, word_wrap=True, background_color="default"))
+        parts.append(Text("+ new_string", style="bold green"))
+        parts.append(Syntax(new_code, lexer, word_wrap=True, background_color="default"))
+        return Group(*parts), len(old_code) + len(new_code)
+
+    code_arg = _CODE_ARG_BY_TOOL.get(tool_name)
+    if code_arg and code_arg in arguments and isinstance(arguments[code_arg], str):
+        remaining = {k: v for k, v in arguments.items() if k != code_arg}
+        code = arguments[code_arg]
+        default_lexer = "bash" if tool_name.startswith("run_shell") else "text"
+        lexer = _guess_lexer(path, code, default=default_lexer)
+        parts = []
+        if remaining:
+            parts.append(Text(_format_remaining_args(remaining), style="dim"))
+        parts.append(Syntax(code, lexer, word_wrap=True, background_color="default"))
+        return Group(*parts), len(code)
+
+    if not arguments:
+        return Text("(no arguments)", style="dim"), 0
+    pretty = json.dumps(arguments, indent=2, ensure_ascii=False)
+    return Syntax(pretty, "json", word_wrap=True, background_color="default"), len(pretty)
+
+
+def _format_remaining_args(remaining: dict[str, Any]) -> str:
+    return ", ".join(f"{key}={value!r}" for key, value in remaining.items())
 
 
 class MessageView(VerticalScroll):
@@ -97,6 +167,51 @@ class MessageView(VerticalScroll):
             return
         was_at_bottom = self.is_vertical_scroll_end
         self._current.update(self._render_message(self._current_role, self._current_text))
+        self._scroll_end_if_at_bottom(was_at_bottom)
+
+    def add_tool_call(self, tool_name: str, arguments_json: str, *, purpose: str | None = None) -> None:
+        """The "→ tool_name(...)" preview shown as soon as a call is
+        dispatched, before its result is known. Known code-bearing arguments
+        (write_file's content, run_shell's command, edit_file's old/new
+        strings) are syntax-highlighted with real line breaks instead of the
+        raw, single-line-escaped JSON string; anything else falls back to
+        pretty-printed JSON. Large calls collapse behind a click, mirroring
+        add_tool_result — small/common calls (read_file, grep, ...) stay
+        visible inline."""
+        was_at_bottom = self.is_vertical_scroll_end
+        try:
+            arguments = json.loads(arguments_json or "{}")
+        except (json.JSONDecodeError, ValueError):
+            arguments = None
+        if not isinstance(arguments, dict):
+            # Malformed/non-object arguments (shouldn't normally happen -
+            # AgentLoop's own dispatch would separately reject these) - fall
+            # back to the raw string rather than crashing the render.
+            self.add_message("tool", f"→ {tool_name}({arguments_json})")
+            self._scroll_end_if_at_bottom(was_at_bottom)
+            return
+
+        # "purpose" is shown on its own line below, not mixed into the
+        # argument listing/highlighting.
+        arguments = {k: v for k, v in arguments.items() if k != "purpose"}
+        body_renderable, char_count = _format_tool_call_body(tool_name, arguments)
+
+        if char_count > _LARGE_TOOL_CALL_THRESHOLD_CHARS:
+            parts: list[RenderableType] = []
+            if purpose:
+                parts.append(Text(purpose, style="italic"))
+            parts.append(body_renderable)
+            title = f"→ {tool_name}(...) — {char_count:,} char(s)"
+            body = Static(Group(*parts), classes="tool-result-body")
+            collapsible = Collapsible(body, title=title, collapsed=True, classes="tool-call-collapsible")
+            self.mount(collapsible)
+        else:
+            parts = [Text(f"→ {tool_name}", style="bold")]
+            if purpose:
+                parts.append(Text(purpose, style="italic"))
+            parts.append(body_renderable)
+            widget = Static(Group(*parts), classes="message message-tool")
+            self.mount(widget)
         self._scroll_end_if_at_bottom(was_at_bottom)
 
     def add_tool_result(self, tool_name: str, output: str, *, is_error: bool) -> None:

@@ -7,7 +7,7 @@ Running `pcli` with no subcommand launches the Textual TUI (`PcliApp` ->
 
 Top to bottom (`ChatScreen.compose`):
 
-- **Status pane** (`StatusPane`) — todo list only, ~3 lines, scrollable.
+- **Status pane** (`StatusPane`) — todo list only, ~4 lines, scrollable.
   Collapses to zero height when there's nothing to show.
 - **Message view** (`MessageView`) — scrollable conversation history. Auto-
   scrolls to the bottom as new content streams in, but only while you're
@@ -621,24 +621,67 @@ for the remainder of the granted scope. See
 [`sandbox-and-permissions.md`](sandbox-and-permissions.md) for the full
 decision flow (guardrails still apply and can override an "allow").
 
-## Tool results
+## Tool calls and results
 
 Before a call's result is known, `ChatScreen._run_one_turn` (on a
-`tool_start` stream event) prints a one-line "call" message: `→
-tool_name(<raw arguments JSON>)`, e.g.:
+`tool_start` stream event) calls `MessageView.add_tool_call(tool_name,
+arguments_json, purpose=...)` (`src/pcli/tui/widgets/message_view.py`) to
+show a "call" preview. This used to just dump the raw, single-line arguments
+JSON verbatim (so a multi-line `write_file` body showed literal `\n`
+characters); it now parses the arguments and formats them:
+
+- If the model included the optional `purpose` argument on this call (see
+  [`tools.md`](tools.md#the-purpose-argument)), it's shown in italics on its
+  own line, and is never mixed into the argument listing/highlighting below
+  it (no more double-showing it inline *and* appended after a `#`, like an
+  older version of this doc described).
+- Tools with a known "code" argument — `write_file`'s `content`,
+  `run_shell`/`run_shell_background`'s `command` (`_CODE_ARG_BY_TOOL`) — get
+  that argument rendered as a real, multi-line, syntax-highlighted
+  `rich.syntax.Syntax` block instead of an escaped JSON string. The language
+  is guessed from the call's `path` argument when present
+  (`Syntax.guess_lexer`), else a per-tool default (`bash` for the two
+  `run_shell*` tools, `text` otherwise). Any other arguments on the same call
+  (e.g. `path`, `timeout_s`) print as a compact dim `key=value, key=value`
+  summary line above the code block.
+- `edit_file` is special-cased since it has two code arguments: `old_string`
+  and `new_string` each render as their own labeled `Syntax` block — `-
+  old_string` in bold red, `+ new_string` in bold green — using a lexer
+  guessed from `old_string` (and the call's `path`, if given).
+- Every other tool (`read_file`, `grep`, `list_dir`, toolbox tools, agent
+  tools, ...) falls back to pretty-printed, indented JSON
+  (`json.dumps(..., indent=2)` through `Syntax(..., "json", ...)`) rather
+  than the old single-line raw string — still more readable even without a
+  dedicated code field.
+- A call with no arguments at all shows `(no arguments)`.
+
+For example, a small `read_file` call still renders inline, uncollapsed:
 
 ```
-→ read_file({"path": "setup.py"})
+→ read_file
+checking whether pdftotext is a declared dependency
+{
+  "path": "setup.py"
+}
 ```
 
-If the model included the optional `purpose` argument on this call (see
-[`tools.md`](tools.md#the-purpose-argument)), `extract_purpose`
-(`agent/context_pruning.py`) pulls it back out of that same raw arguments
-JSON and it's appended after two spaces and a `#`:
+**Large calls collapse behind a click**, the same pattern used for tool
+*results* below: `_format_tool_call_body` measures the char length of what's
+actually formatted (the code/JSON body shown, not the raw arguments JSON
+string), and if that exceeds `_LARGE_TOOL_CALL_THRESHOLD_CHARS` (500 chars),
+the whole call — purpose line plus formatted body — is wrapped in a Textual
+`Collapsible`, collapsed by default, with CSS class `tool-call-collapsible`
+(`src/pcli/tui/styles/pcli.tcss` — same warning-colored left border as
+`.tool-result-collapsible`) and titled:
 
 ```
-→ read_file({"path": "setup.py", "purpose": "checking whether pdftotext is a declared dependency"})  # checking whether pdftotext is a declared dependency
+→ write_file(...) — 1,234 char(s)
 ```
+
+Click the title (or focus it and press Enter/Space) to expand and see the
+full formatted content. Small/common calls — most `read_file`, `grep`,
+`list_dir` calls — stay visible inline as before, styled with the existing
+`message message-tool` classes.
 
 Each tool call's result (`MessageView.add_tool_result`,
 `src/pcli/tui/widgets/message_view.py`) renders as a Textual `Collapsible`,

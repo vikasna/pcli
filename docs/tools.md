@@ -34,9 +34,10 @@ model sent it (still containing `"purpose"`) is left untouched in the
 persisted session, which is what lets later code re-extract it. This matters
 for two things: it keeps a toolbox-synthesized tool's auto-generated
 CLI-flag-builder (see [`toolbox-plugins.md`](toolbox-plugins.md)) from
-treating `purpose` as a bogus flag, and it's shown inline next to the tool
-call in the TUI (see [`tui-guide.md`](tui-guide.md#tool-results)) and
-resurfaces later in a pruned tool result's placeholder (see [Artifact
+treating `purpose` as a bogus flag, and it's shown on its own italic line
+above the call's formatted arguments in the TUI (see
+[`tui-guide.md`](tui-guide.md#tool-calls-and-results)) and resurfaces later
+in a pruned tool result's placeholder (see [Artifact
 archiving](#artifact-archiving) below and
 [`tui-guide.md`](tui-guide.md#tool-result-pruning)).
 
@@ -564,7 +565,8 @@ The TUI displays this exact same string (`ToolResultEvent.output` — i.e.
 `chunk.output` in `ChatScreen._stream_response`, the *already*
 archived/truncated value above, not `raw_output`) via
 `MessageView.add_tool_result`, inside an expandable Collapsible — see
-[`tui-guide.md`](tui-guide.md#tool-results). The one thing that changed is
+[`tui-guide.md`](tui-guide.md#tool-calls-and-results). The one thing that
+changed is
 that the view layer no longer applies a *second*, smaller truncation on top:
 previously the TUI cut whatever it was given down to a fixed 2000 characters
 for display; now the Collapsible shows all of `chunk.output` when expanded.

@@ -1,12 +1,13 @@
 import json
 
 import pytest
+from rich.console import Group
 from rich.syntax import Syntax
 from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.widgets import Collapsible
+from textual.widgets import Collapsible, Static
 
-from pcli.tui.widgets.message_view import MessageView, _format_tool_output
+from pcli.tui.widgets.message_view import MessageView, _format_tool_call_body, _format_tool_output
 
 
 class _ViewApp(App):
@@ -104,6 +105,151 @@ async def test_add_tool_result_does_not_disturb_streaming_state():
         # streaming assistant message is untouched by it.
         assert view._current_role == "assistant"
         assert view._current_text == "partial reply"
+
+
+# --- add_tool_call / _format_tool_call_body ---
+
+
+def test_format_tool_call_body_highlights_write_file_content_with_real_newlines():
+    renderable, char_count = _format_tool_call_body(
+        "write_file", {"path": "foo.py", "content": "def foo():\n    return 42\n"}
+    )
+    assert isinstance(renderable, Group)
+    syntax_parts = [r for r in renderable.renderables if isinstance(r, Syntax)]
+    assert len(syntax_parts) == 1
+    assert syntax_parts[0].lexer.name.lower() == "python"
+    assert "\n" in syntax_parts[0].code  # real newlines, not the escaped "\\n" JSON form
+    assert char_count == len("def foo():\n    return 42\n")
+
+
+def test_format_tool_call_body_uses_bash_lexer_for_run_shell():
+    renderable, char_count = _format_tool_call_body("run_shell", {"command": "ls -la", "timeout_s": 30})
+    syntax_parts = [r for r in renderable.renderables if isinstance(r, Syntax)]
+    assert len(syntax_parts) == 1
+    assert syntax_parts[0].lexer.name.lower() == "bash"
+    assert char_count == len("ls -la")
+
+
+def test_format_tool_call_body_shows_both_old_and_new_string_for_edit_file():
+    renderable, char_count = _format_tool_call_body(
+        "edit_file",
+        {"path": "bar.py", "old_string": "def bar():\n    pass", "new_string": "def bar():\n    return 1"},
+    )
+    syntax_parts = [r for r in renderable.renderables if isinstance(r, Syntax)]
+    assert len(syntax_parts) == 2
+    assert syntax_parts[0].code == "def bar():\n    pass"
+    assert syntax_parts[1].code == "def bar():\n    return 1"
+    assert char_count == len("def bar():\n    pass") + len("def bar():\n    return 1")
+
+
+def test_format_tool_call_body_falls_back_to_pretty_json_for_unknown_tools():
+    renderable, char_count = _format_tool_call_body("grep", {"pattern": "foo", "path": "."})
+    assert isinstance(renderable, Syntax)
+    assert '"pattern": "foo"' in renderable.code
+    assert char_count == len(renderable.code)
+
+
+def test_format_tool_call_body_handles_no_arguments():
+    renderable, char_count = _format_tool_call_body("list_dir", {})
+    assert isinstance(renderable, Text)
+    assert char_count == 0
+
+
+@pytest.mark.asyncio
+async def test_add_tool_call_renders_small_calls_inline_not_collapsed():
+    app = _ViewApp()
+    async with app.run_test() as pilot:
+        view = app.query_one(MessageView)
+        view.add_tool_call("read_file", json.dumps({"path": "setup.py"}))
+        await pilot.pause()
+
+        assert len(view.query(Collapsible)) == 0
+        widget = view.query_one(".message-tool", Static)
+        assert widget is not None
+
+
+@pytest.mark.asyncio
+async def test_add_tool_call_collapses_large_calls_by_default():
+    app = _ViewApp()
+    async with app.run_test() as pilot:
+        view = app.query_one(MessageView)
+        big_content = "line\n" * 200  # well over the 500-char collapse threshold
+        view.add_tool_call("write_file", json.dumps({"path": "big.py", "content": big_content}))
+        await pilot.pause()
+
+        collapsible = view.query_one(Collapsible)
+        assert collapsible.collapsed is True
+        assert "write_file" in collapsible.title
+        assert f"{len(big_content):,} char(s)" in collapsible.title
+
+
+def test_format_tool_call_body_never_receives_purpose_as_a_real_argument():
+    """add_tool_call strips "purpose" out of the parsed arguments before
+    calling _format_tool_call_body (it's shown on its own line instead) -
+    verified here directly against the pure function: a tool with no
+    known code argument (falls back to pretty-JSON) must never show
+    "purpose" as a listed key."""
+    renderable, _char_count = _format_tool_call_body(
+        "grep", {"pattern": "foo", "path": "."}  # purpose already stripped by the caller
+    )
+    assert isinstance(renderable, Syntax)
+    assert "purpose" not in renderable.code
+
+
+@pytest.mark.asyncio
+async def test_add_tool_call_strips_purpose_from_the_pretty_printed_arguments():
+    app = _ViewApp()
+    async with app.run_test() as pilot:
+        view = app.query_one(MessageView)
+        view.add_tool_call(
+            "grep",
+            json.dumps({"pattern": "foo", "path": ".", "purpose": "looking for foo"}),
+            purpose="looking for foo",
+        )
+        await pilot.pause()
+
+        widget = view.query_one(".message-tool", Static)
+        # Static has no public accessor for the renderable passed to its
+        # constructor (only .render(), which wraps it in an internal Visual
+        # - see the comment on test_add_tool_result_expanding_reveals_full_
+        # content above) - the name-mangled private attribute is the only
+        # way to inspect the actual Group tree that was mounted.
+        rendered_group = widget._Static__content
+        syntax_parts = [r for r in rendered_group.renderables if isinstance(r, Syntax)]
+        assert len(syntax_parts) == 1
+        assert "purpose" not in syntax_parts[0].code  # not duplicated into the argument listing
+        text_parts = [r for r in rendered_group.renderables if isinstance(r, Text)]
+        assert any(t.plain == "looking for foo" for t in text_parts)  # shown on its own line instead
+
+
+@pytest.mark.asyncio
+async def test_add_tool_call_falls_back_gracefully_on_malformed_arguments_json():
+    app = _ViewApp()
+    async with app.run_test() as pilot:
+        view = app.query_one(MessageView)
+        view.add_tool_call("run_shell", "{not valid json")
+        await pilot.pause()
+
+        assert len(view.query(Collapsible)) == 0
+        widget = view.query_one(".message-tool", Static)
+        assert widget is not None
+
+
+@pytest.mark.asyncio
+async def test_add_tool_call_does_not_force_scroll_when_user_scrolled_up():
+    app = _ViewApp()
+    async with app.run_test(size=(80, 10)) as pilot:
+        view = app.query_one(MessageView)
+        await _fill_with_overflowing_content(view, pilot)
+
+        view.scroll_to(y=0, animate=False)
+        await pilot.pause()
+        assert view.scroll_y == 0
+
+        view.add_tool_call("read_file", json.dumps({"path": "setup.py"}))
+        await pilot.pause()
+
+        assert view.scroll_y == 0
 
 
 # --- Scroll-sticky behavior ---

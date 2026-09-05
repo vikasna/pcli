@@ -61,6 +61,16 @@ Screen {
     color: $text-muted;
 }
 
+.tool-call-collapsible {
+    margin-bottom: 1;
+    border-left: thick $warning;
+    background: transparent;
+}
+
+.tool-call-collapsible CollapsibleTitle {
+    color: $text-muted;
+}
+
 .reasoning-collapsible {
     margin-bottom: 1;
     /* $text-muted is an "auto"-computed contrast color (see Textual's
