@@ -3,7 +3,7 @@ Screen {
 }
 
 #status-pane {
-    height: 3;
+    height: 5;
     background: $panel;
     color: $text;
     padding: 0 1;

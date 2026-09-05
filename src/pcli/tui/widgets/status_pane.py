@@ -1,9 +1,11 @@
 """Scrollable pane showing the live todo list. Lives above the message
 history (not part of it) so it doesn't scroll away with the conversation.
-3 lines tall by default but genuinely scrollable when there are more todos
-than that — and auto-scrolls to keep whichever task is 'in_progress'
-visible whenever the list changes. Collapses to nothing when there are no
-todos. (Subagent progress lives in StatusBar's second line, not here.)"""
+4 lines of todos visible by default (#status-pane's height in pcli.tcss is
+5 — 4 content rows plus the 1-row border-bottom) but genuinely scrollable
+when there are more todos than that — and auto-scrolls to keep whichever
+task is 'in_progress' visible whenever the list changes. Collapses to
+nothing when there are no todos. (Subagent progress lives in StatusBar's
+second line, not here.)"""
 
 from __future__ import annotations
 
