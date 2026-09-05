@@ -74,6 +74,16 @@ class ContextLimitTable:
         match = match_model_pattern(model_name, self._entries)
         return match if match is not None else self._default
 
+    def has_explicit_entry(self, model_name: str) -> bool:
+        """True if model_name matches a real (builtin or user/auto-set)
+        entry, as opposed to lookup() silently falling back to the generic
+        default. Used to gate auto-detection (cost/context_detect.py) so it
+        never re-probes or overwrites a model that's already correctly
+        configured — including one a previous auto-detect run already set,
+        since that's persisted the same way a manual /context-limit
+        correction is."""
+        return match_model_pattern(model_name, self._entries) is not None
+
 
 @dataclass
 class ContextUsage:

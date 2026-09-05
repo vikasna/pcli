@@ -326,6 +326,7 @@ class ChatScreen(Screen):
             )
 
         self._client = GatewayClient(self._settings)
+        await self._maybe_detect_context_limit(message_view)
         self._agent_loop = AgentLoop(
             self._client,
             model=self._settings.default_model or None,
@@ -335,6 +336,44 @@ class ChatScreen(Screen):
             max_tool_iterations=self._effective_max_tool_iterations(),
             artifact_threshold_chars=self._settings.artifact_threshold_chars,
         )
+
+    async def _maybe_detect_context_limit(self, message_view: MessageView) -> None:
+        """Best-effort: if pcli has no specific context-window entry for
+        this model yet (ContextLimitTable.has_explicit_entry — covers both
+        built-in and previously user/auto-set ones, so this never re-probes
+        or overwrites something already known), ask the gateway directly
+        (GatewayClient.detect_context_limit / cost/context_detect.py).
+        Several backends (LM Studio, Ollama, a LiteLLM proxy, a raw
+        llama.cpp server, and — for free, via the standard /models
+        response — OpenRouter/vLLM) expose this; hosted-only gateways
+        (OpenAI, Anthropic, ...) don't, in which case the notice below
+        points at /context-limit instead. Wrapped defensively so a probe
+        failure/timeout never blocks startup — this is a nice-to-have, not
+        a requirement for the rest of on_mount to complete."""
+        if not self._settings.context_limit_auto_detect_enabled:
+            return
+        model = self._settings.default_model or self._session.model
+        if not model or self._context_limit_table.has_explicit_entry(model):
+            return
+        try:
+            limit = await self._client.detect_context_limit(model)
+        except Exception:  # noqa: BLE001 - never let a probe failure block startup
+            limit = None
+
+        if limit:
+            set_model_context_limit(model, limit)
+            self._context_limit_table = ContextLimitTable.load()
+            self.query_one(StatusBar).context_limit_tokens = self._context_limit_table.lookup(model)
+            message_view.add_message(
+                "system", f"Auto-detected context limit for '{model}': {limit:,} tokens."
+            )
+        else:
+            assumed = self._context_limit_table.lookup(model)
+            message_view.add_message(
+                "system",
+                f"Couldn't auto-detect a context limit for '{model}' — pcli is assuming "
+                f"{assumed:,} tokens. If that's wrong, set it with /context-limit <tokens>.",
+            )
 
     def _effective_tool_registry(self) -> ToolRegistry | None:
         """self._tool_registry filtered to plan_mode_safe tools while plan

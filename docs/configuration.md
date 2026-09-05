@@ -51,6 +51,7 @@ to `table_key` when reading back, so both shapes round-trip.
 | `auto_compact_keep_recent_turns` | `PCLI_AUTO_COMPACT_KEEP_RECENT_TURNS` | *(none)* | `auto_compact_keep_recent_turns` | `2` | Number of most-recent user turns left untouched (verbatim) by compaction; only older turns get summarized and archived. |
 | `prune_tool_results_enabled` | `PCLI_PRUNE_TOOL_RESULTS_ENABLED` | *(none)* | `prune_tool_results_enabled` | `true` | Whether old tool-call results are automatically shrunk to a compact placeholder to save context, well before auto-compaction's own threshold would trigger; see [Tool-result pruning](#tool-result-pruning) below. |
 | `prune_tool_results_keep_recent_turns` | `PCLI_PRUNE_TOOL_RESULTS_KEEP_RECENT_TURNS` | *(none)* | `prune_tool_results_keep_recent_turns` | `1` | Number of most-recent turns whose tool results are left untouched (verbatim); older ones are archived and replaced with a short placeholder. Deliberately tighter than `auto_compact_keep_recent_turns`'s default of `2`. |
+| `context_limit_auto_detect_enabled` | `PCLI_CONTEXT_LIMIT_AUTO_DETECT_ENABLED` | *(none)* | `context_limit_auto_detect_enabled` | `true` | Whether pcli tries to query the gateway directly for a model's real context window (see [Automatic context-limit detection](#automatic-context-limit-detection) below) when it has no built-in or user-configured entry for it yet. A handful of extra, short-timeout requests on startup for an unrecognized model; set to `false` to skip this and always fall back to the assumed default (still correctable either way via `/context-limit`). |
 
 `Settings.is_configured()` returns `bool(gateway_base_url)` — the API key is
 deliberately *not* required, so a blank key never blocks startup against an
@@ -201,6 +202,83 @@ hand-editing it and `/context-limit` are two paths to the same effect.
 `ChatScreen` reloads its `ContextLimitTable` immediately afterward, so the
 corrected limit is used starting with the very next turn — no restart
 needed.
+
+### Automatic context-limit detection
+
+Everything above is reactive — pcli only discovers a wrong assumption after
+the fact, either from a "no reply" turn or from you noticing and running
+`/context-limit` yourself. `detect_context_limit()`
+(`src/pcli/cost/context_detect.py`) adds a proactive counterpart: for a
+handful of backends, pcli can ask the gateway directly, at startup, what the
+model's real context window actually is — closing the generic
+128,000-token-fallback gap described above before it ever causes a problem,
+for any model those backends recognize.
+
+There's no single standard OpenAI-compatible endpoint for this, so
+`detect_context_limit()` tries several backend-specific probes in order
+against the gateway's own already-authenticated HTTP client, stopping at the
+first one that succeeds:
+
+1. The standard `GET /models` endpoint (the same one `GatewayClient.list_models()`
+   already calls) — some backends add an extra field on top of the plain
+   OpenAI schema: `context_length` (OpenRouter) or `max_model_len` (vLLM). No
+   separate request needed for either.
+2. LM Studio's native `GET /api/v0/models` — `max_context_length`, preferring
+   `loaded_context_length` when present (the size actually loaded, which can
+   differ from the model's max).
+3. A raw llama.cpp server's `GET /props` —
+   `default_generation_settings.n_ctx`.
+4. Ollama's `POST /api/show` (`{"model": "..."}`) — scans `model_info` for
+   any key ending in `.context_length` (the architecture-name prefix varies
+   per model family, e.g. `llama.context_length`).
+5. A LiteLLM proxy's `GET /model/info` — matches the entry by `model_name`,
+   then reads `model_info.max_input_tokens`, falling back to
+   `model_info.max_tokens` only if that's absent (`max_tokens` is documented
+   as unreliable/inconsistently populated across LiteLLM versions, often
+   reflecting max *output* tokens instead).
+
+Every probe fails silently (network error, non-2xx, malformed JSON) and
+falls through to the next — hosted-only gateways (real OpenAI, Anthropic,
+Azure OpenAI, most plain OpenAI-compatible proxies) expose none of this, so
+the whole thing just returns `None` there, exactly like an unrecognized
+model always has. Detection is also skipped entirely (no network calls at
+all) whenever it wouldn't add anything: if `ContextLimitTable.has_explicit_entry(model)`
+is already true — which covers pcli's built-in per-model patterns
+(`gpt-4o*`, `claude-*`, ...) *and* any earlier manual `/context-limit`
+correction or previous successful auto-detection, since both are persisted
+to `context_limits.toml` the same way — this never re-probes or silently
+overwrites something already known.
+
+**Implementation detail:** four of the five probes above (everything except
+the standard `/models` one) hit fixed, well-known paths at the gateway's
+*origin* (scheme+host+port), deliberately bypassing whatever path prefix
+(typically `/v1`) is baked into the configured `gateway_base_url` —
+`_origin_url()` in `context_detect.py` builds each as a fully-qualified
+absolute URL rather than a bare path for exactly this reason. That's needed
+because `httpx.AsyncClient` does not treat a leading `/` as "reset to origin
+root" the way a browser or `urljoin` would — its `_merge_url` always appends
+onto `base_url`'s own path regardless of a leading slash, so a bare
+`"/props"` against a `base_url` of `http://host:1234/v1` would actually
+request `http://host:1234/v1/props`, not the real `http://host:1234/props`
+(confirmed against httpx's own source; this was an actual bug caught while
+building this feature). Only the first probe (standard `/models`) correctly
+inherits that prefix, since it's a real OpenAI-style endpoint that
+legitimately lives under it.
+
+This runs once, from `ChatScreen._maybe_detect_context_limit`, called from
+`on_mount` right after the `GatewayClient` is constructed, gated by the
+`context_limit_auto_detect_enabled` setting above (default `true`). On
+success it persists the detected value via the same `set_model_context_limit()`
+used by `/context-limit`, reloads the `ContextLimitTable`, updates the status
+bar's context-usage display immediately, and shows: `"Auto-detected context
+limit for '<model>': <N> tokens."` If every probe fails — including on any
+hosted-only gateway, where this is the expected, unavoidable outcome — pcli
+shows instead: `"Couldn't auto-detect a context limit for '<model>' — pcli
+is assuming <N> tokens. If that's wrong, set it with /context-limit
+<tokens>."`, i.e. the same manual correction path documented above remains
+the safety net whenever detection can't help. Either way the probe is
+wrapped defensively so a failure or timeout never blocks the rest of
+startup.
 
 ## Local-API mode
 

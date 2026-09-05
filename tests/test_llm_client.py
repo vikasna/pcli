@@ -195,6 +195,40 @@ async def test_list_models_raises_gateway_error_on_failure():
             await client.list_models()
 
 
+@pytest.mark.asyncio
+@respx.mock
+async def test_detect_context_limit_delegates_to_cost_context_detect():
+    """Thin wrapper coverage - the actual multi-backend probing logic is
+    covered directly in tests/test_context_detect.py; this just confirms
+    GatewayClient wires its own already-authenticated client through to it
+    correctly (base_url origin included, real GatewayClient auth headers)."""
+    respx.get("http://fake-gateway.test/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "fake-model", "context_length": 32768}]})
+    )
+    respx.get("http://fake-gateway.test/api/v0/models").mock(return_value=httpx.Response(404))
+    respx.get("http://fake-gateway.test/props").mock(return_value=httpx.Response(404))
+    respx.post("http://fake-gateway.test/api/show").mock(return_value=httpx.Response(404))
+    respx.get("http://fake-gateway.test/model/info").mock(return_value=httpx.Response(404))
+
+    async with GatewayClient(_settings()) as client:
+        assert await client.detect_context_limit("fake-model") == 32768
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_detect_context_limit_returns_none_when_nothing_matches():
+    respx.get("http://fake-gateway.test/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "fake-model"}]})
+    )
+    respx.get("http://fake-gateway.test/api/v0/models").mock(return_value=httpx.Response(404))
+    respx.get("http://fake-gateway.test/props").mock(return_value=httpx.Response(404))
+    respx.post("http://fake-gateway.test/api/show").mock(return_value=httpx.Response(404))
+    respx.get("http://fake-gateway.test/model/info").mock(return_value=httpx.Response(404))
+
+    async with GatewayClient(_settings()) as client:
+        assert await client.detect_context_limit("fake-model") is None
+
+
 # --- Actionable error-message hints ---
 #
 # Regression coverage for a real debugged case: a local model streaming at

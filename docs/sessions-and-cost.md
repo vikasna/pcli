@@ -243,7 +243,13 @@ pass `since` — it's only usable programmatically.
 pattern/prefix-match table shape as pricing, for token-limit-per-model,
 loaded from `config_dir()/context_limits.toml` (`[models]` + `[default]`,
 built-in default 128,000 tokens). Built-in limits mirror the pricing table's
-model list (e.g. `gpt-4.1*` -> 1,000,000, `claude-*` -> 200,000).
+model list (e.g. `gpt-4.1*` -> 1,000,000, `claude-*` -> 200,000). For a model
+matching none of those, pcli can also try to fill in the real value
+automatically at startup by querying the gateway directly — see
+[Automatic context-limit detection](configuration.md#automatic-context-limit-detection)
+in `configuration.md` for the probe order and supported backends, and
+[Context-limit detection and correction](configuration.md#context-limit-detection-and-correction)
+for the manual `/context-limit` fallback.
 
 There's no local tokenizer for a generic gateway, so `current_context_usage`
 doesn't estimate from message text — it uses the **most recently reported**

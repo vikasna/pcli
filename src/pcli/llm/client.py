@@ -11,6 +11,7 @@ import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
 
 from pcli.config.settings import Settings
+from pcli.cost.context_detect import detect_context_limit as _detect_context_limit
 from pcli.llm.errors import GatewayError
 from pcli.llm.models import ChatMessage, StreamEvent, ToolDefinition, Usage
 from pcli.llm.streaming import parse_sse_stream
@@ -236,3 +237,11 @@ class GatewayClient:
         entries = payload.get("data", []) if isinstance(payload, dict) else []
         ids = [entry["id"] for entry in entries if isinstance(entry, dict) and "id" in entry]
         return sorted(ids)
+
+    async def detect_context_limit(self, model: str) -> int | None:
+        """Best-effort: queries this gateway directly for model's real
+        context window, trying several known backend-specific extensions
+        (see cost/context_detect.py — no single standard covers this).
+        None if nothing answered, including for hosted-only gateways that
+        expose no such information at all. Never raises."""
+        return await _detect_context_limit(self._client, model)

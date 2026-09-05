@@ -46,6 +46,17 @@ def test_context_limit_table_load_reads_overrides(tmp_path: Path, monkeypatch):
     assert table.lookup("anything-else") == 5000
 
 
+def test_has_explicit_entry_true_for_exact_and_wildcard_matches():
+    table = _fixture_limits()
+    assert table.has_explicit_entry("claude-sonnet-exact") is True
+    assert table.has_explicit_entry("gpt-4o-2024-08-06") is True
+
+
+def test_has_explicit_entry_false_when_falling_back_to_the_generic_default():
+    table = _fixture_limits()
+    assert table.has_explicit_entry("totally-unknown-model") is False
+
+
 def test_current_context_usage_uses_last_turn_only():
     session = Session(model="gpt-4o")
     session.cost.turns.append(

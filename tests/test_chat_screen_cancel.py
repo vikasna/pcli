@@ -49,6 +49,9 @@ def _make_screen(tmp_path: Path):
         gateway_api_key="test-key",
         default_model="fake-model",
         sandbox_backend="subprocess",  # skip the real docker probe in on_mount
+        # Not what this file tests, and would otherwise add a spurious
+        # "Couldn't auto-detect..." system message to every fresh mount.
+        context_limit_auto_detect_enabled=False,
     )
     screen = ChatScreen(settings, session=session, store=store)
     return screen, session

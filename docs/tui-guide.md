@@ -325,6 +325,12 @@ as a normal system message instead.
   window size pcli currently assumes for the active model (the session's
   model, falling back to `default_model`) — see
   [`configuration.md`](configuration.md#context-limit-detection-and-correction).
+  For a handful of backends (LM Studio, Ollama, a LiteLLM proxy, a raw
+  llama.cpp server, OpenRouter, vLLM) pcli already tries to fill this in
+  automatically on startup — see
+  [Automatic context-limit detection](configuration.md#automatic-context-limit-detection)
+  — so this command is mainly needed for gateways it can't probe (e.g.
+  hosted OpenAI/Anthropic) or to override a wrong guess.
   With an argument (`/context-limit 16384`), sets it and persists it to
   `context_limits.toml`'s `[models]` table — creating the file if needed,
   preserving any other entries already there — the same file manual edits
@@ -754,7 +760,11 @@ instead reads: "This looks like it may have hit the model's real context
 limit — pcli is currently assuming N tokens for '<model>', which may be
 wrong. Try /context-limit <tokens> to correct it (so auto-compaction can
 kick in), or /compact to free up space now." — pointing straight at
-[`/context-limit`](#slash-commands) as the fix.
+[`/context-limit`](#slash-commands) as the fix. This is the reactive
+backstop for exactly the case
+[automatic context-limit detection](configuration.md#automatic-context-limit-detection)
+is meant to prevent proactively at startup — you'll typically only see this
+notice for a gateway/model that detection couldn't reach in the first place.
 
 ## Decision log
 
@@ -782,6 +792,18 @@ decision(s):" followed by one `• <decision>` line per entry (`decision` text
 only, not the `rationale`), built by `render_decisions()` in
 `src/pcli/tools/builtin/decision_tool.py`. This mirrors the existing
 resume-time summary shown for `Session.todos` when it's non-empty.
+
+Also on `on_mount`, right after the `GatewayClient` is constructed, pcli adds
+one more system message reporting the outcome of
+[automatic context-limit detection](configuration.md#automatic-context-limit-detection)
+for the active model — but only when there's something to report: it's
+skipped entirely, with no message and no network calls, if pcli already has
+a built-in or previously-set entry for that model. Otherwise you'll see
+either "Auto-detected context limit for '<model>': N tokens." on success, or
+"Couldn't auto-detect a context limit for '<model>' — pcli is assuming N
+tokens. If that's wrong, set it with /context-limit <tokens>." if none of
+the probes worked (the normal outcome for hosted gateways like OpenAI or
+Anthropic).
 
 ## Status bar
 

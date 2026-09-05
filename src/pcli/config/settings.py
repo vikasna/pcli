@@ -144,6 +144,17 @@ class Settings(BaseSettings):
         "Deliberately tighter than auto_compact_keep_recent_turns so pruning actually has "
         "something to do before compaction's threshold is ever reached.",
     )
+    context_limit_auto_detect_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "PCLI_CONTEXT_LIMIT_AUTO_DETECT_ENABLED", "context_limit_auto_detect_enabled"
+        ),
+        description="Whether pcli tries to query the gateway directly for a model's real "
+        "context window (see cost/context_detect.py) when it has no built-in or "
+        "user-configured entry for it yet. A handful of extra, short-timeout requests on "
+        "startup for an unrecognized model; set to false to skip this and always fall back "
+        "to the assumed default (correctable via /context-limit either way).",
+    )
 
     @classmethod
     def settings_customise_sources(
