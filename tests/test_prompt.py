@@ -113,5 +113,26 @@ def test_prompt_guides_toward_download_file_over_shell_downloads():
 
 def test_build_system_prompt_appends_extra_sections():
     result = build_system_prompt(extra_sections=["# Extra\nSomething."])
-    assert result.startswith(BASE_SYSTEM_PROMPT)
+    assert BASE_SYSTEM_PROMPT in result
     assert result.endswith("# Extra\nSomething.")
+
+
+def test_build_system_prompt_leads_with_a_real_environment_fact():
+    """Regression coverage for a real repeated failure mode: with no actual
+    fact to go on, the model defaulted to assuming Linux/bash (a heredoc
+    failing with a cmd.exe syntax error, a write_file call denied for
+    targeting /tmp on a Windows host) - the environment section is now
+    computed fresh and placed before BASE_SYSTEM_PROMPT so it's ground
+    truth from the very first turn, not something discovered by failing."""
+    import platform
+
+    result = build_system_prompt()
+    assert result.startswith("# Environment")
+    assert result.index("# Environment") < result.index(BASE_SYSTEM_PROMPT)
+    system = platform.system()
+    if system == "Windows":
+        assert "cmd.exe" in result
+        assert "heredoc" in result
+    elif system in ("Linux", "Darwin"):
+        assert f"running on {system}" in result
+    assert "Docker" in result  # the sandbox caveat is present regardless of host OS

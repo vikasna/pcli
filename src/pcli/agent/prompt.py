@@ -10,6 +10,45 @@ no editor/IDE context to lean on.
 
 from __future__ import annotations
 
+import platform
+
+_WINDOWS_ENVIRONMENT_NOTE = (
+    "run_shell executes commands via cmd.exe, not bash — there's no heredoc syntax (<<), no "
+    "$VAR expansion, and no ~ shortcut for home. Chain commands with && (not ;), and write "
+    "multi-line scripts with write_file/edit_file rather than piping them through the shell. "
+    "Don't assume Unix paths exist (/tmp, /home/<user>, /etc, ...) — for a scratch file, use a "
+    "path inside the working directory instead."
+)
+
+
+def _environment_section() -> str:
+    """Ground truth about the host OS, computed fresh per process (not
+    baked into BASE_SYSTEM_PROMPT, which is a static string) — the
+    dedicated fix for a real, repeatedly-observed failure mode: with no
+    actual fact to go on, a model defaults to its training-data bias
+    (Linux/bash) and only discovers it's wrong by trial and error (a bash
+    heredoc failing with a cmd.exe syntax error, a write_file call denied
+    for targeting /tmp on a Windows host where that resolves to a path
+    outside the working directory, ...). Telling it up front is far more
+    reliable than expecting it to diagnose its way there after a failure."""
+    system = platform.system()
+    if system == "Windows":
+        body = f"This session is running on Windows. {_WINDOWS_ENVIRONMENT_NOTE}"
+    elif system in ("Linux", "Darwin"):
+        body = f"This session is running on {system}. run_shell executes commands via a POSIX shell (sh/bash)."
+    else:
+        body = (
+            "pcli could not determine the host OS for this session — check a command's own "
+            "output/error before assuming a particular shell dialect or path convention."
+        )
+    body += (
+        " If a Docker-based sandbox is active for tool execution, shell commands instead run "
+        "inside a Linux container regardless of this host OS — a command's own result is the "
+        "ground truth if this note and reality ever disagree."
+    )
+    return "# Environment\n" + body
+
+
 BASE_SYSTEM_PROMPT = """You are pcli, an AI coding agent running in a terminal. You help the \
 user with software engineering tasks in their working directory, using the tools available to \
 you: reading/writing files, running shell commands, searching code, discovering installed \
@@ -192,7 +231,7 @@ doesn't need a callout."""
 
 
 def build_system_prompt(*, extra_sections: list[str] | None = None) -> str:
-    sections = [BASE_SYSTEM_PROMPT]
+    sections = [_environment_section(), BASE_SYSTEM_PROMPT]
     if extra_sections:
         sections.extend(extra_sections)
     return "\n\n".join(sections)
