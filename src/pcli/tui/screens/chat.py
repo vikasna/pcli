@@ -205,6 +205,15 @@ class ChatScreen(Screen):
         pricing_table = _FREE_PRICING_TABLE if self._settings.is_local_api() else None
         self._cost_tracker = CostTracker(self._session, pricing_table=pricing_table)
         self._context_limit_table = ContextLimitTable.load()
+        # Set when the startup probe in _maybe_detect_context_limit comes up
+        # empty - worth one retry after the model has actually produced a
+        # response, since a local gateway (LM Studio, in particular) only
+        # reports a model's real loaded context size once it's actually
+        # resident, and JIT-loads on first inference. Consumed (reset False)
+        # by the one retry attempt in _run_one_turn, so a backend that
+        # genuinely can't be probed (a hosted API) doesn't get re-hit every
+        # turn for the rest of the session.
+        self._context_limit_retry_pending = False
         self._artifact_store = SessionArtifactStore(self._store, self._session.id)
 
     def compose(self) -> ComposeResult:
@@ -337,7 +346,9 @@ class ChatScreen(Screen):
             artifact_threshold_chars=self._settings.artifact_threshold_chars,
         )
 
-    async def _maybe_detect_context_limit(self, message_view: MessageView) -> None:
+    async def _maybe_detect_context_limit(
+        self, message_view: MessageView, *, is_retry: bool = False
+    ) -> None:
         """Best-effort: if pcli has no context-window entry for this model
         yet, or the entry it has came from a previous auto-detect run
         (ContextLimitTable.should_attempt_detection — a manual
@@ -356,7 +367,17 @@ class ChatScreen(Screen):
         does — see a real debugged case in cost/context.py's
         looks_like_context_ceiling docstring. Wrapped defensively so a probe
         failure/timeout never blocks startup — this is a nice-to-have, not
-        a requirement for the rest of on_mount to complete."""
+        a requirement for the rest of on_mount to complete.
+
+        `is_retry=True` is the one-shot retry from _run_one_turn's "usage"
+        handling, after the model has actually produced a response - a
+        gateway that JIT-loads (LM Studio) may not report a model's real
+        loaded context size until then, even though should_attempt_detection
+        said this model was worth probing. It only changes whether a second
+        failure re-arms _context_limit_retry_pending: the initial call sets
+        it so a retry gets scheduled, but the retry itself must not, or a
+        backend that can never be probed (a hosted API) would get re-hit
+        every single turn for the rest of the session instead of once."""
         if not self._settings.context_limit_auto_detect_enabled:
             return
         model = self._settings.default_model or self._session.model
@@ -375,6 +396,8 @@ class ChatScreen(Screen):
                 "system", f"Auto-detected context limit for '{model}': {limit:,} tokens."
             )
         else:
+            if not is_retry:
+                self._context_limit_retry_pending = True
             assumed = self._context_limit_table.lookup(model)
             message_view.add_message(
                 "system",
@@ -1232,6 +1255,14 @@ class ChatScreen(Screen):
                     )
                     self._refresh_cost_display(status_bar)
                     self._refresh_context_display(status_bar, chunk.usage)
+                    if self._context_limit_retry_pending:
+                        # The model just produced a real response, so a
+                        # local gateway that JIT-loads (LM Studio) must have
+                        # it loaded now, even if it didn't at startup - one
+                        # retry, not a per-turn habit (see the flag's own
+                        # comment in __init__).
+                        self._context_limit_retry_pending = False
+                        await self._maybe_detect_context_limit(message_view, is_retry=True)
                 elif chunk.kind == "tool_start":
                     had_any_content = True
                     flush_reasoning()

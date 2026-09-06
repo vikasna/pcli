@@ -4,6 +4,7 @@ context-limit entry already exists for the model or the feature is
 disabled, persists+applies a successful detection immediately, and shows
 a fallback notice pointing at /context-limit when nothing was detected."""
 
+import json
 import tomllib
 from pathlib import Path
 
@@ -15,8 +16,32 @@ from textual.app import App
 from pcli.config.settings import Settings
 from pcli.session.store import SessionStore
 from pcli.tui.screens.chat import ChatScreen
+from pcli.tui.widgets.chat_input import ChatInput
 from pcli.tui.widgets.message_view import MessageView
 from pcli.tui.widgets.status_bar import StatusBar
+
+
+def _sse(*chunks: dict) -> bytes:
+    body = "".join(f"data: {json.dumps(c)}\n\n" for c in chunks)
+    return (body + "data: [DONE]\n\n").encode()
+
+
+def _text_response_with_usage(text: str) -> httpx.Response:
+    # Usage arrives in its own final chunk, after all content deltas -
+    # matching real streaming APIs, and avoiding a same-chunk race between
+    # the assistant's own message bubble and a system notice added mid-turn
+    # by the usage handler (see llm/streaming.py: a usage-bearing chunk
+    # yields UsageEvent before any TextDelta from that same chunk).
+    return httpx.Response(
+        200,
+        content=_sse(
+            {"choices": [{"delta": {"content": text}, "finish_reason": None}]},
+            {
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            },
+        ),
+    )
 
 
 class _HostApp(App):
@@ -221,3 +246,78 @@ async def test_a_prior_manual_context_limit_setting_is_never_overwritten(tmp_pat
         assert "Auto-detected" not in message_view._current_text
         assert "Couldn't auto-detect" not in message_view._current_text
         assert screen._context_limit_table.lookup("unrecognized-local-model") == 8000
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_retries_detection_once_the_model_has_actually_responded(tmp_path: Path, monkeypatch):
+    """Regression coverage for a real gap: a local gateway that JIT-loads
+    (LM Studio, in particular) may not report a model's real context size at
+    pcli's startup-time probe, since the model isn't loaded into memory yet.
+    Once the model actually produces a response, it must be loaded - so the
+    turn loop gets exactly one more shot at detection, via the "usage" chunk
+    handler in _run_one_turn."""
+    models_route = respx.get("http://fake-gateway.test/v1/models")
+    models_route.side_effect = [
+        # Startup probe: no usable field yet (simulates a not-loaded model).
+        httpx.Response(200, json={"data": [{"id": "unrecognized-local-model"}]}),
+        # Retry after the first real response: now it resolves.
+        httpx.Response(
+            200, json={"data": [{"id": "unrecognized-local-model", "context_length": 32768}]}
+        ),
+    ]
+    _mock_all_native_probes_404()
+    chat_route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    chat_route.side_effect = [
+        _text_response_with_usage("first reply"),
+        _text_response_with_usage("second reply"),
+    ]
+
+    # add_message's own text is only ever held transiently in
+    # message_view._current_text (reset to "" on every finish_streaming(),
+    # which the turn loop always calls at the end of _run_one_turn) - a spy
+    # on add_message itself is what actually survives past the end of a
+    # turn. Patched at the class level, before the app (and its on_mount,
+    # which fires the startup probe) ever runs - run_test() itself pumps
+    # enough of the event loop to complete on_mount before a test gets
+    # control back, so an instance-level patch installed after entering
+    # run_test() would already have missed the startup message.
+    system_messages: list[str] = []
+    original_add_message = MessageView.add_message
+
+    def _spy_add_message(self, role, text=""):
+        if role == "system":
+            system_messages.append(text)
+        return original_add_message(self, role, text)
+
+    monkeypatch.setattr(MessageView, "add_message", _spy_add_message)
+
+    screen, _session = _make_screen(tmp_path)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        assert any("Couldn't auto-detect" in m for m in system_messages)
+        assert screen._context_limit_retry_pending is True
+
+        field = screen.query_one(ChatInput)
+        field.focus()
+        field.text = "hello"
+        await pilot.press("enter")
+        for _ in range(10):
+            await pilot.pause()
+
+        assert screen._context_limit_retry_pending is False
+        assert any("Auto-detected context limit" in m and "32,768" in m for m in system_messages)
+        status_bar = screen.query_one(StatusBar)
+        assert status_bar.context_limit_tokens == 32768
+
+        # A second turn must NOT probe again - the standard-/models route
+        # only has two responses queued above, so a third call here would
+        # raise (StopIteration via respx) rather than silently re-probing.
+        field.text = "another message"
+        await pilot.press("enter")
+        for _ in range(10):
+            await pilot.pause()
+
+        assert screen._context_limit_retry_pending is False
