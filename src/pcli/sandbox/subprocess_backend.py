@@ -71,6 +71,21 @@ def _truncate(data: bytes, max_bytes: int) -> str:
     return data[:max_bytes].decode(errors="replace") + "\n[...output truncated...]"
 
 
+async def _pump_stream(stream: asyncio.StreamReader, chunks: list[bytes]) -> None:
+    """Reads a stream into `chunks` (owned by the caller) as data arrives,
+    rather than accumulating in a local variable the way proc.communicate()
+    does — a coroutine cancelled mid-read (our own timeout, or the caller
+    cancelling the awaiting task) loses whatever's only in its own locals,
+    but `chunks` already holds everything read up to that point. Capping to
+    max_output_bytes is left to _truncate() on the joined result, same as
+    before this pumped-into-a-list approach replaced proc.communicate()."""
+    while True:
+        chunk = await stream.read(_BACKGROUND_DRAIN_CHUNK_BYTES)
+        if not chunk:
+            break
+        chunks.append(chunk)
+
+
 @dataclass
 class BackgroundJob:
     """A command started via RestrictedSubprocessSandbox.start_background:
@@ -176,18 +191,34 @@ class RestrictedSubprocessSandbox(Sandbox):
 
         timed_out = False
         stdin_bytes = request.stdin.encode() if request.stdin is not None else None
+        stdout_chunks: list[bytes] = []
+        stderr_chunks: list[bytes] = []
+        # Pumped via separate tasks (not proc.communicate()) specifically so
+        # a timeout/cancellation below still leaves whatever was already
+        # read sitting in stdout_chunks/stderr_chunks — communicate() would
+        # discard it all, since its accumulated bytes live in a coroutine
+        # local that's thrown away when the coroutine is cancelled.
+        stdout_task = asyncio.ensure_future(_pump_stream(proc.stdout, stdout_chunks))
+        stderr_task = asyncio.ensure_future(_pump_stream(proc.stderr, stderr_chunks))
         try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(stdin_bytes), timeout=request.timeout_s
+            if stdin_bytes is not None:
+                proc.stdin.write(stdin_bytes)
+                await proc.stdin.drain()
+            if proc.stdin is not None:
+                proc.stdin.close()
+            await asyncio.wait_for(
+                asyncio.gather(stdout_task, stderr_task, proc.wait()),
+                timeout=request.timeout_s,
             )
         except TimeoutError:
             timed_out = True
             kill_process_tree(proc.pid)
+            stdout_task.cancel()
+            stderr_task.cancel()
             try:
                 await asyncio.wait_for(proc.wait(), timeout=5)
             except TimeoutError:
                 pass
-            stdout_bytes, stderr_bytes = b"", b"[pcli] command timed out and was killed"
         except asyncio.CancelledError:
             # Distinct from the TimeoutError case above: this fires when the
             # *caller* (e.g. the TUI's Esc+Esc turn cancellation) cancels the
@@ -195,7 +226,15 @@ class RestrictedSubprocessSandbox(Sandbox):
             # Without this, the subprocess is silently orphaned — cancelling
             # the Python await here does nothing to the OS process itself.
             kill_process_tree(proc.pid)
+            stdout_task.cancel()
+            stderr_task.cancel()
             raise
+
+        stdout_bytes = b"".join(stdout_chunks)
+        stderr_bytes = b"".join(stderr_chunks)
+        if timed_out:
+            note = b"[pcli] command timed out and was killed"
+            stderr_bytes = stderr_bytes + b"\n" + note if stderr_bytes else note
 
         return ExecResult(
             stdout=_truncate(stdout_bytes, self._max_output_bytes),

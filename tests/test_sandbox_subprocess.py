@@ -94,6 +94,30 @@ async def test_timeout_kills_process(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_timeout_preserves_output_already_produced(tmp_path: Path):
+    """Regression test: execute() used to read stdout/stderr via
+    proc.communicate(), which only returns its accumulated bytes on
+    completion. Cancelling it on timeout (asyncio.wait_for) threw away
+    *everything* read so far, not just what hadn't arrived yet - a script
+    that printed plenty of progress output before running long enough to
+    hit the timeout would come back with an empty stdout. Pumping into
+    caller-owned lists (see _pump_stream) fixes this: the timeout kills the
+    process but the output already read stays put."""
+    sandbox = RestrictedSubprocessSandbox(allowed_roots=[tmp_path])
+    script = (
+        "import sys, time; "
+        "print('before-the-timeout'); sys.stdout.flush(); "
+        "time.sleep(30)"
+    )
+    result = await sandbox.execute(
+        ExecRequest(command=[sys.executable, "-c", script], cwd=tmp_path, timeout_s=1)
+    )
+    assert result.timed_out is True
+    assert "before-the-timeout" in result.stdout
+    assert "command timed out and was killed" in result.stderr
+
+
+@pytest.mark.asyncio
 async def test_cancelling_the_awaiting_task_kills_the_subprocess(tmp_path: Path):
     """Regression test: execute()'s try/except used to only catch
     asyncio.TimeoutError (its own internal wait_for timeout) — if the
