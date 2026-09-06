@@ -64,7 +64,45 @@ class PermissionManager:
         default_allow: bool = False,
         session: Session | None = None,
     ) -> PermissionDecision:
-        """`default_allow=True` is for tools that don't need a user prompt
+        """Thin wrapper over check_with_reason() for callers that only need
+        the decision, not why — kept so the (many) existing call sites
+        don't need to unpack a tuple."""
+        decision, _reason = await self.check_with_reason(
+            tool_name,
+            arguments,
+            command=command,
+            path=path,
+            python_module=python_module,
+            ask=ask,
+            risk_description=risk_description,
+            default_allow=default_allow,
+            session=session,
+        )
+        return decision
+
+    async def check_with_reason(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        command: str | None = None,
+        path: str | None = None,
+        python_module: str | None = None,
+        ask: AskCallback | None = None,
+        risk_description: str = "",
+        default_allow: bool = False,
+        session: Session | None = None,
+    ) -> tuple[PermissionDecision, str | None]:
+        """Same decision logic as check(), but also returns a human-readable
+        reason for a "deny" — None for "allow", and also None for a plain
+        interactive "no" with nothing more specific to say than the user's
+        own judgment call. AgentLoop uses this (not check()) so a denied
+        tool call gives the model something to actually diagnose instead of
+        a bare "Permission denied.", which is otherwise toothless for this
+        exact class of failure despite the "Recovering from a failed tool
+        call" system-prompt guidance telling it to diagnose before retrying.
+
+        `default_allow=True` is for tools that don't need a user prompt
         (e.g. read_file) but must still respect the hard guardrails below.
 
         `session`, if given, gets a PermissionGrant record appended whenever
@@ -75,33 +113,33 @@ class PermissionManager:
         from a session's own history on import, to avoid double-recording
         the same grant into permissions.json."""
         if not self._within_rate_limit():
-            return "deny"
+            return "deny", "rate limit exceeded (max_tool_calls_per_minute)"
 
         if command is not None:
             result = self.guardrails.evaluate_command(command)
             if not result.allowed:
-                return "deny"
+                return "deny", result.reason
 
         if path is not None:
             result = self.guardrails.evaluate_path(path)
             if not result.allowed:
-                return "deny"
+                return "deny", result.reason
 
         if python_module is not None:
             result = self.guardrails.evaluate_python_module(python_module)
             if not result.allowed:
-                return "deny"
+                return "deny", result.reason
 
         if default_allow:
-            return "allow"
+            return "allow", None
 
         existing = self.policy.check(tool_name)
         if existing is not None:
-            return existing
+            return existing, ("previously denied and remembered" if existing == "deny" else None)
 
         if ask is None:
             # No UI available to ask through -> fail closed.
-            return "deny"
+            return "deny", "no UI available to request approval"
 
         decision, remember_scope = await ask(tool_name, arguments, risk_description)
         if remember_scope is not None and remember_scope != "once":
@@ -110,4 +148,4 @@ class PermissionManager:
                 session.permission_grants.append(
                     PermissionGrant(tool_name=tool_name, scope=remember_scope, decision=decision)
                 )
-        return decision
+        return decision, ("denied by the user" if decision == "deny" else None)

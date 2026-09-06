@@ -197,3 +197,141 @@ async def test_permission_manager_rate_limit_disabled_when_zero(tmp_path: Path):
     for _ in range(5):
         decision = await manager.check("run_shell", {"command": "git status"}, ask=ask)
         assert decision == "allow"
+
+
+# --- check_with_reason(): the enriched-deny-message mechanism ---
+#
+# Regression coverage for a real gap: a bare "Permission denied." gave the
+# model nothing to diagnose, directly undercutting the "Recovering from a
+# failed tool call" system-prompt guidance to diagnose before retrying.
+# check() itself must keep returning a plain PermissionDecision unchanged
+# (see the tests above, none of which needed updating) - check_with_reason()
+# is the richer variant AgentLoop now calls instead.
+
+
+@pytest.mark.asyncio
+async def test_check_with_reason_surfaces_the_guardrail_command_reason(tmp_path: Path):
+    manager = PermissionManager(
+        guardrails=_guardrails(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    decision, reason = await manager.check_with_reason(
+        "run_shell", {"command": "rm -rf /"}, command="rm -rf /", ask=None
+    )
+    assert decision == "deny"
+    assert "rm -rf /" in reason
+
+
+@pytest.mark.asyncio
+async def test_check_with_reason_surfaces_the_guardrail_path_reason(tmp_path: Path):
+    manager = PermissionManager(
+        guardrails=_guardrails(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    decision, reason = await manager.check_with_reason(
+        "write_file", {"path": "/somewhere/else/file.txt"}, path="/somewhere/else/file.txt", ask=None
+    )
+    assert decision == "deny"
+    assert "outside all allowed roots" in reason
+
+
+@pytest.mark.asyncio
+async def test_check_with_reason_surfaces_the_guardrail_module_reason(tmp_path: Path):
+    manager = PermissionManager(
+        guardrails=_guardrails(python_module_denylist=["os"]),
+        policy=PermissionPolicy(persist_path=tmp_path / "p.json"),
+    )
+    decision, reason = await manager.check_with_reason(
+        "call_python", {"qualified_name": "os.system"}, python_module="os", ask=None
+    )
+    assert decision == "deny"
+    assert "os" in reason
+
+
+@pytest.mark.asyncio
+async def test_check_with_reason_names_the_rate_limit(tmp_path: Path):
+    manager = PermissionManager(
+        guardrails=_guardrails(max_tool_calls_per_minute=1),
+        policy=PermissionPolicy(persist_path=tmp_path / "p.json"),
+    )
+
+    async def ask(tool_name, arguments, risk_description):
+        return ("allow", "once")
+
+    await manager.check_with_reason("run_shell", {"command": "git status"}, ask=ask)
+    decision, reason = await manager.check_with_reason(
+        "run_shell", {"command": "git status"}, ask=ask
+    )
+    assert decision == "deny"
+    assert "rate limit" in reason
+
+
+@pytest.mark.asyncio
+async def test_check_with_reason_names_missing_ui_when_ask_is_none(tmp_path: Path):
+    manager = PermissionManager(
+        guardrails=_guardrails(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    decision, reason = await manager.check_with_reason(
+        "run_shell", {"command": "git status"}, ask=None
+    )
+    assert decision == "deny"
+    assert "no UI available" in reason
+
+
+@pytest.mark.asyncio
+async def test_check_with_reason_distinguishes_a_user_denial_from_a_guardrail_denial(
+    tmp_path: Path,
+):
+    manager = PermissionManager(
+        guardrails=_guardrails(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+
+    async def ask(tool_name, arguments, risk_description):
+        return ("deny", None)
+
+    decision, reason = await manager.check_with_reason(
+        "run_shell", {"command": "git status"}, ask=ask
+    )
+    assert decision == "deny"
+    assert reason == "denied by the user"
+
+
+@pytest.mark.asyncio
+async def test_check_with_reason_names_a_remembered_always_deny(tmp_path: Path):
+    manager = PermissionManager(
+        guardrails=_guardrails(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    manager.policy.remember("run_shell", scope="always", decision="deny")
+
+    async def ask_should_not_be_called(tool_name, arguments, risk_description):
+        raise AssertionError("ask() should not be called once a grant is remembered")
+
+    decision, reason = await manager.check_with_reason(
+        "run_shell", {"command": "git status"}, ask=ask_should_not_be_called
+    )
+    assert decision == "deny"
+    assert reason == "previously denied and remembered"
+
+
+@pytest.mark.asyncio
+async def test_check_with_reason_has_no_reason_for_a_plain_allow(tmp_path: Path):
+    manager = PermissionManager(
+        guardrails=_guardrails(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    decision, reason = await manager.check_with_reason(
+        "read_file", {"path": "/allowed/x.txt"}, path="/allowed/x.txt", default_allow=True
+    )
+    assert decision == "allow"
+    assert reason is None
+
+
+@pytest.mark.asyncio
+async def test_check_still_returns_a_plain_decision_without_reason(tmp_path: Path):
+    """check() itself must be unaffected by the check_with_reason() refactor
+    - it's still the plain two-value API every other existing call site
+    (and dozens of tests above) rely on."""
+    manager = PermissionManager(
+        guardrails=_guardrails(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    decision = await manager.check(
+        "run_shell", {"command": "rm -rf /"}, command="rm -rf /", ask=None
+    )
+    assert decision == "deny"

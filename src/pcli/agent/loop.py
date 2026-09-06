@@ -264,7 +264,7 @@ class AgentLoop:
             if tool.guardrail_python_module_arg
             else None
         )
-        decision = await self._permission_manager.check(
+        decision, deny_reason = await self._permission_manager.check_with_reason(
             tool.name,
             arguments,
             command=command,
@@ -276,7 +276,8 @@ class AgentLoop:
             session=ctx.session,
         )
         if decision == "deny":
-            return "Permission denied.", True, [], None
+            message = f"Permission denied: {deny_reason}." if deny_reason else "Permission denied."
+            return message, True, [], None
 
         try:
             result = await tool.handler(arguments, ctx)

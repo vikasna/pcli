@@ -223,7 +223,67 @@ async def test_agent_loop_denies_tool_via_guardrail(tmp_path: Path):
     assert len(tool_results) == 1
     assert tool_results[0].is_error is True
     assert "Permission denied" in tool_results[0].output
+    # The guardrail's actual reason is included, not just a bare "Permission
+    # denied." - see test_dispatch_includes_the_deny_reason_in_the_message
+    # below for a more targeted assertion on this.
+    assert "rm -rf /" in tool_results[0].output
     assert sandbox.calls == []  # never reached the sandbox
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_dispatch_includes_the_deny_reason_in_the_message(tmp_path: Path):
+    """Regression coverage for a real gap: a bare "Permission denied." gave
+    the model nothing to diagnose. AgentLoop now calls
+    PermissionManager.check_with_reason() instead of check(), and folds
+    whatever reason it returns into the message the model actually sees."""
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(200, content=_sse(*_first_two_tool_call_chunks())),
+        httpx.Response(200, content=_sse(*_final_text_chunks("done"))),
+    ]
+
+    # ECHO_TOOL's needs_permission=False would bypass ask() entirely (via
+    # default_allow) - this test needs a tool that actually reaches it.
+    permission_needing_echo = ToolSpec(
+        name="echo_tool",
+        description="Echoes text back.",
+        parameters={
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+        handler=_echo_handler,
+        needs_permission=True,
+    )
+    registry = ToolRegistry()
+    registry.register(permission_needing_echo)
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(max_tool_calls_per_minute=0),
+        policy=PermissionPolicy(persist_path=tmp_path / "p.json"),
+    )
+
+    async def ask_deny(*args, **kwargs):
+        return ("deny", None)
+
+    async with GatewayClient(_settings()) as client:
+        loop = AgentLoop(
+            client,
+            tool_registry=registry,
+            permission_manager=permission_manager,
+            tool_context_factory=lambda: ToolContext(
+                sandbox=FakeSandbox(), guardrails=permission_manager.guardrails, cwd=tmp_path
+            ),
+        )
+        events = []
+        async for event in loop.run_turn(
+            [ChatMessage(role="user", content="use the tool")], ask=ask_deny
+        ):
+            events.append(event)
+
+    tool_results = [e for e in events if isinstance(e, ToolResultEvent)]
+    assert len(tool_results) == 1
+    assert tool_results[0].output == "Permission denied: denied by the user."
 
 
 @pytest.mark.asyncio
