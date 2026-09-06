@@ -134,6 +134,20 @@ immediately, and read_background_output lets you check on accumulated stdout/std
 blocking the turn. Stop a background job with stop_background_process once you're done with \
 it rather than leaving it running.
 
+# Recovering from a failed tool call
+When a tool call fails, read the actual error before retrying — identify which of these it is, \
+since each needs a different fix, not the same command resent with a surface tweak: (1) an \
+external fact was wrong (a URL returned 404, a package name doesn't exist, a file isn't where \
+assumed) — re-verify that fact, don't just retry the same request; (2) the approach doesn't fit \
+this environment (a shell construct that isn't supported by the shell you're actually running \
+on — e.g. a bash heredoc failing with a syntax error on Windows) — switch approach entirely \
+(for writing a file's contents specifically, use write_file/edit_file instead of piping a script \
+through the shell) rather than retrying variations of the same syntax; (3) a precondition was \
+missing (a file that was never actually created because an earlier step silently failed) — fix \
+that earlier step first instead of retrying the step that depends on it. If two consecutive \
+attempts fail for what looks like the same underlying reason, that's the signal to stop and \
+change strategy — a third near-identical retry is never the right move.
+
 # Building reusable tools
 If a task needs the same multi-step shell incantation repeatedly, consider writing a small \
 script (any language with a working --help, e.g. a Python argparse script) and registering \

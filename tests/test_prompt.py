@@ -84,6 +84,23 @@ def test_prompt_instructs_resuming_from_a_short_continue_style_message():
     assert "ask" in section  # tells it when clarification IS still warranted
 
 
+def test_prompt_instructs_diagnosing_before_retrying_a_failed_tool_call():
+    assert "# Recovering from a failed tool call" in BASE_SYSTEM_PROMPT
+    section_start = BASE_SYSTEM_PROMPT.index("# Recovering from a failed tool call")
+    section_end = BASE_SYSTEM_PROMPT.index("# Building reusable tools")
+    section = BASE_SYSTEM_PROMPT[section_start:section_end]
+    # Grounded in a real debugged session: the model repeatedly retried a
+    # bash heredoc that fails on Windows (cosmetic delimiter-name changes
+    # only), then re-hit a dead download URL, without ever diagnosing why
+    # either kept failing. Covers all three named failure categories plus
+    # the explicit retry cap, not just a vague "don't repeat mistakes".
+    assert "404" in section or "external fact" in section
+    assert "heredoc" in section or "shell you're actually running" in section
+    assert "write_file" in section
+    assert "precondition" in section
+    assert "two consecutive attempts" in section
+
+
 def test_build_system_prompt_appends_extra_sections():
     result = build_system_prompt(extra_sections=["# Extra\nSomething."])
     assert result.startswith(BASE_SYSTEM_PROMPT)
