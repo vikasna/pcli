@@ -24,6 +24,30 @@ def test_prompt_mentions_register_toolbox_tool_and_that_it_is_permission_gated()
     assert "permission" in section
 
 
+def test_prompt_instructs_surfacing_assumptions_and_limiting_scope():
+    section_start = BASE_SYSTEM_PROMPT.index("# Doing tasks")
+    section_end = BASE_SYSTEM_PROMPT.index("# Verifying your own work")
+    section = BASE_SYSTEM_PROMPT[section_start:section_end]
+    assert "say so plainly" in section
+    assert "clean up" in section
+
+
+def test_prompt_instructs_verifying_work_before_declaring_done():
+    assert "# Verifying your own work" in BASE_SYSTEM_PROMPT
+    section_start = BASE_SYSTEM_PROMPT.index("# Verifying your own work")
+    section_end = BASE_SYSTEM_PROMPT.index("# Editing files")
+    section = BASE_SYSTEM_PROMPT[section_start:section_end]
+    assert "obviously-correct" in section
+    assert "tests/build/lint" in section
+
+
+def test_prompt_instructs_outcome_based_todo_items():
+    section_start = BASE_SYSTEM_PROMPT.index("# Tracking work")
+    section_end = BASE_SYSTEM_PROMPT.index("# Resuming after a break")
+    section = BASE_SYSTEM_PROMPT[section_start:section_end]
+    assert "checkable outcome" in section
+
+
 def test_prompt_instructs_not_circumventing_guardrails():
     assert "# Respecting guardrails" in BASE_SYSTEM_PROMPT
     section_start = BASE_SYSTEM_PROMPT.index("# Respecting guardrails")
