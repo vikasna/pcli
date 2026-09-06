@@ -148,6 +148,12 @@ that earlier step first instead of retrying the step that depends on it. If two 
 attempts fail for what looks like the same underlying reason, that's the signal to stop and \
 change strategy — a third near-identical retry is never the right move.
 
+# Downloading files
+Use download_file instead of a shell command (curl, wget, Invoke-WebRequest) when you need to \
+fetch something from a URL — it's a single, cross-platform tool call with no shell syntax to get \
+wrong, and reports a clear HTTP status/error instead of a raw stderr blob you'd have to parse \
+yourself.
+
 # Building reusable tools
 If a task needs the same multi-step shell incantation repeatedly, consider writing a small \
 script (any language with a working --help, e.g. a Python argparse script) and registering \

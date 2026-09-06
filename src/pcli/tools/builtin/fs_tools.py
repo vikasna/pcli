@@ -10,7 +10,10 @@ from pcli.tools.base import ToolContext, ToolResult, ToolSpec
 _MAX_READ_BYTES = 512_000
 
 
-def _resolve(raw_path: str, ctx: ToolContext) -> Path:
+def resolve_path(raw_path: str, ctx: ToolContext) -> Path:
+    """Resolves a tool-supplied path against the working directory —
+    shared with network_tools.py, since download_file needs the exact
+    same relative-vs-absolute handling as every other path-taking tool."""
     path = Path(raw_path).expanduser()
     if not path.is_absolute():
         path = ctx.cwd / path
@@ -18,7 +21,7 @@ def _resolve(raw_path: str, ctx: ToolContext) -> Path:
 
 
 async def _read_file(arguments: dict, ctx: ToolContext) -> ToolResult:
-    resolved = _resolve(arguments["path"], ctx)
+    resolved = resolve_path(arguments["path"], ctx)
     if not resolved.exists():
         return ToolResult(
             output=f"File not found: {resolved}\n"
@@ -56,7 +59,7 @@ READ_FILE = ToolSpec(
 
 
 async def _write_file(arguments: dict, ctx: ToolContext) -> ToolResult:
-    resolved = _resolve(arguments["path"], ctx)
+    resolved = resolve_path(arguments["path"], ctx)
     content = arguments.get("content", "")
     resolved.parent.mkdir(parents=True, exist_ok=True)
     resolved.write_text(content, encoding="utf-8")
@@ -83,7 +86,7 @@ WRITE_FILE = ToolSpec(
 
 
 async def _edit_file(arguments: dict, ctx: ToolContext) -> ToolResult:
-    resolved = _resolve(arguments["path"], ctx)
+    resolved = resolve_path(arguments["path"], ctx)
     if not resolved.is_file():
         return ToolResult(
             output=f"{resolved} doesn't exist — use write_file to create it.", is_error=True
@@ -134,7 +137,7 @@ EDIT_FILE = ToolSpec(
 
 
 async def _list_dir(arguments: dict, ctx: ToolContext) -> ToolResult:
-    resolved = _resolve(arguments.get("path", "."), ctx)
+    resolved = resolve_path(arguments.get("path", "."), ctx)
     if not resolved.is_dir():
         return ToolResult(
             output=f"Not a directory: {resolved}\n"
@@ -163,7 +166,7 @@ LIST_DIR = ToolSpec(
 
 
 async def _glob_search(arguments: dict, ctx: ToolContext) -> ToolResult:
-    resolved_base = _resolve(arguments.get("path", "."), ctx)
+    resolved_base = resolve_path(arguments.get("path", "."), ctx)
     pattern = arguments["pattern"]
     if not resolved_base.is_dir():
         return ToolResult(

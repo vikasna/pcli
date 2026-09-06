@@ -52,6 +52,7 @@ def build_default_registry() -> ToolRegistry:
     from pcli.tools.builtin.decision_tool import RECORD_DECISION
     from pcli.tools.builtin.fs_tools import EDIT_FILE, GLOB_SEARCH, LIST_DIR, READ_FILE, WRITE_FILE
     from pcli.tools.builtin.grep_tool import GREP
+    from pcli.tools.builtin.network_tools import DOWNLOAD_FILE
     from pcli.tools.builtin.shell_tool import (
         READ_BACKGROUND_OUTPUT,
         RUN_SHELL,
@@ -72,6 +73,7 @@ def build_default_registry() -> ToolRegistry:
         LIST_DIR,
         GLOB_SEARCH,
         GREP,
+        DOWNLOAD_FILE,
         RUN_SHELL,
         RUN_SHELL_BACKGROUND,
         READ_BACKGROUND_OUTPUT,

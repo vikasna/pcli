@@ -101,6 +101,16 @@ def test_prompt_instructs_diagnosing_before_retrying_a_failed_tool_call():
     assert "two consecutive attempts" in section
 
 
+def test_prompt_guides_toward_download_file_over_shell_downloads():
+    assert "# Downloading files" in BASE_SYSTEM_PROMPT
+    section_start = BASE_SYSTEM_PROMPT.index("# Downloading files")
+    section_end = BASE_SYSTEM_PROMPT.index("# Building reusable tools")
+    section = BASE_SYSTEM_PROMPT[section_start:section_end]
+    assert "download_file" in section
+    assert "curl" in section
+    assert "wget" in section
+
+
 def test_build_system_prompt_appends_extra_sections():
     result = build_system_prompt(extra_sections=["# Extra\nSomething."])
     assert result.startswith(BASE_SYSTEM_PROMPT)

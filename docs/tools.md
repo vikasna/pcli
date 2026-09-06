@@ -125,6 +125,57 @@ implementation, not a wrapper around system `grep`/`ripgrep`). Scans up to
   aren't actually needed; **not-a-directory** gets the same `list_dir`-the-
   parent suggestion as above (`src/pcli/tools/builtin/grep_tool.py:28`).
 
+## download_file
+
+A structured, cross-platform alternative to shelling out to
+`curl`/`wget`/`Invoke-WebRequest` via `run_shell` — added after a real
+debugged session where a model got stuck retrying a bash heredoc
+(`python << 'EOF' ... EOF`) that fails outright on a Windows/cmd.exe shell,
+compounded by a dead download URL it kept retrying unchanged. Built on
+`httpx` (already a pcli dependency, used throughout `llm/client.py`, so no
+new dependency was added), not `requests`.
+
+Streams the response body to disk (`response.aiter_bytes()`, never loading
+the whole file into memory) and follows redirects automatically
+(`httpx.AsyncClient(follow_redirects=True, ...)`).
+
+- **Parameters:** `url` (string, required), `path` (string, required —
+  destination to save to, relative to the working directory or absolute;
+  parent directories are created automatically via `mkdir(parents=True,
+  exist_ok=True)`), `timeout_s` (number, optional, default 30).
+- **Permission:** required. `risk_description`: "Downloads content from a
+  URL and writes it to disk." — same stance as `write_file`, since it both
+  makes a network request and writes to disk. Not `plan_mode_safe`.
+- **Guardrail:** `path` checked against the fs allow/deny lists
+  (`guardrail_path_arg="path"`), same mechanism as every other path-taking
+  tool.
+- **500 MB safety cap** (`_MAX_DOWNLOAD_BYTES`): if the streamed response
+  exceeds this while writing, the download is aborted and the partial file
+  on disk is deleted; the error output suggests `run_shell_background` with
+  a dedicated download command if the file is genuinely expected to be that
+  large.
+- **Failure handling, each with its own `[pcli] Suggestion: ...` appended
+  to the error output** (`src/pcli/tools/builtin/network_tools.py`):
+  - **HTTP status >= 400:** checked before the destination file is ever
+    opened for writing, so there's no partial file to clean up — the tool
+    just returns the error. Suggestion: re-verify the URL is correct and
+    still reachable (e.g. a moved/renamed dataset or release asset) —
+    retrying the identical URL won't fix a 404/403/etc.
+  - **Timeout** (`httpx.TimeoutException`) or **connection error** (any
+    other `httpx.HTTPError`, once streaming has started): the partial file
+    already written to `path` is deleted
+    (`resolved.unlink(missing_ok=True)`) before returning, so a failed
+    download never leaves a truncated file behind. Suggestion for a timeout: raise `timeout_s`
+    for a large file or slow connection, or use `run_shell_background` if
+    it may take several minutes. Suggestion for a connection error: check
+    the URL is reachable and correctly formed, and that network access is
+    actually available from this environment.
+- The system prompt's `# Downloading files` section
+  (`src/pcli/agent/prompt.py`) tells the model to prefer `download_file`
+  over a shell-based download: one cross-platform tool call with no shell
+  syntax to get wrong, reporting a clear HTTP status/error instead of a raw
+  stderr blob to parse.
+
 ## run_shell
 
 Runs a shell command through `ctx.sandbox` — the only builtin tool that
