@@ -50,14 +50,27 @@ _DEFAULT_LIMIT = 128_000
 
 
 class ContextLimitTable:
-    def __init__(self, entries: dict[str, int], default: int) -> None:
+    def __init__(
+        self, entries: dict[str, int], default: int, auto_detected: set[str] | None = None
+    ) -> None:
         self._entries = entries
         self._default = default
+        # Exact model names (never wildcard patterns — see
+        # set_model_context_limit's exact-match docstring) whose [models]
+        # entry came from a previous auto-detect run rather than a manual
+        # /context-limit correction. Distinguishing the two matters because
+        # a local gateway's loaded context (LM Studio, Ollama, ...) can
+        # legitimately change between runs (the user reloads the model with
+        # a different context-length setting) - so an auto-detected value
+        # can go stale in a way a manual override or a hosted API's fixed
+        # limit never does. See should_attempt_detection.
+        self._auto_detected = auto_detected or set()
 
     @classmethod
     def load(cls) -> ContextLimitTable:
         entries = dict(_BUILTIN_LIMITS)
         default = _DEFAULT_LIMIT
+        auto_detected: set[str] = set()
 
         path = context_limits_file()
         if path.exists():
@@ -67,8 +80,9 @@ class ContextLimitTable:
                 entries[pattern] = int(limit)
             if "default" in raw and "limit" in raw["default"]:
                 default = int(raw["default"]["limit"])
+            auto_detected = {name for name, flag in raw.get("auto_detected", {}).items() if flag}
 
-        return cls(entries, default)
+        return cls(entries, default, auto_detected)
 
     def lookup(self, model_name: str) -> int:
         match = match_model_pattern(model_name, self._entries)
@@ -77,12 +91,22 @@ class ContextLimitTable:
     def has_explicit_entry(self, model_name: str) -> bool:
         """True if model_name matches a real (builtin or user/auto-set)
         entry, as opposed to lookup() silently falling back to the generic
-        default. Used to gate auto-detection (cost/context_detect.py) so it
-        never re-probes or overwrites a model that's already correctly
-        configured — including one a previous auto-detect run already set,
-        since that's persisted the same way a manual /context-limit
-        correction is."""
+        default."""
         return match_model_pattern(model_name, self._entries) is not None
+
+    def should_attempt_detection(self, model_name: str) -> bool:
+        """Used to gate auto-detection (cost/context_detect.py): True if
+        there's no entry for this model at all (the has_explicit_entry==False
+        case), OR the entry that's there came from a previous auto-detect
+        run rather than a manual /context-limit correction or a built-in
+        default. A manual override and a built-in are trusted forever and
+        never re-probed; an auto-detected value gets re-checked on every
+        startup since it can drift out from under pcli without any pcli-side
+        signal (see the class docstring note on _auto_detected)."""
+        match = match_model_pattern(model_name, self._entries)
+        if match is None:
+            return True
+        return model_name in self._auto_detected
 
 
 @dataclass
@@ -141,13 +165,22 @@ def looks_like_context_ceiling(session: Session) -> bool:
     return total_growth <= prompt_growth * _CEILING_STALL_RATIO
 
 
-def set_model_context_limit(model: str, limit: int) -> None:
+def set_model_context_limit(model: str, limit: int, *, auto_detected: bool = False) -> None:
     """Persists a per-model context-window override to context_limits.toml's
     [models] table (creating the file if it doesn't exist yet), so a wrong
     built-in guess — or no entry at all — can be corrected without hand-
     editing the file. Exact model-name match, not a wildcard pattern:
     simpler and more predictable for a single correction than guessing a
-    sensible glob. Used by the TUI's /context-limit command."""
+    sensible glob.
+
+    `auto_detected=True` (the cost/context_detect.py probe path) also
+    records the model in the [auto_detected] table, so
+    ContextLimitTable.should_attempt_detection knows to re-probe it on a
+    later startup rather than trusting it forever. `auto_detected=False`
+    (the default — the TUI's /context-limit command) is a human's deliberate
+    correction, so it always clears any prior auto-detected marker for this
+    model too: once a human has set it, it's sticky forever, even if it was
+    auto-detected before."""
     path = context_limits_file()
     raw: dict = {}
     if path.exists():
@@ -161,11 +194,20 @@ def set_model_context_limit(model: str, limit: int) -> None:
     models = dict(raw.get("models", {}))
     models[model] = limit
 
+    auto_detected_models = {name for name, flag in raw.get("auto_detected", {}).items() if flag}
+    if auto_detected:
+        auto_detected_models.add(model)
+    else:
+        auto_detected_models.discard(model)
+
     def _escape(value: str) -> str:
         return value.replace("\\", "\\\\").replace('"', '\\"')
 
     lines = ["[default]", f"limit = {default_limit}", "", "[models]"]
     lines.extend(f'"{_escape(pattern)}" = {value}' for pattern, value in models.items())
+    if auto_detected_models:
+        lines.extend(["", "[auto_detected]"])
+        lines.extend(f'"{_escape(name)}" = true' for name in sorted(auto_detected_models))
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -57,6 +57,39 @@ def test_has_explicit_entry_false_when_falling_back_to_the_generic_default():
     assert table.has_explicit_entry("totally-unknown-model") is False
 
 
+# --- should_attempt_detection ---
+
+
+def test_should_attempt_detection_true_when_no_entry_at_all():
+    table = _fixture_limits()
+    assert table.should_attempt_detection("totally-unknown-model") is True
+
+
+def test_should_attempt_detection_false_for_builtin_wildcard_match():
+    # gpt-4o* is one of _BUILTIN_LIMITS. Even with an unrelated
+    # auto_detected set, a built-in match must never be re-probed.
+    table = ContextLimitTable(
+        entries={"gpt-4o*": 128_000}, default=32_000, auto_detected={"some-other-model"}
+    )
+    assert table.should_attempt_detection("gpt-4o-2024-08-06") is False
+
+
+def test_should_attempt_detection_false_for_manual_exact_entry_not_in_auto_detected():
+    # Simulates a manual /context-limit correction, or a pre-existing
+    # [models] entry from before the auto_detected feature existed.
+    table = ContextLimitTable(
+        entries={"claude-sonnet-exact": 200_000}, default=32_000, auto_detected=set()
+    )
+    assert table.should_attempt_detection("claude-sonnet-exact") is False
+
+
+def test_should_attempt_detection_true_for_exact_entry_in_auto_detected():
+    table = ContextLimitTable(
+        entries={"my-local-model": 16384}, default=32_000, auto_detected={"my-local-model"}
+    )
+    assert table.should_attempt_detection("my-local-model") is True
+
+
 def test_current_context_usage_uses_last_turn_only():
     session = Session(model="gpt-4o")
     session.cost.turns.append(
@@ -236,6 +269,79 @@ def test_set_model_context_limit_overwrites_existing_entry_for_same_model(tmp_pa
 
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
     assert raw["models"]["my-model"] == 32768
+
+
+# --- set_model_context_limit(auto_detected=...) / [auto_detected] persistence ---
+
+
+def test_set_model_context_limit_auto_detected_true_persists_and_reloads(tmp_path: Path, monkeypatch):
+    import pcli.cost.context as context_module
+
+    path = tmp_path / "context_limits.toml"
+    monkeypatch.setattr(context_module, "context_limits_file", lambda: path)
+
+    set_model_context_limit("local-model", 16384, auto_detected=True)
+
+    raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    assert raw["auto_detected"]["local-model"] is True
+
+    table = context_module.ContextLimitTable.load()
+    assert table.should_attempt_detection("local-model") is True
+    assert table.lookup("local-model") == 16384
+
+
+def test_set_model_context_limit_manual_after_auto_detected_removes_the_marker(
+    tmp_path: Path, monkeypatch
+):
+    """The 'manual override wins forever' behavior: once a human corrects a
+    previously auto-detected model via /context-limit (auto_detected=False,
+    the default), should_attempt_detection must return False for it from
+    then on, even though it was auto-detected before."""
+    import pcli.cost.context as context_module
+
+    path = tmp_path / "context_limits.toml"
+    monkeypatch.setattr(context_module, "context_limits_file", lambda: path)
+
+    set_model_context_limit("local-model", 16384, auto_detected=True)
+    set_model_context_limit("local-model", 8192)  # manual correction
+
+    raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    assert "local-model" not in raw.get("auto_detected", {})
+    assert raw["models"]["local-model"] == 8192
+
+    table = context_module.ContextLimitTable.load()
+    assert table.should_attempt_detection("local-model") is False
+    assert table.lookup("local-model") == 8192
+
+
+def test_set_model_context_limit_auto_detected_round_trip_two_models(tmp_path: Path, monkeypatch):
+    """Two separate auto-detected writes, reloaded, must both survive
+    without clobbering each other or pre-existing [models]/[default]
+    content in the file."""
+    import pcli.cost.context as context_module
+
+    path = tmp_path / "context_limits.toml"
+    monkeypatch.setattr(context_module, "context_limits_file", lambda: path)
+    path.write_text(
+        '[default]\nlimit = 5000\n\n[models]\n"pre-existing-model" = 4096\n', encoding="utf-8"
+    )
+
+    set_model_context_limit("model-a", 16384, auto_detected=True)
+    set_model_context_limit("model-b", 32768, auto_detected=True)
+
+    raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    assert raw["default"]["limit"] == 5000  # untouched
+    assert raw["models"]["pre-existing-model"] == 4096  # untouched
+    assert raw["models"]["model-a"] == 16384
+    assert raw["models"]["model-b"] == 32768
+    assert raw["auto_detected"]["model-a"] is True
+    assert raw["auto_detected"]["model-b"] is True
+
+    table = context_module.ContextLimitTable.load()
+    assert table.should_attempt_detection("model-a") is True
+    assert table.should_attempt_detection("model-b") is True
+    assert table.lookup("pre-existing-model") == 4096
+    assert table.should_attempt_detection("pre-existing-model") is False
 
 
 @pytest.mark.asyncio

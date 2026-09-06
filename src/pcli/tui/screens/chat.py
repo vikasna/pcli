@@ -338,22 +338,29 @@ class ChatScreen(Screen):
         )
 
     async def _maybe_detect_context_limit(self, message_view: MessageView) -> None:
-        """Best-effort: if pcli has no specific context-window entry for
-        this model yet (ContextLimitTable.has_explicit_entry — covers both
-        built-in and previously user/auto-set ones, so this never re-probes
-        or overwrites something already known), ask the gateway directly
-        (GatewayClient.detect_context_limit / cost/context_detect.py).
+        """Best-effort: if pcli has no context-window entry for this model
+        yet, or the entry it has came from a previous auto-detect run
+        (ContextLimitTable.should_attempt_detection — a manual
+        /context-limit correction or a built-in default is never re-probed
+        or overwritten, only a prior auto-detected value), ask the gateway
+        directly (GatewayClient.detect_context_limit / cost/context_detect.py).
         Several backends (LM Studio, Ollama, a LiteLLM proxy, a raw
         llama.cpp server, and — for free, via the standard /models
         response — OpenRouter/vLLM) expose this; hosted-only gateways
         (OpenAI, Anthropic, ...) don't, in which case the notice below
-        points at /context-limit instead. Wrapped defensively so a probe
+        points at /context-limit instead. Re-probing an already-auto-detected
+        model on every startup matters for local gateways specifically: LM
+        Studio/Ollama let you reload the same model with a different context
+        length, so a value pcli auto-detected once can silently go stale in
+        a way a hosted API's fixed limit or a human's manual override never
+        does — see a real debugged case in cost/context.py's
+        looks_like_context_ceiling docstring. Wrapped defensively so a probe
         failure/timeout never blocks startup — this is a nice-to-have, not
         a requirement for the rest of on_mount to complete."""
         if not self._settings.context_limit_auto_detect_enabled:
             return
         model = self._settings.default_model or self._session.model
-        if not model or self._context_limit_table.has_explicit_entry(model):
+        if not model or not self._context_limit_table.should_attempt_detection(model):
             return
         try:
             limit = await self._client.detect_context_limit(model)
@@ -361,7 +368,7 @@ class ChatScreen(Screen):
             limit = None
 
         if limit:
-            set_model_context_limit(model, limit)
+            set_model_context_limit(model, limit, auto_detected=True)
             self._context_limit_table = ContextLimitTable.load()
             self.query_one(StatusBar).context_limit_tokens = self._context_limit_table.lookup(model)
             message_view.add_message(

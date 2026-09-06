@@ -126,6 +126,80 @@ async def test_skips_entirely_when_disabled_via_settings(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_auto_detected_entry_is_still_reprobed(tmp_path: Path, monkeypatch):
+    """Core regression case for the staleness bug: a model whose [models]
+    entry came from a PREVIOUS auto-detect run (recorded in
+    [auto_detected]) must still be re-probed on this startup, since a local
+    gateway (LM Studio, Ollama, ...) can have reloaded the same model with a
+    smaller context-length setting since the value was cached."""
+    import pcli.cost.context as context_module
+    from pcli.llm.client import GatewayClient
+
+    limits_path = tmp_path / "context_limits.toml"
+    monkeypatch.setattr(context_module, "context_limits_file", lambda: limits_path)
+    context_module.set_model_context_limit("unrecognized-local-model", 262144, auto_detected=True)
+
+    calls: list[str] = []
+
+    async def fake_detect(self, model: str) -> int:
+        calls.append(model)
+        return 16384
+
+    monkeypatch.setattr(GatewayClient, "detect_context_limit", fake_detect)
+
+    screen, _session = _make_screen(tmp_path)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        assert calls == ["unrecognized-local-model"]  # probe DID run
+
+        message_view = screen.query_one(MessageView)
+        assert "Auto-detected context limit" in message_view._current_text
+        assert "16,384" in message_view._current_text
+
+        status_bar = screen.query_one(StatusBar)
+        assert status_bar.context_limit_tokens == 16384
+
+        raw = tomllib.loads(limits_path.read_text(encoding="utf-8"))
+        assert raw["models"]["unrecognized-local-model"] == 16384
+        assert raw["auto_detected"]["unrecognized-local-model"] is True
+
+
+@pytest.mark.asyncio
+async def test_manual_entry_never_triggers_a_reprobe(tmp_path: Path, monkeypatch):
+    """Opposite of the above: a model with a MANUAL (non-auto-detected)
+    entry - the /context-limit command's path - must never be re-probed,
+    since a human's deliberate correction is sticky forever."""
+    import pcli.cost.context as context_module
+    from pcli.llm.client import GatewayClient
+
+    limits_path = tmp_path / "context_limits.toml"
+    monkeypatch.setattr(context_module, "context_limits_file", lambda: limits_path)
+    context_module.set_model_context_limit("unrecognized-local-model", 8000)  # manual, default auto_detected=False
+
+    calls: list[str] = []
+
+    async def fake_detect(self, model: str) -> int:
+        calls.append(model)
+        return 16384
+
+    monkeypatch.setattr(GatewayClient, "detect_context_limit", fake_detect)
+
+    screen, _session = _make_screen(tmp_path)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        assert calls == []  # probe must NOT run
+
+        message_view = screen.query_one(MessageView)
+        assert "Auto-detected" not in message_view._current_text
+        assert "Couldn't auto-detect" not in message_view._current_text
+        assert screen._context_limit_table.lookup("unrecognized-local-model") == 8000
+
+
+@pytest.mark.asyncio
 @respx.mock
 async def test_a_prior_manual_context_limit_setting_is_never_overwritten(tmp_path: Path, monkeypatch):
     """Regression guard: has_explicit_entry() must treat a manual
