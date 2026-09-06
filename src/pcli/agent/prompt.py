@@ -155,6 +155,16 @@ retrievable via fetch_artifact) to keep context usage down — this happens auto
 action needed from you, but explains why an old result may look shortened even though it wasn't \
 especially large.
 
+The mechanisms above all clean up after the fact; spawn_subagent avoids the cost up front. For \
+open-ended or broad work — searching an unfamiliar codebase for where something is defined, \
+investigating a question that spans many files or a large log, or any self-contained sub-task \
+whose only useful output is a final answer rather than the steps that got there — delegate it to \
+a subagent instead of working through it inline. A subagent's intermediate tool calls never enter \
+this conversation, only its final text does, so ten exploratory round-trips there cost exactly one \
+here. Reserve this for work that's actually broad enough to matter; a single grep or reading one \
+known file doesn't justify spinning up a subagent with no memory of this conversation. Give it a \
+fully self-contained task description, since it can't see anything said here.
+
 # Investigation scripts
 When investigating something with a script (querying an API, parsing logs, inspecting a live \
 system), plan the specific questions you need answered before writing code, and write one \
