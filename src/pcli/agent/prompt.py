@@ -88,7 +88,12 @@ of skipping the check because the change looked small.
 Prefer edit_file over write_file for changes to an existing file — it takes old_string/new_string \
 instead of the whole file, which is faster and avoids resending content that isn't changing. \
 Reserve write_file for creating a new file or a genuine full rewrite where most of the content is \
-actually changing.
+actually changing. Use diff_files to compare two files, or apply_patch to apply a multi-hunk \
+unified diff in one call — both are pure-Python, so they work without a diff/patch CLI installed \
+(neither ships with Windows). apply_patch requires an exact match against the file's current \
+content, with no fuzzy offset matching; if it fails, that almost always means the file changed \
+since the patch was generated, so re-read it and either regenerate the diff or fall back to \
+edit_file for the specific change.
 
 # Executing actions with care
 pcli's permission and guardrail system is the actual safety boundary here, not this paragraph — \

@@ -181,6 +181,79 @@ the whole file into memory) and follows redirects automatically
   syntax to get wrong, reporting a clear HTTP status/error instead of a raw
   stderr blob to parse.
 
+## diff_files
+
+Compares two text files and returns a unified diff (like `diff -u`), built on
+stdlib `difflib` — a structured, cross-platform alternative to shelling out to
+the `diff` CLI, which doesn't ship with Windows (same motivation as
+`download_file` above replacing `curl`/`wget`).
+
+Reads both files as UTF-8 (`errors="replace"`), splits into lines
+(`splitlines(keepends=True)`), and runs `difflib.unified_diff(lines_a,
+lines_b, fromfile=path_a, tofile=path_b, n=context_lines)`. If the files are
+identical, returns `"No differences."` instead of an empty diff.
+
+- **Parameters:** `path_a` (string, required — the "before" file), `path_b`
+  (string, required — the "after" file), `context_lines` (integer, optional,
+  default 3 — lines of unchanged context around each change).
+- **Permission:** not required (`needs_permission=False`) — read-only.
+  `plan_mode_safe=True`, so it stays available while
+  [plan mode](tui-guide.md#plan-mode) is active.
+- **Guardrail:** only `path_a` goes through the automatic
+  `guardrail_path_arg` check that `AgentLoop` applies per tool call, since it
+  only threads one path argument per call; `path_b` is checked by hand inside
+  the handler against the same fs allow/deny lists
+  (`src/pcli/tools/builtin/diff_tools.py`), so both sides are guarded either
+  way.
+- **Either file missing/not-a-file** gets a clean error (not a crash) naming
+  which of `path_a`/`path_b` was the problem, with an appended suggestion to
+  check the path with `list_dir` or `glob_search` before diffing.
+
+## apply_patch
+
+Applies a unified diff (as produced by `diff_files` above or `git diff`) to a
+file, modifying it in place. Like `diff_files`, this exists so pcli never has
+to shell out to the `patch` CLI, which also doesn't ship with Windows.
+Python's stdlib has no patch-application function — only `difflib` for
+diffing — so this is a small hand-rolled unified-diff parser/applier
+(`_parse_hunks`/`_apply_hunks` in `src/pcli/tools/builtin/diff_tools.py`).
+
+The system prompt's `# Editing files` section (`src/pcli/agent/prompt.py`)
+tells the model to prefer `apply_patch` over several separate `edit_file`
+calls for a multi-hunk change, and to fall back to `edit_file` for the
+specific change if `apply_patch` fails.
+
+- **Parameters:** `path` (string, required — file to patch), `patch` (string,
+  required — unified diff text containing `@@ ... @@` hunk headers).
+- **Permission:** required. `risk_description`: "Modifies a file on disk by
+  applying a patch." Not `plan_mode_safe` (it writes to disk).
+- **Guardrail:** `path` checked against the fs allow/deny lists
+  (`guardrail_path_arg="path"`), same mechanism as `write_file`/`edit_file`.
+- **Requires an exact match — no fuzzy offset matching.** Unlike the real
+  `patch` CLI, which can shift a hunk to a nearby line when the surrounding
+  context has drifted slightly, this applier requires the file's current
+  content to exactly match the patch's context and removed lines at the
+  hunk's stated line number. This is the main thing to know before reaching
+  for this tool: if the target file has changed at all since the patch was
+  generated (even a single unrelated line), the hunk will not "just work" at
+  an offset — it fails cleanly instead.
+- **`path` doesn't exist** gets a clean error pointing at `write_file` to
+  create it first, rather than trying to patch a file that isn't there.
+- **Patch-application failures** each get a specific error plus an appended
+  `[pcli] Suggestion: ...` (`src/pcli/tools/builtin/diff_tools.py`):
+  - No `@@ ... @@` hunk headers found in `patch` at all.
+  - An unrecognized line inside a hunk body (not a context/removed/added
+    line).
+  - A hunk's line ranges overlap the previous hunk, or a hunk starts past the
+    end of the file.
+  - A context or removed line doesn't exactly match the file's actual content
+    at that line — reported as e.g. `Context mismatch at line N: patch
+    expects 'X', file has 'Y'`.
+  - In every case, the suggestion points at the same recovery path: re-read
+    the file with `read_file`, regenerate the diff against its current
+    content with `diff_files`, or fall back to `edit_file` for a single
+    targeted change instead.
+
 ## run_shell
 
 Runs a shell command through `ctx.sandbox` — the only builtin tool that

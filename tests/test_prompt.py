@@ -10,6 +10,14 @@ def test_prompt_guides_toward_edit_file_over_write_file_for_existing_files():
     assert "write_file" in BASE_SYSTEM_PROMPT
 
 
+def test_prompt_mentions_diff_files_and_apply_patch():
+    section_start = BASE_SYSTEM_PROMPT.index("# Editing files")
+    section_end = BASE_SYSTEM_PROMPT.index("# Executing actions with care")
+    section = BASE_SYSTEM_PROMPT[section_start:section_end]
+    assert "diff_files" in section
+    assert "apply_patch" in section
+
+
 def test_prompt_mentions_background_shell_execution():
     assert "run_shell_background" in BASE_SYSTEM_PROMPT
     assert "read_background_output" in BASE_SYSTEM_PROMPT

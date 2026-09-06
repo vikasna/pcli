@@ -50,6 +50,7 @@ def build_default_registry() -> ToolRegistry:
     from pcli.tools.builtin.agent_tool_register_tool import REGISTER_AGENT_TOOL
     from pcli.tools.builtin.artifact_tool import FETCH_ARTIFACT
     from pcli.tools.builtin.decision_tool import RECORD_DECISION
+    from pcli.tools.builtin.diff_tools import APPLY_PATCH, DIFF_FILES
     from pcli.tools.builtin.fs_tools import EDIT_FILE, GLOB_SEARCH, LIST_DIR, READ_FILE, WRITE_FILE
     from pcli.tools.builtin.grep_tool import GREP
     from pcli.tools.builtin.network_tools import DOWNLOAD_FILE
@@ -74,6 +75,8 @@ def build_default_registry() -> ToolRegistry:
         GLOB_SEARCH,
         GREP,
         DOWNLOAD_FILE,
+        DIFF_FILES,
+        APPLY_PATCH,
         RUN_SHELL,
         RUN_SHELL_BACKGROUND,
         READ_BACKGROUND_OUTPUT,
