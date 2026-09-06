@@ -224,20 +224,61 @@ as normal.
 ## Permission manager
 
 `PermissionManager.check(...)` (`src/pcli/permissions/manager.py`) is the
-full decision flow for one tool call, run from `AgentLoop._dispatch_tool_call`:
+full decision flow for one tool call, run from `AgentLoop._dispatch_tool_call`.
+`check(...)` itself is now a thin wrapper around `check_with_reason(...)`,
+which returns `tuple[PermissionDecision, str | None]` instead of just the
+decision — kept as a separate method so the many existing call sites that
+only need the decision don't have to unpack a tuple.
 
 1. Guardrails first — command/path/python-module checks above. Any violation
-   is an immediate `"deny"`, regardless of everything else.
+   is an immediate `"deny"`, with `reason` set to that guardrail's own
+   `GuardrailResult.reason` string (e.g. `"command matches denylist pattern
+   '...'"`, `"path is within denied path '...'"` or `"path 'X' is outside
+   all allowed roots"`, `"module 'X' is blocked (...)"`). A rate-limit
+   violation (`max_tool_calls_per_minute`) is checked first of all and denies
+   with reason `"rate limit exceeded (max_tool_calls_per_minute)"`.
 2. If the tool doesn't need permission (`default_allow=True`, i.e.
-   `ToolSpec.needs_permission=False`), allow.
+   `ToolSpec.needs_permission=False`), allow (`reason` is `None`).
 3. Otherwise, check `PermissionPolicy` for an existing remembered grant for
-   this tool name (session or always-allow) — if found, use it.
+   this tool name (session or always-allow) — if found, use it. A remembered
+   "deny" carries reason `"previously denied and remembered"`; a remembered
+   "allow" has `reason=None`.
 4. Otherwise, call the `ask` callback (in the TUI, this pushes
    `PermissionPromptModal` and awaits the user's choice — see
    [`tui-guide.md`](tui-guide.md)). If no `ask` callback is available (e.g.
-   headless), **fail closed**: deny.
+   headless), **fail closed**: deny with reason `"no UI available to request
+   approval"`. A fresh interactive "allow" has `reason=None`; a fresh
+   interactive "deny" carries reason `"denied by the user"`.
 5. If the user's choice includes a remember scope other than `"once"`, it's
    recorded via `PermissionPolicy.remember(...)`.
+
+### Surfacing the reason back to the model
+
+`AgentLoop._dispatch_tool_call` calls `check_with_reason(...)` (not
+`check(...)`) specifically so a denied tool call gives the model something to
+diagnose. When the decision is `"deny"`, the tool result sent back to the
+model is:
+
+```
+f"Permission denied: {reason}." if reason else "Permission denied."
+```
+
+So the model actually sees one of, depending on which stage denied it:
+
+- `"Permission denied: rate limit exceeded (max_tool_calls_per_minute)."`
+- `"Permission denied: command matches denylist pattern '...'."` (or the
+  equivalent path/module guardrail reason)
+- `"Permission denied: previously denied and remembered."`
+- `"Permission denied: no UI available to request approval."`
+- `"Permission denied: denied by the user."`
+- the bare `"Permission denied."`, only if `reason` is `None` — which cannot
+  actually happen for a `"deny"` outcome given the cases above (every deny
+  path sets a reason); `None` only occurs alongside `"allow"`.
+
+This directly backs the "Recovering from a failed tool call" section of the
+system prompt (`src/pcli/agent/prompt.py`), which tells the model to diagnose
+the actual error before retrying — a bare "Permission denied." gave it
+nothing to diagnose from before this change.
 
 ### Grant scopes (`PermissionPolicy`, `src/pcli/permissions/policy.py`)
 

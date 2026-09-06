@@ -622,13 +622,16 @@ a risk description. Four buttons:
   rest of this process's lifetime (in-memory only, not persisted).
 - **Allow Always** — runs it, and persists an "always allow" grant to
   `permissions.json` so future sessions skip the prompt for this tool.
-- **Deny** — blocks this call; the model sees "Permission denied."
+- **Deny** — blocks this call; the model sees `"Permission denied: denied by
+  the user."`
 
 Grants are keyed by tool name only (not by specific arguments) — allowing
 `run_shell` once for a given command allows it for any command afterward,
 for the remainder of the granted scope. See
 [`sandbox-and-permissions.md`](sandbox-and-permissions.md) for the full
-decision flow (guardrails still apply and can override an "allow").
+decision flow (guardrails still apply and can override an "allow"), including
+the other reason strings the model sees for a guardrail, rate-limit, or
+remembered-grant denial.
 
 ## Tool calls and results
 

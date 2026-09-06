@@ -7,10 +7,15 @@ tools into every session's `ToolRegistry`. Toolbox-discovered tools
 
 Every tool call goes through `AgentLoop._dispatch_tool_call`
 (`src/pcli/agent/loop.py`): JSON-schema validation of arguments, then
-`PermissionManager.check` (guardrails first, then remembered
+`PermissionManager.check_with_reason` (guardrails first, then remembered
 grants/ask-the-user — see [`sandbox-and-permissions.md`](sandbox-and-permissions.md)),
 then the handler runs, then the result passes through the artifact-archiving
-choke point described below before going back to the model.
+choke point described below before going back to the model. A denial is
+reported back to the model as `"Permission denied: <reason>."` (or the bare
+`"Permission denied."` when there's no specific reason), so it has something
+concrete to diagnose — see the "Surfacing the reason back to the model"
+section of [`sandbox-and-permissions.md`](sandbox-and-permissions.md#permission-manager)
+for the exact reason strings.
 
 Each entry lists: what it does, its JSON-schema parameters, whether it
 prompts for permission (`needs_permission`), and any guardrail hook.
