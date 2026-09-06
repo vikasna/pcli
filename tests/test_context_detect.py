@@ -87,11 +87,12 @@ async def test_ignores_standard_models_entries_for_a_different_model_id():
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_detects_lmstudio_max_context_length():
+async def test_detects_lmstudio_loaded_context_length():
     _mock_all_unused()
     respx.get(_LMSTUDIO_URL).mock(
         return_value=httpx.Response(
-            200, json={"data": [{"id": "my-model", "state": "loaded", "max_context_length": 16384}]}
+            200,
+            json={"data": [{"id": "my-model", "state": "loaded", "loaded_context_length": 16384}]},
         )
     )
     async with _client() as client:
@@ -100,7 +101,7 @@ async def test_detects_lmstudio_max_context_length():
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_lmstudio_prefers_loaded_context_length_over_max():
+async def test_lmstudio_ignores_max_context_length_when_loaded_is_present():
     _mock_all_unused()
     respx.get(_LMSTUDIO_URL).mock(
         return_value=httpx.Response(
@@ -114,6 +115,30 @@ async def test_lmstudio_prefers_loaded_context_length_over_max():
     )
     async with _client() as client:
         assert await detect_context_limit(client, "my-model") == 32768
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_lmstudio_max_context_length_alone_is_not_trusted():
+    """Regression test: max_context_length is the model's architecture
+    ceiling, not what actually gets allocated once loaded - LM Studio only
+    reports loaded_context_length once the model is actually resident, so a
+    "not-loaded" entry (the common case at pcli's startup-time probe, since
+    LM Studio JIT-loads on first inference and unloads after an idle TTL)
+    must not be trusted as a real context-window size. Confirmed against a
+    real regression: a model reported max_context_length=262144 while not
+    loaded, but llama.cpp had previously loaded it with only 16384 tokens -
+    trusting the max here silently reintroduced the exact stale-limit bug
+    should_attempt_detection (cost/context.py) was built to fix."""
+    _mock_all_unused(exclude={_LMSTUDIO_URL})
+    respx.get(_LMSTUDIO_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": [{"id": "my-model", "state": "not-loaded", "max_context_length": 262144}]},
+        )
+    )
+    async with _client() as client:
+        assert await detect_context_limit(client, "my-model") is None
 
 
 # --- raw llama.cpp server ---
@@ -227,7 +252,9 @@ async def test_probes_are_tried_in_order_first_match_wins():
         return_value=httpx.Response(200, json={"data": [{"id": "my-model"}]})
     )
     respx.get(_LMSTUDIO_URL).mock(
-        return_value=httpx.Response(200, json={"data": [{"id": "my-model", "max_context_length": 65536}]})
+        return_value=httpx.Response(
+            200, json={"data": [{"id": "my-model", "loaded_context_length": 65536}]}
+        )
     )
     _mock_all_unused(exclude={_STANDARD_MODELS_URL, _LMSTUDIO_URL})
     async with _client() as client:

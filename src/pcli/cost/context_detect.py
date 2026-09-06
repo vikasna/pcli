@@ -94,10 +94,20 @@ async def _probe_lmstudio(client: httpx.AsyncClient, model: str, timeout: float)
     for entry in entries:
         if not isinstance(entry, dict) or entry.get("id") != model:
             continue
-        limit = _positive_int(entry.get("loaded_context_length"))
-        if limit is not None:
-            return limit
-        return _positive_int(entry.get("max_context_length"))
+        # loaded_context_length only appears once LM Studio has actually
+        # loaded the model into memory. LM Studio JIT-loads on first
+        # inference and unloads after an idle TTL, so at pcli's startup-time
+        # probe the model is very often still "not-loaded" - the entry then
+        # has only max_context_length, the architecture's *maximum
+        # supported* window, which can be many times larger than what
+        # actually gets allocated once loaded (confirmed against a real
+        # session: max_context_length=262144 for a model llama.cpp had
+        # loaded with n_ctx_slot=16384). Trusting that fallback previously
+        # reintroduced the exact stale-limit bug should_attempt_detection
+        # was built to fix, just from a different angle - a "don't know"
+        # (None, falls through to the next probe / the generic default)
+        # is safer than a confidently wrong number here.
+        return _positive_int(entry.get("loaded_context_length"))
     return None
 
 
