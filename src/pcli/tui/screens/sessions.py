@@ -15,8 +15,40 @@ from textual.widgets import Button, Input, ListItem, ListView, Static
 from pcli.config.paths import data_dir
 from pcli.session.export import export_session
 from pcli.session.importer import import_session
+from pcli.session.models import SessionIndexEntry
 from pcli.session.store import SessionStore
 from pcli.tui.widgets.paste_input import PasteInput
+
+_ID_COL_WIDTH = 4
+_TITLE_COL_WIDTH = 28
+_MODEL_COL_WIDTH = 20
+_COST_COL_WIDTH = 10
+
+
+def _truncate(text: str, width: int) -> str:
+    # Plain ASCII "..." rather than a Unicode ellipsis - some Windows
+    # terminal/locale combinations mangle non-ASCII characters here.
+    return text if len(text) <= width else text[: width - 3] + "..."
+
+
+def _sessions_header_row() -> str:
+    return (
+        f"{'ID':<{_ID_COL_WIDTH}}  {'TITLE':<{_TITLE_COL_WIDTH}}  "
+        f"{'MODEL':<{_MODEL_COL_WIDTH}}  {'COST':>{_COST_COL_WIDTH}}  UPDATED"
+    )
+
+
+def _sessions_row(entry: SessionIndexEntry) -> str:
+    # Last 4 chars of the id rather than the full id — enough to
+    # disambiguate at a glance (matched against /export's own filename,
+    # which uses the full id) without dominating the row width.
+    return (
+        f"{entry.id[-4:]:<{_ID_COL_WIDTH}}  "
+        f"{_truncate(entry.title, _TITLE_COL_WIDTH):<{_TITLE_COL_WIDTH}}  "
+        f"{_truncate(entry.model or 'unknown model', _MODEL_COL_WIDTH):<{_MODEL_COL_WIDTH}}  "
+        f"{f'${entry.total_cost_usd:.4f}':>{_COST_COL_WIDTH}}  "
+        f"{entry.updated_at:%Y-%m-%d %H:%M}"
+    )
 
 
 class ImportPathModal(ModalScreen[str | None]):
@@ -54,6 +86,7 @@ class SessionListScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Static("Sessions  (enter: resume, e: export, i: import, esc: back)", id="sessions-title")
+        yield Static(_sessions_header_row(), id="sessions-header")
         yield ListView(id="session-list")
 
     def on_mount(self) -> None:
@@ -69,11 +102,7 @@ class SessionListScreen(Screen):
         list_view = self.query_one(ListView)
         list_view.clear()
         for entry in self._store.list_index():
-            label = (
-                f"{entry.title}   [{entry.model or 'unknown model'}]   "
-                f"${entry.total_cost_usd:.4f}   {entry.updated_at:%Y-%m-%d %H:%M}"
-            )
-            item = ListItem(Static(label))
+            item = ListItem(Static(_sessions_row(entry)))
             item.data = entry.id  # type: ignore[attr-defined]
             list_view.append(item)
 

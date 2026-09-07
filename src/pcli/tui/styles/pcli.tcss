@@ -135,3 +135,8 @@ PermissionPromptModal, ImportPathModal, ModelListScreen {
 #sessions-title {
     padding: 1 1 0 1;
 }
+
+#sessions-header {
+    padding: 0 1 0 1;
+    text-style: bold;
+}
