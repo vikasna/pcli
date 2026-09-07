@@ -265,3 +265,17 @@ def test_web_fetch_and_web_search_are_plan_mode_safe():
     keep available during plan mode, same as read_file."""
     assert WEB_FETCH.plan_mode_safe is True
     assert WEB_SEARCH.plan_mode_safe is True
+
+
+def test_web_search_description_steers_away_from_broken_ddg_operators():
+    """Regression coverage for a real, directly-verified finding: a query
+    using site:/filetype:/-exclusion/OR against the DuckDuckGo fallback
+    comes back as a soft-blocked empty response (HTTP 202, zero results),
+    not a degraded literal-text match - so the tool description must warn
+    the model away from them instead of leaving it to discover this by
+    getting empty results back."""
+    description = WEB_SEARCH.description
+    assert "keyword-based" in description
+    for operator in ("site:", "filetype:", "-exclusion", "OR"):
+        assert operator in description
+    assert "quot" in description.lower()  # exact-phrase quoting guidance

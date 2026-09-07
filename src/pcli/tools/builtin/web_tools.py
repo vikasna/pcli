@@ -12,6 +12,14 @@ DuckDuckGo's current HTML structure and a browser-like User-Agent (confirmed
 necessary — httpx's default UA gets a soft-blocked empty response), and
 could break if either changes. Treat it as a reasonable default, not a
 guarantee — recommend brave_search_api_key for anything load-bearing.
+
+Also confirmed directly against this endpoint: search operators
+(site:/filetype:/-exclusion/OR/intitle:) don't work here — a query using
+any of them comes back as a soft-blocked empty response (HTTP 202, no
+results), not just a degraded/literal-text match. Only plain keywords and
+quoted exact phrases reliably return results. This is why WEB_SEARCH's own
+tool description steers the model away from operators rather than assuming
+they're safe to try.
 """
 
 from __future__ import annotations
@@ -283,7 +291,16 @@ WEB_SEARCH = ToolSpec(
     description="Search the web and return a short list of results (title, URL, snippet). Use "
     "web_fetch on a promising result's URL to read its actual content — search results alone "
     "are rarely enough to answer from. Uses a configured search API if available, otherwise a "
-    "best-effort fallback with no setup required.",
+    "best-effort fallback with no setup required.\n\n"
+    "Query tips: use short, keyword-based queries (roughly 2-6 words), not a full question or "
+    "sentence — 'python asyncio cancel task' beats 'how do I cancel a task in python asyncio'. "
+    "Quote an exact phrase you need verbatim (an error message, a function name, a title) — "
+    "quoting is reliable on both backends. Avoid site:/filetype:/-exclusion/OR operators: they "
+    "only work with a configured search API (Brave) and are unreliable — confirmed to return "
+    "nothing, not just fewer results — on the no-setup DuckDuckGo fallback used by default. If "
+    "you need a specific site, search normally and pick the matching result, or web_fetch a "
+    "known URL directly instead. Start broad and re-search with narrower keywords based on what "
+    "the first results show, rather than building one heavily-qualified query upfront.",
     parameters={
         "type": "object",
         "properties": {

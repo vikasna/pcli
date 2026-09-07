@@ -243,6 +243,20 @@ either backend as a starting point, not verified fact — follow up with
 `web_fetch` on whatever looks promising before answering from a
 title/snippet alone.
 
+The tool description also gives the model query-construction guidance,
+confirmed directly against the DuckDuckGo fallback rather than assumed: use
+short, keyword-based queries (roughly 2-6 words) instead of a full question
+or sentence — `python asyncio cancel task` beats `how do I cancel a task in
+python asyncio`. Quote an exact phrase (an error message, a function name, a
+title) when it needs to match verbatim — quoting is reliable on both
+backends. Avoid `site:`/`filetype:`/`-exclusion`/`OR` search operators on
+the DuckDuckGo fallback: they were directly tested and confirmed broken — a
+query using any of them comes back HTTP 202 with zero results (a soft
+block), not just a degraded or literal-text match. Those operators only work
+when a real search API (Brave) is configured. If a specific site is needed,
+search normally and pick the matching result, or `web_fetch` a known URL
+directly instead.
+
 - **Parameters:** `query` (string, required), `max_results` (integer,
   optional, default 5).
 - **Permission:** required. `risk_description`: "Sends a search query to a
