@@ -80,6 +80,13 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("PCLI_MODEL", "default_model"),
     )
+    default_temperature: float | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PCLI_DEFAULT_TEMPERATURE", "default_temperature"),
+        description="Sampling temperature sent with each request. Unset (default, None) means "
+        "no temperature field is sent at all, so the gateway/model's own default applies. "
+        "Changeable live with /temperature.",
+    )
     request_timeout_s: float = Field(
         default=120.0,
         validation_alias=AliasChoices("PCLI_REQUEST_TIMEOUT_S", "request_timeout_s"),
@@ -277,6 +284,29 @@ def update_config_file(**updates: Any) -> None:
         data = dict(tomllib.loads(path.read_text(encoding="utf-8")))
     data.update({key: value for key, value in updates.items() if value is not None and value != ""})
     path.write_text(_dump_toml(data), encoding="utf-8")
+
+
+def remove_config_keys(*keys: str) -> None:
+    """Deletes the given top-level keys from config.toml, if present —
+    the counterpart to update_config_file for a setting that needs to go
+    back to "unset" rather than to some concrete value. update_config_file
+    itself can't do this: it deliberately skips a None/"" value instead of
+    writing it, so callers can pass optional CLI flags through
+    unconditionally without accidentally clearing a saved preference — that
+    same skip means it has no way to express "remove this key" (namely
+    /temperature off, restoring "no temperature sent" rather than pinning
+    it to some specific number)."""
+    path = config_file()
+    if not path.exists():
+        return
+    data = dict(tomllib.loads(path.read_text(encoding="utf-8")))
+    changed = False
+    for key in keys:
+        if key in data:
+            del data[key]
+            changed = True
+    if changed:
+        path.write_text(_dump_toml(data), encoding="utf-8")
 
 
 def add_local_api_gateway(gateway_url: str) -> None:

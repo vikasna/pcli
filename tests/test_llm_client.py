@@ -87,6 +87,42 @@ async def test_chat_stream_omits_max_tokens_when_not_given():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_chat_stream_sends_temperature_when_given():
+    import json
+
+    route = respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200, content=_sse({"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]})
+        )
+    )
+
+    async with GatewayClient(_settings()) as client:
+        await client.collect([ChatMessage(role="user", content="hi")], temperature=0.2)
+
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["temperature"] == 0.2
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_chat_stream_omits_temperature_when_not_given():
+    import json
+
+    route = respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200, content=_sse({"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]})
+        )
+    )
+
+    async with GatewayClient(_settings()) as client:
+        await client.collect([ChatMessage(role="user", content="hi")])
+
+    sent = json.loads(route.calls.last.request.content)
+    assert "temperature" not in sent
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_chat_stream_reconstructs_fragmented_tool_call():
     chunks = [
         {

@@ -22,7 +22,7 @@ from pcli.agent.compaction import maybe_compact
 from pcli.agent.context_pruning import extract_purpose, prune_old_tool_results
 from pcli.agent.loop import AgentLoop, ToolResultEvent
 from pcli.agent.prompt import build_system_prompt
-from pcli.config.settings import Settings, get_settings, update_config_file
+from pcli.config.settings import Settings, get_settings, remove_config_keys, update_config_file
 from pcli.cost.context import (
     ContextLimitTable,
     compute_max_response_tokens,
@@ -96,6 +96,9 @@ available from the configured gateway and lets you pick one.
 context space (also happens automatically as the context fills up).
 - **/timeout [seconds]** — view or set the per-request timeout to the \
 gateway.
+- **/temperature [value|off]** — view or set the sampling temperature sent \
+with each request; `off` clears it so no temperature field is sent at all \
+(gateway/model default applies).
 - **/context-limit [tokens]** — view or set the context window pcli assumes \
 for the current model (used for the context-usage display and \
 auto-compaction).
@@ -351,6 +354,7 @@ class ChatScreen(Screen):
             tool_context_factory=self._make_tool_context,
             max_tool_iterations=self._effective_max_tool_iterations(),
             artifact_threshold_chars=self._settings.artifact_threshold_chars,
+            temperature=self._settings.default_temperature,
         )
 
     async def _maybe_detect_context_limit(
@@ -600,6 +604,8 @@ class ChatScreen(Screen):
             self._manual_compact()
         elif command == "timeout":
             self._handle_timeout_command(rest or None)
+        elif command == "temperature":
+            self._handle_temperature_command(rest or None)
         elif command == "context-limit":
             self._handle_context_limit_command(rest or None)
         elif command == "max-tool-iterations":
@@ -666,6 +672,51 @@ class ChatScreen(Screen):
         update_config_file(request_timeout_s=seconds)
         message_view.add_message(
             "system", f"request_timeout_s set to {seconds:g}s — takes effect on the next gateway request."
+        )
+
+    def _handle_temperature_command(self, arg: str | None) -> None:
+        """`/temperature [value|off]` — sets the sampling temperature sent
+        with each request (AgentLoop.set_temperature -> GatewayClient.
+        chat_stream's temperature param), taking effect on the very next
+        turn. `off` clears it back to "unset" (no temperature field sent at
+        all, so the gateway/model's own default applies) — this needs
+        remove_config_keys, not update_config_file, since update_config_file
+        deliberately skips writing a None value rather than persisting the
+        removal."""
+        message_view = self.query_one(MessageView)
+        if not arg:
+            current = self._settings.default_temperature
+            text = f"{current:g}" if current is not None else "unset (gateway/model default)"
+            message_view.add_message(
+                "system", f"default_temperature is currently {text}. Usage: /temperature <value>|off"
+            )
+            return
+
+        if arg == "off":
+            self._settings.default_temperature = None
+            remove_config_keys("default_temperature")
+            if self._agent_loop is not None:
+                self._agent_loop.set_temperature(None)
+            message_view.add_message(
+                "system", "default_temperature cleared — gateway/model default applies."
+            )
+            return
+
+        try:
+            value = float(arg)
+        except ValueError:
+            message_view.add_message("system", f"'{arg}' isn't a valid number, or 'off'.")
+            return
+        if value < 0:
+            message_view.add_message("system", "Temperature must be 0 or greater.")
+            return
+
+        self._settings.default_temperature = value
+        update_config_file(default_temperature=value)
+        if self._agent_loop is not None:
+            self._agent_loop.set_temperature(value)
+        message_view.add_message(
+            "system", f"default_temperature set to {value:g} — takes effect on the next turn."
         )
 
     def _handle_context_limit_command(self, arg: str | None) -> None:

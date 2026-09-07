@@ -76,10 +76,13 @@ class AgentLoop:
         max_tool_iterations: int | None = 25,
         artifact_threshold_chars: int = _DEFAULT_ARTIFACT_THRESHOLD_CHARS,
         max_response_tokens: int | None = None,
+        temperature: float | None = None,
     ) -> None:
         """`max_tool_iterations=None` means unlimited (local-api mode).
         `max_response_tokens=None` means no cap is sent (the gateway's own
-        default applies) — see set_max_response_tokens."""
+        default applies) — see set_max_response_tokens. `temperature=None`
+        means no temperature field is sent at all (the gateway/model's own
+        default applies) — see set_temperature."""
         self._client = gateway_client
         self._model = model
         self._tool_registry = tool_registry
@@ -88,6 +91,7 @@ class AgentLoop:
         self._max_tool_iterations = max_tool_iterations
         self._artifact_threshold_chars = artifact_threshold_chars
         self._max_response_tokens = max_response_tokens
+        self._temperature = temperature
 
     @property
     def model(self) -> str | None:
@@ -118,6 +122,10 @@ class AgentLoop:
         given the bug this fixes (a single very long response, not a
         many-tool-call turn) rather than a live per-call recomputation."""
         self._max_response_tokens = max_response_tokens
+
+    def set_temperature(self, temperature: float | None) -> None:
+        """None means no temperature field is sent at all — see __init__."""
+        self._temperature = temperature
 
     async def run_turn(
         self, messages: list[ChatMessage], *, ask: AskCallback | None = None
@@ -151,7 +159,7 @@ class AgentLoop:
             tool_calls_collected: list[ToolCall] = []
             async for event in self._client.chat_stream(
                 working_messages, model=self._model, tools=tools,
-                max_tokens=self._max_response_tokens,
+                max_tokens=self._max_response_tokens, temperature=self._temperature,
             ):
                 if event.kind == "text_delta":
                     text_parts.append(event.text)

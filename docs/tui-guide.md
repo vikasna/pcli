@@ -322,6 +322,30 @@ as a normal system message instead.
   very next gateway call, no restart needed — and persists it to
   `config.toml`, the same way `/models <model-id>` persists `default_model`.
   Rejects non-numeric input and values that aren't greater than 0.
+- **`/temperature [value|off]`** — view or set `default_temperature` (see
+  [`configuration.md`](configuration.md#settings-fields)), the sampling
+  temperature sent with each request. With no argument, reports the current
+  value, or `"unset (gateway/model default)"` when it's `None` (the default).
+  With an argument (`/temperature 0.7`), sets it — any value `>= 0` is
+  accepted, including `0` itself, which is a real, deterministic setting
+  ("always pick the top token"), not the same thing as unset — persists it to
+  `config.toml` via `update_config_file` the same way `/timeout` persists
+  `request_timeout_s`, and pushes it live into the running `AgentLoop` via
+  `AgentLoop.set_temperature()`, so it applies starting with the very next
+  turn (`AgentLoop` threads it through to every `GatewayClient.chat_stream`
+  call `run_turn` makes, the same wiring shape as
+  [`/max-response-tokens`](#slash-commands)'s `max_tokens`). `off` clears it
+  back to unset — restoring "no `temperature` field sent at all" (the
+  gateway/model's own default applies) rather than pinning it at some
+  concrete number like `0`. This is persisted differently from a numeric
+  set: `off` calls `remove_config_keys("default_temperature")` to actually
+  delete the key from `config.toml`, instead of `update_config_file`, because
+  `update_config_file` deliberately *skips* writing a `None`/`""` value
+  (precisely so passing an optional CLI flag/selection through doesn't
+  accidentally clear a saved preference) and so has no way to express "delete
+  this key and go back to unset" — `remove_config_keys` exists specifically
+  to fill that gap. Rejects non-numeric input (other than `off`) and negative
+  values.
 - **`/context-limit [tokens]`** — with no argument, reports the context-
   window size pcli currently assumes for the active model (the session's
   model, falling back to `default_model`) — see

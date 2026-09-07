@@ -145,3 +145,103 @@ async def test_timeout_command_rejects_non_numeric_and_non_positive_values(tmp_p
         await pilot.pause()
         assert "greater than 0" in message_view._current_text
         assert settings.request_timeout_s == 120.0
+
+
+@pytest.mark.asyncio
+async def test_temperature_command_updates_settings_live_and_persists_to_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config_path = tmp_path / "config.toml"
+    monkeypatch.setattr(settings_module, "config_file", lambda: config_path)
+
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    session = Session(model="fake-model", gateway_base_url="")
+    settings = Settings(gateway_base_url="", gateway_api_key="")
+
+    screen = ChatScreen(settings, session=session, store=store)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen._handle_command("/temperature 0.5")
+        await pilot.pause()
+
+    assert settings.default_temperature == 0.5
+    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert data["default_temperature"] == 0.5
+
+
+@pytest.mark.asyncio
+async def test_temperature_off_clears_settings_and_removes_the_persisted_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """update_config_file alone can't express this - it skips writing a
+    None value rather than persisting the removal, so /temperature off
+    goes through remove_config_keys instead (see its docstring)."""
+    config_path = tmp_path / "config.toml"
+    monkeypatch.setattr(settings_module, "config_file", lambda: config_path)
+
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    session = Session(model="fake-model", gateway_base_url="")
+    settings = Settings(gateway_base_url="", gateway_api_key="", default_temperature=0.5)
+
+    screen = ChatScreen(settings, session=session, store=store)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen._handle_command("/temperature 0.5")
+        await pilot.pause()
+        data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        assert data["default_temperature"] == 0.5
+
+        screen._handle_command("/temperature off")
+        await pilot.pause()
+
+    assert settings.default_temperature is None
+    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert "default_temperature" not in data
+
+
+@pytest.mark.asyncio
+async def test_temperature_command_with_no_argument_reports_current_value(tmp_path: Path):
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    session = Session(model="fake-model", gateway_base_url="")
+    settings = Settings(gateway_base_url="", gateway_api_key="")
+
+    screen = ChatScreen(settings, session=session, store=store)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        from pcli.tui.widgets.message_view import MessageView
+
+        screen._handle_command("/temperature")
+        await pilot.pause()
+
+        message_view = screen.query_one(MessageView)
+        assert "unset" in message_view._current_text
+
+
+@pytest.mark.asyncio
+async def test_temperature_command_rejects_non_numeric_and_negative_values(tmp_path: Path):
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    session = Session(model="fake-model", gateway_base_url="")
+    settings = Settings(gateway_base_url="", gateway_api_key="")
+
+    screen = ChatScreen(settings, session=session, store=store)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        from pcli.tui.widgets.message_view import MessageView
+
+        message_view = screen.query_one(MessageView)
+
+        screen._handle_command("/temperature not-a-number")
+        await pilot.pause()
+        assert "valid number" in message_view._current_text
+        assert settings.default_temperature is None
+
+        screen._handle_command("/temperature -1")
+        await pilot.pause()
+        assert "0 or greater" in message_view._current_text
+        assert settings.default_temperature is None

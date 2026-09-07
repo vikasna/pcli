@@ -41,6 +41,7 @@ to `table_key` when reading back, so both shapes round-trip.
 | `gateway_auth_header` | `PCLI_GATEWAY_AUTH_HEADER` | *(none)* | `gateway_auth_header` | `"Authorization"` | Header used to send the key. If `"Authorization"`, the value sent is `Bearer <key>`; otherwise the raw key is sent under that header name. |
 | `brave_search_api_key` | `PCLI_BRAVE_SEARCH_API_KEY` | *(none)* | `brave_search_api_key` | `""` | API key for the [Brave Search API](https://api.search.brave.com/res/v1/web/search), used by the `web_search` tool (see [`tools.md#web_search`](tools.md#web_search)). Optional — like `gateway_api_key`, this field is `repr=False` (never printed/logged). When unset, `web_search` falls back to a best-effort, no-API-key scrape of DuckDuckGo's HTML results page instead — works out of the box but is inherently more fragile. |
 | `default_model` | `PCLI_MODEL` | `--model` | `default_model` | `""` | Model id passed as `model` in chat-completions requests. |
+| `default_temperature` | `PCLI_DEFAULT_TEMPERATURE` | *(none)* | `default_temperature` | `None` (unset) | Sampling temperature passed as `temperature` in chat-completions requests, via `AgentLoop`/`GatewayClient` (see [Sampling temperature](#sampling-temperature) below). Unset (`None`, the default) means no `temperature` field is sent at all, so the gateway/model's own default applies — this is *not* the same as `0`, which is a real, valid, deterministic setting ("always pick the top token") that *is* sent. Changeable live in the TUI with [`/temperature`](tui-guide.md#slash-commands). |
 | `request_timeout_s` | `PCLI_REQUEST_TIMEOUT_S` | *(none)* | `request_timeout_s` | `120.0` | HTTP timeout applied per-request (chat completions, `/models`, health check) via `GatewayClient`'s `_effective_timeout()` helper, which reads `Settings.effective_request_timeout_s` fresh on every call rather than a value baked into the client at construction — so a change takes effect on the very next gateway request, no restart needed. Changeable live in the TUI with [`/timeout`](tui-guide.md#slash-commands), which persists it to `config.toml` the same way `/models <model-id>` persists `default_model`. See the local-api floor below. |
 | `max_retries` | `PCLI_MAX_RETRIES` | *(none)* | `max_retries` | `4` | Max attempts for `GatewayClient.chat_stream` on retryable failures (network errors, HTTP 429/5xx) — retried only if no stream data has been yielded yet. |
 | `max_tool_iterations` | `PCLI_MAX_TOOL_ITERATIONS` | *(none)* | `max_tool_iterations` | `25` | Cap on tool-call round-trips within a single `AgentLoop.run_turn`; beyond this the loop appends a "reached the max tool-call iteration limit" note and stops. |
@@ -209,6 +210,50 @@ Like the pruning settings, both settings here are persisted via a slash
 command: [`/max-response-tokens`](tui-guide.md#slash-commands) writes them to
 `config.toml` through `update_config_file` and applies them live starting
 with the very next turn.
+
+## Sampling temperature
+
+`default_temperature` (table above) is passed as `temperature` on every
+outbound chat-completions request. `GatewayClient._build_payload`
+(`src/pcli/llm/client.py`) only adds a `"temperature"` key to the payload
+when the value isn't `None`; `AgentLoop` (`src/pcli/agent/loop.py`) holds
+the value in `self._temperature` (constructor kwarg, defaulting to `None`)
+and passes it to every `chat_stream` call `run_turn` makes — the same
+wiring shape as the dynamic response cap's `max_response_tokens`/
+`set_max_response_tokens` above, just for `temperature` instead of
+`max_tokens`.
+
+**Unset (`None`, the default) is meaningfully different from `0`.** `None`
+means the `temperature` field is omitted from the request entirely, so
+whatever default the gateway or model applies on its own end is used. `0`
+is a real, valid value that *is* sent — a deterministic sampling setting
+("always pick the top token"), not "no preference." Don't treat a report of
+`0` and a report of "unset" as the same thing.
+
+`ChatScreen` reads `default_temperature` once at startup, when constructing
+the session's `AgentLoop` (`temperature=self._settings.default_temperature`,
+`src/pcli/tui/screens/chat.py`). From then on it's changed live with
+[`/temperature [value|off]`](tui-guide.md#slash-commands):
+
+- `/temperature <value>` (any number `>= 0`) sets
+  `Settings.default_temperature`, persists it to `config.toml` via
+  `update_config_file` — the same mechanism `/timeout` uses for
+  `request_timeout_s` — and pushes it into the running `AgentLoop` via
+  `AgentLoop.set_temperature()`, taking effect on the very next turn.
+- `/temperature off` clears it back to `None` and persists that via a
+  different helper: `remove_config_keys("default_temperature")`
+  (`src/pcli/config/settings.py`), which deletes the key from `config.toml`
+  outright rather than writing a value. This is necessary because
+  `update_config_file` deliberately *skips* writing a `None`/`""` value —
+  so a CLI flag or other optional value can be passed through unconditionally
+  without ever accidentally clearing a saved preference — which leaves it
+  with no way to express "remove this key and go back to unset."
+  `remove_config_keys(*keys)` is a small, general counterpart added
+  specifically to fill that gap: it deletes each given top-level key from
+  `config.toml` if present, leaving everything else untouched. `/temperature
+  off` is currently its only caller.
+- `/temperature` with no argument reports the current value, or `"unset
+  (gateway/model default)"` when it's `None`.
 
 ## Context-limit detection and correction
 

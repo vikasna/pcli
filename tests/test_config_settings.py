@@ -4,7 +4,12 @@ from pathlib import Path
 import pytest
 
 from pcli.config import settings as settings_module
-from pcli.config.settings import Settings, add_local_api_gateway, update_config_file
+from pcli.config.settings import (
+    Settings,
+    add_local_api_gateway,
+    remove_config_keys,
+    update_config_file,
+)
 
 
 @pytest.fixture
@@ -48,6 +53,39 @@ def test_update_config_file_escapes_special_characters(isolated_config: Path):
 
     data = tomllib.loads(isolated_config.read_text(encoding="utf-8"))
     assert data["default_model"] == 'weird "model" name\\path'
+
+
+def test_remove_config_keys_deletes_the_given_key(isolated_config: Path):
+    update_config_file(default_model="model-a", default_temperature=0.5)
+
+    remove_config_keys("default_temperature")
+
+    data = tomllib.loads(isolated_config.read_text(encoding="utf-8"))
+    assert data == {"default_model": "model-a"}
+
+
+def test_remove_config_keys_is_a_no_op_when_the_key_is_absent(isolated_config: Path):
+    update_config_file(default_model="model-a")
+
+    remove_config_keys("default_temperature")  # never written - must not error
+
+    data = tomllib.loads(isolated_config.read_text(encoding="utf-8"))
+    assert data == {"default_model": "model-a"}
+
+
+def test_remove_config_keys_is_a_no_op_when_the_file_does_not_exist(isolated_config: Path):
+    remove_config_keys("default_temperature")  # must not error, no file created
+
+    assert not isolated_config.exists()
+
+
+def test_remove_config_keys_accepts_multiple_keys(isolated_config: Path):
+    update_config_file(default_model="model-a", default_temperature=0.5, request_timeout_s=900.0)
+
+    remove_config_keys("default_temperature", "request_timeout_s")
+
+    data = tomllib.loads(isolated_config.read_text(encoding="utf-8"))
+    assert data == {"default_model": "model-a"}
 
 
 def test_settings_picks_up_persisted_gateway_and_model(

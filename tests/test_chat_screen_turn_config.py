@@ -521,3 +521,35 @@ async def test_max_response_tokens_disabled_sends_no_cap(tmp_path: Path):
 
         sent = json.loads(route.calls.last.request.content)
         assert "max_tokens" not in sent
+
+
+# --- /temperature ---
+
+
+@pytest.mark.asyncio
+async def test_temperature_sets_persists_and_takes_effect_on_the_live_agent_loop(tmp_path: Path):
+    screen, _session = _make_screen(tmp_path)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert screen._agent_loop is not None
+        assert screen._agent_loop._temperature is None
+
+        screen._handle_command("/temperature 0.9")
+        await pilot.pause()
+
+        message_view = screen.query_one(MessageView)
+        assert "0.9" in message_view._current_text
+        assert screen._settings.default_temperature == 0.9
+        assert screen._agent_loop._temperature == 0.9
+
+        raw = tomllib.loads(config_file().read_text(encoding="utf-8"))
+        assert raw["default_temperature"] == 0.9
+
+        screen._handle_command("/temperature off")
+        await pilot.pause()
+
+        assert screen._settings.default_temperature is None
+        assert screen._agent_loop._temperature is None
+        raw = tomllib.loads(config_file().read_text(encoding="utf-8"))
+        assert "default_temperature" not in raw

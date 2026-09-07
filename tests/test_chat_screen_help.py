@@ -53,6 +53,7 @@ async def test_help_lists_every_slash_command(tmp_path: Path):
             "/models",
             "/compact",
             "/timeout",
+            "/temperature",
             "/context-limit",
             "/max-tool-iterations",
             "/artifact-threshold",
