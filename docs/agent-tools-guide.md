@@ -28,10 +28,16 @@ won't repeat that, only link to it.
   of re-deriving the task description, persona, and allowed-tools list every
   time.
 
-pcli ships three such tools by default — `explore_codebase`, `explore_files`,
-`explore_logs` — as worked examples of the pattern (see
-[`tools.md#explore_codebase-explore_files-explore_logs`](tools.md#explore_codebase-explore_files-explore_logs)).
-They're a good template to imitate.
+pcli ships seven such tools by default. `explore_codebase`, `explore_files`,
+`explore_logs` are the simplest, most uniformly read-only examples of the
+pattern (see
+[`tools.md#explore_codebase-explore_files-explore_logs`](tools.md#explore_codebase-explore_files-explore_logs))
+and the best template to imitate. `write_documentation`, `verify_computation`,
+`deep_research`, `data_analysis` are four more built-in ones for other common
+delegation patterns — including ones whose `allowed_tools` aren't uniformly
+read-only, so `plan_mode_safe` is `false` for three of the four (see
+[`tools.md#write_documentation-verify_computation-deep_research-data_analysis`](tools.md#write_documentation-verify_computation-deep_research-data_analysis)
+for the full reference and the plan-mode-safety reasoning per tool).
 
 ## Two ways to create one
 

@@ -65,6 +65,10 @@ class ToolContext:
     dispatch-time backstop (see _dispatch_tool_call) independent of whatever
     registry the caller happened to build, and by spawn_subagent to keep a
     nested subagent from being used as a plan-mode bypass."""
+    brave_search_api_key: str = ""
+    """web_search (tools/builtin/web_tools.py) uses this real, supported API
+    when configured (non-empty); otherwise it falls back to a best-effort,
+    no-API-key scrape of DuckDuckGo's HTML results page."""
 
 
 @dataclass

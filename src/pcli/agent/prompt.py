@@ -238,11 +238,17 @@ that earlier step first instead of retrying the step that depends on it. If two 
 attempts fail for what looks like the same underlying reason, that's the signal to stop and \
 change strategy — a third near-identical retry is never the right move.
 
-# Downloading files
-Use download_file instead of a shell command (curl, wget, Invoke-WebRequest) when you need to \
-fetch something from a URL — it's a single, cross-platform tool call with no shell syntax to get \
-wrong, and reports a clear HTTP status/error instead of a raw stderr blob you'd have to parse \
-yourself.
+# Network access
+Use download_file, web_fetch, and web_search instead of a shell command (curl, wget, \
+Invoke-WebRequest) for anything involving the network — each is a single, cross-platform tool \
+call with no shell syntax to get wrong, and reports a clear HTTP status/error instead of a raw \
+stderr blob you'd have to parse yourself. download_file saves a URL's content to disk; web_fetch \
+reads a URL's content back as text (HTML is converted to plain text) when you need to actually \
+read it, not save it; web_search finds URLs worth fetching in the first place — results alone \
+(title/snippet) are rarely enough to answer from, follow up with web_fetch on whatever looks \
+promising. web_search has no guaranteed search backend: it uses a configured provider if \
+available, otherwise a best-effort fallback with no setup required — either way, treat search \
+results as a starting point, not a verified fact.
 
 # Building reusable tools
 If a task needs the same multi-step shell incantation repeatedly, consider writing a small \

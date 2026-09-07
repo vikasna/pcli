@@ -17,7 +17,16 @@ from pcli.permissions.guardrails import GuardrailsConfig
 from pcli.permissions.manager import PermissionManager
 from pcli.permissions.policy import PermissionPolicy
 from pcli.sandbox.base import ExecRequest, ExecResult, Sandbox, SandboxCapabilities
-from pcli.tools.agent_tools import EXPLORE_CODEBASE, EXPLORE_FILES, EXPLORE_LOGS, make_agent_tool
+from pcli.tools.agent_tools import (
+    DATA_ANALYSIS,
+    DEEP_RESEARCH,
+    EXPLORE_CODEBASE,
+    EXPLORE_FILES,
+    EXPLORE_LOGS,
+    VERIFY_COMPUTATION,
+    WRITE_DOCUMENTATION,
+    make_agent_tool,
+)
 from pcli.tools.base import ToolContext, ToolResult, ToolSpec
 from pcli.tools.registry import ToolRegistry, build_default_registry
 
@@ -274,3 +283,115 @@ def test_agent_tools_always_need_permission():
     assert EXPLORE_CODEBASE.needs_permission is True
     unsafe_tool = make_agent_tool("t", "desc", "persona", ["echo_a"], plan_mode_safe=False)
     assert unsafe_tool.needs_permission is True
+
+
+# --- write_documentation / verify_computation / deep_research / data_analysis ---
+
+
+async def _captured_sub_registry(tmp_path: Path, tool: ToolSpec, arguments: dict) -> ToolRegistry:
+    """Runs `tool` through a real handler call with a spied AgentLoop.__init__
+    to capture the actual tool_registry the nested subagent was restricted
+    to — same pattern as the explore_* restriction tests above, generalized
+    so each new tool doesn't need to repeat the spy setup/teardown."""
+    captured_registries: list[ToolRegistry] = []
+    original_init = AgentLoop.__init__
+
+    def _spying_init(self, *args, **kwargs):
+        captured_registries.append(kwargs.get("tool_registry"))
+        return original_init(self, *args, **kwargs)
+
+    import pcli.tools.agent_tools as agent_tools_module
+
+    agent_tools_module.AgentLoop.__init__ = _spying_init  # type: ignore[method-assign]
+
+    try:
+        with respx.mock:
+            respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+                return_value=_text_response("done")
+            )
+            permission_manager = PermissionManager(
+                guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+            )
+            registry = build_default_registry()
+
+            async with GatewayClient(_settings()) as client:
+                ctx = _make_ctx(tmp_path, registry, client, permission_manager)
+                await tool.handler(arguments, ctx)
+    finally:
+        agent_tools_module.AgentLoop.__init__ = original_init  # type: ignore[method-assign]
+
+    return captured_registries[0]
+
+
+@pytest.mark.asyncio
+async def test_write_documentation_is_restricted_to_its_documented_allowed_set(tmp_path: Path):
+    sub_registry = await _captured_sub_registry(
+        tmp_path, WRITE_DOCUMENTATION, {"query": "document the new feature"}
+    )
+    for name in ("read_file", "list_dir", "glob_search", "grep", "write_file", "edit_file"):
+        assert name in sub_registry
+    for name in ("run_shell", "call_python", "web_search", "web_fetch", "spawn_subagent"):
+        assert name not in sub_registry
+
+
+@pytest.mark.asyncio
+async def test_verify_computation_is_restricted_to_its_documented_allowed_set(tmp_path: Path):
+    sub_registry = await _captured_sub_registry(
+        tmp_path, VERIFY_COMPUTATION, {"query": "check this sum"}
+    )
+    for name in ("read_file", "write_file", "call_python", "run_shell"):
+        assert name in sub_registry
+    for name in ("edit_file", "web_search", "web_fetch", "spawn_subagent"):
+        assert name not in sub_registry
+
+
+@pytest.mark.asyncio
+async def test_deep_research_is_restricted_to_its_documented_allowed_set(tmp_path: Path):
+    sub_registry = await _captured_sub_registry(tmp_path, DEEP_RESEARCH, {"query": "investigate this"})
+    for name in (
+        "read_file",
+        "list_dir",
+        "glob_search",
+        "grep",
+        "search_python",
+        "inspect_python_module",
+        "run_shell",
+        "web_search",
+        "web_fetch",
+    ):
+        assert name in sub_registry
+    for name in ("write_file", "edit_file", "spawn_subagent"):
+        assert name not in sub_registry
+
+
+@pytest.mark.asyncio
+async def test_data_analysis_is_restricted_to_its_documented_allowed_set(tmp_path: Path):
+    sub_registry = await _captured_sub_registry(
+        tmp_path, DATA_ANALYSIS, {"query": "analyze this dataset"}
+    )
+    for name in ("read_file", "list_dir", "glob_search", "call_python", "run_shell", "write_file"):
+        assert name in sub_registry
+    for name in ("edit_file", "web_search", "web_fetch", "spawn_subagent"):
+        assert name not in sub_registry
+
+
+def test_new_agent_tools_are_present_in_build_default_registry():
+    registry = build_default_registry()
+    assert "write_documentation" in registry
+    assert "verify_computation" in registry
+    assert "deep_research" in registry
+    assert "data_analysis" in registry
+
+
+def test_new_agent_tools_plan_mode_safety_matches_their_primary_purpose():
+    # deep_research is primarily investigation and degrades gracefully
+    # (loses run_shell) rather than becoming useless while plan mode
+    # restricts write/execute tools — see make_agent_tool's _allowed(),
+    # which filters per-tool regardless of the wrapper's own flag.
+    assert DEEP_RESEARCH.plan_mode_safe is True
+    # These three need write_file/run_shell/call_python to do anything
+    # useful at all, so they're unavailable during plan mode entirely,
+    # same as write_file/edit_file/run_shell themselves.
+    assert WRITE_DOCUMENTATION.plan_mode_safe is False
+    assert VERIFY_COMPUTATION.plan_mode_safe is False
+    assert DATA_ANALYSIS.plan_mode_safe is False

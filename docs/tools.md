@@ -175,11 +175,85 @@ the whole file into memory) and follows redirects automatically
     it may take several minutes. Suggestion for a connection error: check
     the URL is reachable and correctly formed, and that network access is
     actually available from this environment.
-- The system prompt's `# Downloading files` section
-  (`src/pcli/agent/prompt.py`) tells the model to prefer `download_file`
-  over a shell-based download: one cross-platform tool call with no shell
-  syntax to get wrong, reporting a clear HTTP status/error instead of a raw
-  stderr blob to parse.
+- The system prompt's `# Network access` section (`src/pcli/agent/prompt.py`)
+  tells the model to prefer `download_file`, `web_fetch`, and `web_search`
+  over a shell-based download/fetch (`curl`, `wget`, `Invoke-WebRequest`) for
+  anything involving the network: each is a single, cross-platform tool call
+  with no shell syntax to get wrong, reporting a clear HTTP status/error
+  instead of a raw stderr blob to parse — see [`web_fetch`](#web_fetch) and
+  [`web_search`](#web_search) above for the other two.
+
+## web_fetch
+
+Fetches a URL and returns its readable text content. Built on `httpx` (no new
+dependency) plus a small stdlib `html.parser.HTMLParser`-based extractor
+(`_TextExtractor`, `src/pcli/tools/builtin/web_tools.py`) — drops
+`script`/`style`/`noscript` content, inserts a newline at block-level tag
+boundaries (`p`, `br`, `div`, `li`, `tr`, `h1`-`h6`, `section`, `article`), and
+keeps everything else. This is deliberately best-effort, not a
+readability-style boilerplate remover — nav/footer/ad text stays in.
+Along with `web_search` below, this is one of pcli's only two tools with real
+internet access; every other tool is local (filesystem, shell, or the
+configured LLM gateway itself).
+
+- **Parameters:** `url` (string, required), `max_chars` (integer, optional,
+  default 8,000 — output longer than this is truncated with an appended
+  `[...truncated to N chars...]` note).
+- **Permission:** required. `risk_description`: "Fetches content from a URL
+  over the network." `plan_mode_safe=True` — it's read-only (no local
+  mutation), so it stays available while [plan mode](tui-guide.md#plan-mode)
+  is active.
+- **Content-type handling:** an HTML response (`"html"` in the `content-type`
+  header) is run through `_html_to_text`; `text/*` or `application/json` is
+  returned as-is; anything else (binary content types) is rejected with a
+  clean error naming the content type and suggesting `download_file` instead
+  if the content is actually needed on disk.
+- **5,000,000-byte safety cap** (`_MAX_FETCH_BYTES`) on the raw response body
+  — if exceeded, the fetch is rejected (not truncated) with a suggestion that
+  this looks like a large binary/media file and to use `download_file`
+  instead if it's genuinely needed on disk.
+- **Failure handling, each with an appended `[pcli] Suggestion: ...`**
+  (`src/pcli/tools/builtin/web_tools.py`): a timeout (20s,
+  `_DEFAULT_TIMEOUT_S`) suggests retrying or using another source; any other
+  `httpx.HTTPError` suggests checking the URL and that network access is
+  actually available; an HTTP status `>= 400` suggests double-checking the
+  URL is correct and still live, since retrying an identical 404/403 won't
+  help.
+
+## web_search
+
+Searches the web and returns a short list of results (title, URL, snippet).
+Along with `web_fetch` above, this is one of pcli's only two tools with real
+internet access.
+
+Uses the [Brave Search API](https://api.search.brave.com/res/v1/web/search)
+when `Settings.brave_search_api_key` is configured (non-empty) — see
+[`configuration.md`](configuration.md#settings-fields). Otherwise it falls
+back to scraping DuckDuckGo's server-rendered HTML results page
+(`https://html.duckduckgo.com/html/`, POST with a hardcoded browser-like
+`User-Agent` — confirmed necessary directly against a real response: httpx's
+default UA gets a soft-blocked empty/homepage response instead of results).
+This fallback needs no API key or setup and works out of the box, but is
+explicitly documented in the source as best-effort and fragile — it depends
+on DuckDuckGo's current HTML markup (organic results are parsed as
+`<div class="web-result">` containing `<a class="result__a">` for
+title+URL and `<a class="result__snippet">` for the snippet; `result--ad`
+divs are skipped) and could break if that markup changes. Treat results from
+either backend as a starting point, not verified fact — follow up with
+`web_fetch` on whatever looks promising before answering from a
+title/snippet alone.
+
+- **Parameters:** `query` (string, required), `max_results` (integer,
+  optional, default 5).
+- **Permission:** required. `risk_description`: "Sends a search query to a
+  third-party service over the network." `plan_mode_safe=True`, same reasoning
+  as `web_fetch` — read-only, no local mutation.
+- **Failure handling** (`src/pcli/tools/builtin/web_tools.py`): a timeout
+  (20s) suggests retrying or narrowing the query; any other `httpx.HTTPError`
+  suggests checking network access, and — if this keeps failing — that the
+  no-API-key DuckDuckGo fallback may be getting blocked, pointing at
+  configuring `brave_search_api_key` for a real, supported search API
+  instead.
 
 ## diff_files
 
@@ -554,6 +628,65 @@ task is the one most tempted to reach for a shell command.
 New personas following this same shape can be defined at runtime by the
 model itself via `register_agent_tool` (above), or by extending
 `build_default_registry()` directly for ones that should always be present.
+
+## write_documentation, verify_computation, deep_research, data_analysis
+
+Four more ready-made agent tools registered by default in
+`build_default_registry()`, built on the same `make_agent_tool` mechanism as
+`explore_codebase`/`explore_files`/`explore_logs` above. Same shape: a single
+`query` argument, `needs_permission=True`, and the same live-progress
+reporting to `ActivityTracker`. Unlike the three `explore_*` tools, these are
+*not* uniformly read-only — the `plan_mode_safe` value is chosen per tool
+based on whether its allowed-tool list is itself entirely read-only.
+
+**`write_documentation`** — delegates writing or updating documentation for a
+code change to a subagent that reads the existing docs' style and the actual
+code before writing, so the result matches the project's conventions instead
+of a generic template. Key persona instruction: read the existing
+documentation and the actual code being documented before writing a single
+line, verifying claims (signatures, flags, paths, defaults) against the real
+code rather than paraphrasing what it was told changed. Allowed tools:
+`read_file`, `list_dir`, `glob_search`, `grep`, `write_file`, `edit_file`.
+`plan_mode_safe=False` — it writes to disk, so the whole tool is unavailable
+while [plan mode](tui-guide.md#plan-mode) is active, same as `write_file`
+itself.
+
+**`verify_computation`** — delegates checking a calculation, algorithm, or
+numeric claim to a subagent that verifies it by writing and running code
+rather than reasoning about it in text. Key persona instruction: never trust
+mental arithmetic or reasoning-in-text as a final answer — write and run code
+to compute or check every numeric claim, and state a plain verdict (correct,
+incorrect, or partially correct) showing the computed value next to the
+claimed one. Allowed tools: `read_file`, `write_file`, `call_python`,
+`run_shell`. `plan_mode_safe=False`.
+
+**`deep_research`** — delegates a question that needs thorough investigation
+— local (files, logs, code, git history via `run_shell`) and/or web
+(`web_search`, `web_fetch`) — to a subagent that cross-checks claims against
+multiple sources and cites them rather than giving a single-source shallow
+answer. Key persona instruction: start with short, broad queries and
+progressively narrow rather than committing to one angle immediately; never
+state a fact found in only one place as settled — note it as single-sourced
+or find a second independent source, and say so explicitly if sources
+disagree. Allowed tools: `read_file`, `list_dir`, `glob_search`, `grep`,
+`search_python`, `inspect_python_module`, `run_shell`, `web_search`,
+`web_fetch`. `plan_mode_safe=True` — even though `run_shell` is in its
+allowed list, the plan-mode filtering in `make_agent_tool` (see
+`register_agent_tool` above) strips non-`plan_mode_safe` tools like
+`run_shell` from its *effective* set while plan mode is active, so the tool
+itself stays callable and still useful (read-only exploration plus web
+tools) rather than being blocked outright.
+
+**`data_analysis`** — delegates exploring or analyzing a local dataset
+(CSV/JSON/etc.) to a subagent that computes real statistics via code rather
+than guessing at what's in the data, and flags data-quality issues as a
+matter of course. Key persona instruction: before characterizing the data in
+any way, load and inspect it programmatically (shape, dtypes, null rates,
+real computed aggregates) rather than guessing from a glance at a few rows,
+and state assumptions and data-quality issues (nulls, outliers, duplicates,
+inconsistent types, unexpected cardinality) even if not specifically asked.
+Allowed tools: `read_file`, `list_dir`, `glob_search`, `call_python`,
+`run_shell`, `write_file`. `plan_mode_safe=False`.
 
 ## write_todos
 

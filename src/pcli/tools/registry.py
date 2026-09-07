@@ -46,7 +46,15 @@ class ToolRegistry:
 
 
 def build_default_registry() -> ToolRegistry:
-    from pcli.tools.agent_tools import EXPLORE_CODEBASE, EXPLORE_FILES, EXPLORE_LOGS
+    from pcli.tools.agent_tools import (
+        DATA_ANALYSIS,
+        DEEP_RESEARCH,
+        EXPLORE_CODEBASE,
+        EXPLORE_FILES,
+        EXPLORE_LOGS,
+        VERIFY_COMPUTATION,
+        WRITE_DOCUMENTATION,
+    )
     from pcli.tools.builtin.agent_tool_register_tool import REGISTER_AGENT_TOOL
     from pcli.tools.builtin.artifact_tool import FETCH_ARTIFACT
     from pcli.tools.builtin.ask_tool import ASK_USER_QUESTION
@@ -64,6 +72,7 @@ def build_default_registry() -> ToolRegistry:
     from pcli.tools.builtin.subagent_tool import SPAWN_SUBAGENT
     from pcli.tools.builtin.todo_tool import WRITE_TODOS
     from pcli.tools.builtin.toolbox_register_tool import REGISTER_TOOLBOX_TOOL
+    from pcli.tools.builtin.web_tools import WEB_FETCH, WEB_SEARCH
     from pcli.tools.pydiscovery.invoke import CALL_PYTHON
     from pcli.tools.pydiscovery.search import INSPECT_PYTHON_MODULE, SEARCH_PYTHON
 
@@ -76,6 +85,8 @@ def build_default_registry() -> ToolRegistry:
         GLOB_SEARCH,
         GREP,
         DOWNLOAD_FILE,
+        WEB_FETCH,
+        WEB_SEARCH,
         DIFF_FILES,
         APPLY_PATCH,
         RUN_SHELL,
@@ -94,6 +105,10 @@ def build_default_registry() -> ToolRegistry:
         EXPLORE_CODEBASE,
         EXPLORE_FILES,
         EXPLORE_LOGS,
+        WRITE_DOCUMENTATION,
+        VERIFY_COMPUTATION,
+        DEEP_RESEARCH,
+        DATA_ANALYSIS,
         REGISTER_AGENT_TOOL,
     ):
         registry.register(tool)

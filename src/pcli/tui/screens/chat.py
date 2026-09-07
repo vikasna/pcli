@@ -435,6 +435,7 @@ class ChatScreen(Screen):
             permission_manager=self._permission_manager,
             ask=self._current_ask,
             ask_question=self._current_ask_question,
+            brave_search_api_key=self._settings.brave_search_api_key,
             max_tool_iterations=self._effective_max_tool_iterations(),
             session=self._session,
             artifact_store=self._artifact_store,

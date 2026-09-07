@@ -470,13 +470,17 @@ Allowed in plan mode (every tool with `plan_mode_safe=True`,
 `src/pcli/tools/base.py`'s `ToolSpec.plan_mode_safe` field): `read_file`,
 `list_dir`, `glob_search`, `grep`, `search_python`, `inspect_python_module`,
 `fetch_artifact`, `read_background_output`, `write_todos`, `record_decision`,
-`spawn_subagent`, plus the registered agent tools (`explore_codebase`,
-`explore_files`, `explore_logs`, and any `register_agent_tool`-defined ones
-marked `plan_mode_safe`) — see [`tools.md`](tools.md) for what each does.
-Everything else — `write_file`, `edit_file`, `run_shell`,
-`run_shell_background`, `stop_background_process`, `call_python`,
-`register_toolbox_tool`, `register_agent_tool` itself, and any
-toolbox-discovered tool — is unavailable while plan mode is active.
+`spawn_subagent`, `web_fetch`, `web_search` (pcli's only two tools with real
+internet access — read-only, no local mutation), plus the registered agent
+tools (`explore_codebase`, `explore_files`, `explore_logs`, `deep_research`,
+and any `register_agent_tool`-defined ones marked `plan_mode_safe`) — see
+[`tools.md`](tools.md) for what each does. Everything else — `write_file`,
+`edit_file`, `run_shell`, `run_shell_background`, `stop_background_process`,
+`call_python`, `register_toolbox_tool`, `register_agent_tool` itself,
+`write_documentation`, `verify_computation`, `data_analysis` (all three need
+write/execute tools plan mode blocks entirely, so the whole tool is
+unavailable), and any toolbox-discovered tool — is unavailable while plan
+mode is active.
 
 Three independent layers enforce this, deliberately redundant (defense in
 depth) rather than relying on any single one:

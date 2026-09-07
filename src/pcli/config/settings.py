@@ -62,6 +62,14 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("PCLI_GATEWAY_API_KEY", "gateway_api_key"),
         repr=False,
     )
+    brave_search_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("PCLI_BRAVE_SEARCH_API_KEY", "brave_search_api_key"),
+        repr=False,
+        description="Optional Brave Search API key for the web_search tool. When unset, "
+        "web_search falls back to a best-effort, no-API-key scrape of DuckDuckGo's HTML "
+        "results page instead — works out of the box but is inherently more fragile.",
+    )
     gateway_auth_header: str = Field(
         default="Authorization",
         validation_alias=AliasChoices("PCLI_GATEWAY_AUTH_HEADER", "gateway_auth_header"),
