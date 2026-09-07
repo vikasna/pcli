@@ -583,6 +583,37 @@ more than one `in_progress` item at a time.
   superficially similar task and redid already-finished work. Also called out
   in the system prompt's `# Tracking work` section (`src/pcli/agent/prompt.py`).
 
+## ask_user_question
+
+Lets the model pause a turn to ask the user something directly — a genuine
+ambiguity it can't safely resolve itself, or a choice between approaches only
+they can make — rather than guessing or leaving a question in plain response
+text and hoping the user notices and replies in their next message. Mirrors
+opencode's "ask" tool. The system prompt's `# Asking questions` section
+(`src/pcli/agent/prompt.py`) gives the model guidance on when this is
+actually warranted (genuine ambiguity, a choice only the user can make,
+unclear scope before a destructive action) versus when it's not (anything
+inferable, verifiable, or reasonable to assume-and-state) — it's explicitly
+framed as not a first resort, since asking blocks the whole turn and costs
+the user a context switch.
+
+- **Parameters:** `question` (string, required), `options` (array of
+  strings, optional — a short list of suggested answers, shown as quick
+  choices; the user can still type something else regardless of whether
+  options are given).
+- **Permission:** not required (`needs_permission=False`) — it's read-only,
+  no side effects. `plan_mode_safe=True`, so it stays available while
+  [plan mode](tui-guide.md#plan-mode) is active, since asking a clarifying
+  question is itself investigation, not a change.
+- **No UI available** (`ctx.ask_question is None` — e.g. headless/local-api
+  usage with no TUI to show a modal in): returns a clean error instead of
+  blocking forever, telling the model to state its assumption plainly and
+  proceed instead (`src/pcli/tools/builtin/ask_tool.py`).
+- **TUI:** implemented by `AskQuestionModal`
+  (`src/pcli/tui/screens/ask_question_modal.py`) — see
+  [`tui-guide.md`](tui-guide.md#ask-question-modal) for how it renders and
+  blocks the turn until answered.
+
 ## record_decision
 
 Logs one consequential decision the model made, with its reasoning, to the

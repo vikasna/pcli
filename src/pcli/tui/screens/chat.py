@@ -45,9 +45,10 @@ from pcli.session.models import Message, Session, ToolInvocation
 from pcli.session.store import SessionStore
 from pcli.tools.agent_tools_store import load_persisted_agent_tools
 from pcli.tools.artifacts import SessionArtifactStore
-from pcli.tools.base import ToolContext
+from pcli.tools.base import AskQuestionCallback, ToolContext
 from pcli.tools.registry import ToolRegistry, build_default_registry
 from pcli.tools.toolbox.manager import ToolboxDiscoveryError, ToolboxManager
+from pcli.tui.screens.ask_question_modal import ask_question_via_modal
 from pcli.tui.screens.permission_modal import ask_via_modal
 from pcli.tui.shell_passthrough import run_passthrough_command
 from pcli.tui.widgets.chat_input import ChatInput
@@ -185,6 +186,7 @@ class ChatScreen(Screen):
         self._tool_registry: ToolRegistry | None = None
         self._toolbox_manager: ToolboxManager | None = None
         self._current_ask: AskCallback | None = None
+        self._current_ask_question: AskQuestionCallback | None = None
         self._cwd = Path.cwd()
         self._activity = ActivityTracker()
         # Lets a message submitted while a turn is already running be
@@ -432,6 +434,7 @@ class ChatScreen(Screen):
             tool_registry=self._effective_tool_registry(),
             permission_manager=self._permission_manager,
             ask=self._current_ask,
+            ask_question=self._current_ask_question,
             max_tool_iterations=self._effective_max_tool_iterations(),
             session=self._session,
             artifact_store=self._artifact_store,
@@ -1289,7 +1292,11 @@ class ChatScreen(Screen):
         async def ask(tool_name: str, arguments: dict, risk_description: str):
             return await ask_via_modal(self.app, tool_name, arguments, risk_description)
 
+        async def ask_question(question: str, options: list[str] | None) -> str:
+            return await ask_question_via_modal(self.app, question, options)
+
         self._current_ask = ask
+        self._current_ask_question = ask_question
         status_bar.busy = True
 
         # Reasoning models stream their chain-of-thought under a channel

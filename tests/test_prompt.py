@@ -40,6 +40,16 @@ def test_prompt_instructs_surfacing_assumptions_and_limiting_scope():
     assert "clean up" in section
 
 
+def test_prompt_instructs_when_and_when_not_to_use_ask_user_question():
+    assert "# Asking questions" in BASE_SYSTEM_PROMPT
+    section_start = BASE_SYSTEM_PROMPT.index("# Asking questions")
+    section_end = BASE_SYSTEM_PROMPT.index("# Verifying your own work")
+    section = BASE_SYSTEM_PROMPT[section_start:section_end]
+    assert "ask_user_question" in section
+    assert "not a first resort" in section
+    assert "options" in section
+
+
 def test_prompt_instructs_verifying_work_before_declaring_done():
     assert "# Verifying your own work" in BASE_SYSTEM_PROMPT
     section_start = BASE_SYSTEM_PROMPT.index("# Verifying your own work")

@@ -98,17 +98,31 @@ Screen {
     margin: 0 1 1 1;
 }
 
-PermissionPromptModal, ImportPathModal, ModelListScreen {
+PermissionPromptModal, ImportPathModal, ModelListScreen, AskQuestionModal {
     align: center middle;
 }
 
-#permission-modal, #import-modal, #model-list-modal {
+#permission-modal, #import-modal, #model-list-modal, #ask-question-modal {
     width: 70%;
     height: auto;
     max-height: 80%;
     background: $panel;
     border: thick $primary;
     padding: 1 2;
+}
+
+#ask-question-options {
+    height: auto;
+    margin-top: 1;
+}
+
+#ask-question-options Button {
+    width: 100%;
+    margin-bottom: 1;
+}
+
+#ask-question-input {
+    margin-top: 1;
 }
 
 #import-modal Button {

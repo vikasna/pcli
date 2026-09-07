@@ -21,6 +21,9 @@ if TYPE_CHECKING:
     from pcli.tools.toolbox.manager import ToolboxManager
 
 
+AskQuestionCallback = Callable[[str, list[str] | None], Awaitable[str]]
+
+
 @dataclass
 class ToolContext:
     sandbox: Sandbox
@@ -36,6 +39,12 @@ class ToolContext:
     tool_registry: ToolRegistry | None = None
     permission_manager: PermissionManager | None = None
     ask: AskCallback | None = None
+    ask_question: AskQuestionCallback | None = None
+    """Callback for ask_user_question (tools/builtin/ask_tool.py) to pause a
+    turn and ask the user something directly - see AskQuestionModal. Kept
+    separate from `ask` (permission decisions only, a fixed allow/deny/
+    remember-scope shape) since this is a free-form question/answer, not a
+    permission choice."""
     max_tool_iterations: int | None = 25
     """None means unlimited (local-api mode)."""
     subagent_depth: int = 0

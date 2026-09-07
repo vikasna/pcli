@@ -705,6 +705,30 @@ decision flow (guardrails still apply and can override an "allow"), including
 the other reason strings the model sees for a guardrail, rate-limit, or
 remembered-grant denial.
 
+## Ask-question modal
+
+The `ask_user_question` tool ([`tools.md`](tools.md#ask_user_question)) has
+its own modal, distinct from the permission prompt above: `AskQuestionModal`
+(`src/pcli/tui/screens/ask_question_modal.py`) pops up showing the model's
+question text, and blocks the turn until you answer — same "pauses execution
+until you respond" shape as `PermissionPromptModal`, but for a free-form
+question/answer rather than an allow/deny/remember decision. Unlike a
+permission-gated tool, this one is read-only with no side effects
+(`needs_permission=False`), so there's no risk description or Allow/Deny
+choice to make — you're just answering, not authorizing anything.
+
+If the model supplied `options`, one button is rendered per suggested
+answer, clicking it dismisses the modal with that value. A free-text input
+field is *always* shown too, regardless of whether options are given, so a
+suggested option never forecloses a different typed answer — typing
+something and pressing Enter dismisses the modal with that text instead.
+Wired into `ChatScreen` the same way the permission-prompt `ask` closure is:
+an `ask_question` closure is created per turn in `_run_one_turn`, stored as
+`self._current_ask_question`, and threaded into the tool call via
+`ToolContext.ask_question` (`src/pcli/tools/base.py`) — a separate callback
+from `ToolContext.ask` (permission decisions only, a fixed allow/deny/
+remember-scope shape), since this one is a free-form question/answer.
+
 ## Tool calls and results
 
 Before a call's result is known, `ChatScreen._run_one_turn` (on a

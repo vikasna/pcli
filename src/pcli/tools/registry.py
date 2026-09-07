@@ -49,6 +49,7 @@ def build_default_registry() -> ToolRegistry:
     from pcli.tools.agent_tools import EXPLORE_CODEBASE, EXPLORE_FILES, EXPLORE_LOGS
     from pcli.tools.builtin.agent_tool_register_tool import REGISTER_AGENT_TOOL
     from pcli.tools.builtin.artifact_tool import FETCH_ARTIFACT
+    from pcli.tools.builtin.ask_tool import ASK_USER_QUESTION
     from pcli.tools.builtin.decision_tool import RECORD_DECISION
     from pcli.tools.builtin.diff_tools import APPLY_PATCH, DIFF_FILES
     from pcli.tools.builtin.fs_tools import EDIT_FILE, GLOB_SEARCH, LIST_DIR, READ_FILE, WRITE_FILE
@@ -85,6 +86,7 @@ def build_default_registry() -> ToolRegistry:
         INSPECT_PYTHON_MODULE,
         CALL_PYTHON,
         SPAWN_SUBAGENT,
+        ASK_USER_QUESTION,
         WRITE_TODOS,
         RECORD_DECISION,
         FETCH_ARTIFACT,
