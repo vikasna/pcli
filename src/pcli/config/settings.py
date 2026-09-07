@@ -155,6 +155,26 @@ class Settings(BaseSettings):
         "startup for an unrecognized model; set to false to skip this and always fall back "
         "to the assumed default (correctable via /context-limit either way).",
     )
+    max_response_tokens_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "PCLI_MAX_RESPONSE_TOKENS_ENABLED", "max_response_tokens_enabled"
+        ),
+        description="Whether pcli sends a dynamic max_tokens cap with each request (see "
+        "compute_max_response_tokens in cost/context.py), leaving max_response_tokens_"
+        "safety_margin tokens of headroom below the model's context limit so a single "
+        "response can't consume the entire remaining window by itself - auto-compaction "
+        "only runs between turns and can't stop a runaway response already in progress.",
+    )
+    max_response_tokens_safety_margin: int = Field(
+        default=512,
+        validation_alias=AliasChoices(
+            "PCLI_MAX_RESPONSE_TOKENS_SAFETY_MARGIN", "max_response_tokens_safety_margin"
+        ),
+        description="Tokens of headroom reserved below the model's context limit when "
+        "computing the dynamic max_tokens cap (context_limit - last_known_usage - this "
+        "margin). Ignored when max_response_tokens_enabled is false.",
+    )
 
     @classmethod
     def settings_customise_sources(

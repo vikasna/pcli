@@ -127,6 +127,37 @@ def current_context_usage(
     return ContextUsage(used_tokens=used, limit_tokens=limit_table.lookup(session.model))
 
 
+def compute_max_response_tokens(
+    session: Session, *, limit_table: ContextLimitTable | None = None, safety_margin: int
+) -> int | None:
+    """A dynamic per-request max_tokens cap: leaves just enough headroom
+    that a single response can't consume the *entire* remaining context
+    window by itself. Confirmed against a real debugged session:
+    auto-compaction only runs *between* turns, checking the fraction used
+    as of the last completed one — a turn that ended 69% full (comfortably
+    under the 80% auto-compact threshold) gave compaction no reason to run,
+    but the very next turn's own response then generated 4663 tokens in a
+    single, ~100-minute-long generation, consumed the remaining ~31% of the
+    window entirely by itself, and got hard-truncated mid-stream by the
+    gateway's own ceiling - there was no checkpoint inside that one
+    generation for compaction to catch it at. Recomputed fresh from the
+    same usage.total_tokens basis current_context_usage (and therefore
+    auto-compaction) already uses - there's no local tokenizer to do better
+    (see this module's docstring) - so it's exactly as accurate as pcli's
+    other context-usage decisions, no more, no less.
+
+    Returns None (no cap sent - the gateway's own default applies) if
+    there's no prior usage yet (first turn - nothing to compute headroom
+    from yet) or if the computed headroom is already <= 0 (essentially
+    full; sending a non-positive max_tokens would be nonsensical, and by
+    this point auto-compaction should already have intervened)."""
+    if not session.cost.turns:
+        return None
+    usage = current_context_usage(session, limit_table=limit_table)
+    available = usage.limit_tokens - usage.used_tokens - safety_margin
+    return available if available > 0 else None
+
+
 _CEILING_MIN_TOTAL_TOKENS = 2000
 _CEILING_STALL_RATIO = 0.1
 

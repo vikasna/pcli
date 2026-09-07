@@ -25,6 +25,7 @@ from pcli.agent.prompt import build_system_prompt
 from pcli.config.settings import Settings, get_settings, update_config_file
 from pcli.cost.context import (
     ContextLimitTable,
+    compute_max_response_tokens,
     current_context_usage,
     looks_like_context_ceiling,
     set_model_context_limit,
@@ -113,6 +114,10 @@ tool calls per minute, across the whole session (0 = unlimited; ignored \
 recent turns' tool results stay verbatim before older ones are shrunk to \
 a short placeholder (archived, retrievable via fetch_artifact) to save \
 context — no LLM call involved, runs every turn.
+- **/max-response-tokens [off|on|margin]** — view, toggle, or set the \
+dynamic max_tokens cap sent with each request, leaving `margin` tokens of \
+headroom below the model's context limit so a single response can't \
+consume the entire remaining window by itself.
 - **/rename [name]** — view or set the current session's title (shown in \
 /sessions).
 - **/plan** — enter plan mode: the agent can only use read-only/exploration \
@@ -615,6 +620,8 @@ class ChatScreen(Screen):
             )
         elif command == "prune-tool-results":
             self._handle_prune_tool_results_command(rest or None)
+        elif command == "max-response-tokens":
+            self._handle_max_response_tokens_command(rest or None)
         elif command == "rename":
             self._handle_rename_command(rest or None)
         elif command == "plan":
@@ -874,6 +881,72 @@ class ChatScreen(Screen):
             "system",
             f"prune_tool_results_keep_recent_turns set to {keep_recent_turns}. "
             "Takes effect on the next turn.",
+        )
+
+    def _handle_max_response_tokens_command(self, arg: str | None) -> None:
+        """`/max-response-tokens [off|on|<n>]` — view/toggle/set the dynamic
+        per-request max_tokens cap (compute_max_response_tokens,
+        cost/context.py), computed fresh before every turn in
+        _run_one_turn so a single response can't consume the entire
+        remaining context window by itself — see that function's docstring
+        for the real session this fixes. No-arg reports the enabled state,
+        the configured safety margin, and what the cap would currently
+        compute to. `off`/`on` toggles max_response_tokens_enabled. A
+        positive integer sets max_response_tokens_safety_margin (tokens of
+        headroom reserved below the model's context limit) and implicitly
+        re-enables it. Persisted to config.toml, applied live."""
+        message_view = self.query_one(MessageView)
+        if not arg:
+            state = "enabled" if self._settings.max_response_tokens_enabled else "disabled"
+            current = compute_max_response_tokens(
+                self._session,
+                limit_table=self._context_limit_table,
+                safety_margin=self._settings.max_response_tokens_safety_margin,
+            )
+            current_text = f"{current:,} tokens" if current is not None else "no cap (not yet computable)"
+            message_view.add_message(
+                "system",
+                f"max_response_tokens is {state}, safety margin "
+                f"{self._settings.max_response_tokens_safety_margin:,} tokens. Would currently "
+                f"send max_tokens={current_text}. Usage: /max-response-tokens off|on|<margin>",
+            )
+            return
+
+        if arg == "off":
+            self._settings.max_response_tokens_enabled = False
+            update_config_file(max_response_tokens_enabled=False)
+            message_view.add_message("system", "max_response_tokens disabled.")
+            return
+
+        if arg == "on":
+            self._settings.max_response_tokens_enabled = True
+            update_config_file(max_response_tokens_enabled=True)
+            message_view.add_message("system", "max_response_tokens enabled.")
+            return
+
+        try:
+            safety_margin = int(arg)
+        except ValueError:
+            message_view.add_message("system", f"'{arg}' isn't 'off', 'on', or a valid number.")
+            return
+        if safety_margin <= 0:
+            message_view.add_message(
+                "system",
+                "safety margin must be greater than 0 (use /max-response-tokens off to "
+                "disable the cap entirely).",
+            )
+            return
+
+        self._settings.max_response_tokens_enabled = True
+        self._settings.max_response_tokens_safety_margin = safety_margin
+        update_config_file(
+            max_response_tokens_enabled=True,
+            max_response_tokens_safety_margin=safety_margin,
+        )
+        message_view.add_message(
+            "system",
+            f"max_response_tokens_safety_margin set to {safety_margin:,}. Takes effect on the "
+            "next turn.",
         )
 
     def _handle_rename_command(self, arg: str | None) -> None:
@@ -1237,6 +1310,17 @@ class ChatScreen(Screen):
                 had_any_reasoning = True
                 message_view.add_reasoning("".join(reasoning_parts))
                 reasoning_parts.clear()
+
+        if self._settings.max_response_tokens_enabled:
+            self._agent_loop.set_max_response_tokens(
+                compute_max_response_tokens(
+                    self._session,
+                    limit_table=self._context_limit_table,
+                    safety_margin=self._settings.max_response_tokens_safety_margin,
+                )
+            )
+        else:
+            self._agent_loop.set_max_response_tokens(None)
 
         try:
             chat_messages = [m.to_chat_message() for m in self._session.messages]

@@ -52,6 +52,8 @@ to `table_key` when reading back, so both shapes round-trip.
 | `prune_tool_results_enabled` | `PCLI_PRUNE_TOOL_RESULTS_ENABLED` | *(none)* | `prune_tool_results_enabled` | `true` | Whether old tool-call results are automatically shrunk to a compact placeholder to save context, well before auto-compaction's own threshold would trigger; see [Tool-result pruning](#tool-result-pruning) below. |
 | `prune_tool_results_keep_recent_turns` | `PCLI_PRUNE_TOOL_RESULTS_KEEP_RECENT_TURNS` | *(none)* | `prune_tool_results_keep_recent_turns` | `1` | Number of most-recent turns whose tool results are left untouched (verbatim); older ones are archived and replaced with a short placeholder. Deliberately tighter than `auto_compact_keep_recent_turns`'s default of `2`. |
 | `context_limit_auto_detect_enabled` | `PCLI_CONTEXT_LIMIT_AUTO_DETECT_ENABLED` | *(none)* | `context_limit_auto_detect_enabled` | `true` | Whether pcli tries to query the gateway directly for a model's real context window (see [Automatic context-limit detection](#automatic-context-limit-detection) below) when it has no built-in or user-configured entry for it yet. A handful of extra, short-timeout requests on startup for an unrecognized model; set to `false` to skip this and always fall back to the assumed default (still correctable either way via `/context-limit`). |
+| `max_response_tokens_enabled` | `PCLI_MAX_RESPONSE_TOKENS_ENABLED` | *(none)* | `max_response_tokens_enabled` | `true` | Whether pcli sends a dynamic `max_tokens` cap with each request, leaving `max_response_tokens_safety_margin` tokens of headroom below the model's context limit so a single response can't consume the entire remaining window by itself; see [Dynamic response cap](#dynamic-response-cap) below. |
+| `max_response_tokens_safety_margin` | `PCLI_MAX_RESPONSE_TOKENS_SAFETY_MARGIN` | *(none)* | `max_response_tokens_safety_margin` | `512` | Tokens of headroom reserved below the model's context limit when computing the dynamic `max_tokens` cap (`context_limit - last_known_used_tokens - this margin`). Ignored when `max_response_tokens_enabled` is `false`. |
 
 `Settings.is_configured()` returns `bool(gateway_base_url)` — the API key is
 deliberately *not* required, so a blank key never blocks startup against an
@@ -153,6 +155,59 @@ Unlike the three auto-compaction settings above, both pruning settings *are*
 persisted via a slash command: [`/prune-tool-results`](tui-guide.md#slash-commands)
 writes them to `config.toml` through `update_config_file` and applies them
 live on the very next turn, no restart needed.
+
+## Dynamic response cap
+
+`max_response_tokens_enabled` and `max_response_tokens_safety_margin` (table
+above) control a third context-safeguard, implemented as
+`compute_max_response_tokens` in `cost/context.py` and applied from
+`ChatScreen._run_one_turn` (see
+[`tui-guide.md`](tui-guide.md#dynamic-response-cap) for the user-facing
+behavior and the `/max-response-tokens` command).
+
+It targets a gap the other two mechanisms can't cover: both
+[auto-compaction](#auto-compaction) and [tool-result pruning](#tool-result-pruning)
+only ever look at context usage *between* turns — after one finishes, before
+the next starts. Neither has a checkpoint *inside* a single response while
+it's still generating, so a turn that ends comfortably under
+`auto_compact_threshold` gives compaction no reason to run, and the very next
+turn's own response can then, entirely by itself, consume whatever context
+remains and get hard-truncated mid-stream by the gateway's own ceiling. This
+is a *complementary*, tighter-grained safeguard for that specific case, not a
+replacement for the other two — auto-compaction and pruning still run exactly
+as described above.
+
+If `max_response_tokens_enabled` is true (default), pcli computes, fresh
+before every turn:
+
+```
+max_tokens = context_limit - last_known_used_tokens - max_response_tokens_safety_margin
+```
+
+using the same `current_context_usage` basis (`context_limit` from
+`ContextLimitTable`, `last_known_used_tokens` from the last recorded
+`TurnCost`) that auto-compaction's own threshold check already uses — there's
+no local tokenizer to do better (see `cost/context.py`'s module docstring),
+so this is exactly as accurate as pcli's other context-usage decisions, no
+more, no less. The result is passed as `max_tokens` on the outbound request
+via `AgentLoop.set_max_response_tokens` -> `GatewayClient.chat_stream`/
+`collect`, applied to every `chat_stream` call a turn makes, including its
+own tool-call round-trips (the cap is computed once per user-submitted turn,
+not recomputed live as those round-trips add their own usage — see
+`AgentLoop.set_max_response_tokens`'s docstring for the reasoning).
+
+This is a **dynamic** cap, not a fixed number: it's recomputed every turn
+from whatever `last_known_used_tokens` is at that point, so it shrinks as the
+conversation fills up. No `max_tokens` is sent at all (the gateway's own
+default applies) in two cases: the first turn of a session, since there's no
+prior usage yet to compute headroom from, and once the computed headroom is
+already `<= 0` — by that point the window is essentially full and
+auto-compaction should already have intervened.
+
+Like the pruning settings, both settings here are persisted via a slash
+command: [`/max-response-tokens`](tui-guide.md#slash-commands) writes them to
+`config.toml` through `update_config_file` and applies them live starting
+with the very next turn.
 
 ## Context-limit detection and correction
 

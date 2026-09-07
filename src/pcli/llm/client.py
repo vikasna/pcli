@@ -115,6 +115,7 @@ class GatewayClient:
         tools: list[ToolDefinition] | None,
         stream: bool,
         temperature: float | None,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": model or self._settings.default_model,
@@ -125,6 +126,8 @@ class GatewayClient:
             payload["tools"] = [t.model_dump() for t in tools]
         if temperature is not None:
             payload["temperature"] = temperature
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         if stream:
             payload["stream_options"] = {"include_usage": True}
         return payload
@@ -136,14 +139,20 @@ class GatewayClient:
         model: str | None = None,
         tools: list[ToolDefinition] | None = None,
         temperature: float | None = None,
+        max_tokens: int | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Streams chat events. Retries (with backoff) only apply to failures that
         happen before any event has been yielded — once partial output has reached
         the caller, retrying the whole request would duplicate it, so a mid-stream
         failure is raised immediately instead.
+
+        `max_tokens`, when given, is the dynamic per-request cap computed by
+        cost/context.py's compute_max_response_tokens — see AgentLoop, which
+        is what actually sets it.
         """
         payload = self._build_payload(
-            messages, model=model, tools=tools, stream=True, temperature=temperature
+            messages, model=model, tools=tools, stream=True, temperature=temperature,
+            max_tokens=max_tokens,
         )
         max_attempts = max(1, self._settings.max_retries)
         last_error: GatewayError | None = None
@@ -186,6 +195,7 @@ class GatewayClient:
         model: str | None = None,
         tools: list[ToolDefinition] | None = None,
         temperature: float | None = None,
+        max_tokens: int | None = None,
     ) -> tuple[ChatMessage, Usage]:
         """Consumes chat_stream and returns the final assembled message + usage."""
         from pcli.llm.models import ToolCall, ToolCallCompleteEvent, UsageEvent
@@ -195,7 +205,7 @@ class GatewayClient:
         usage = Usage()
 
         async for event in self.chat_stream(
-            messages, model=model, tools=tools, temperature=temperature
+            messages, model=model, tools=tools, temperature=temperature, max_tokens=max_tokens
         ):
             if event.kind == "text_delta":
                 text_parts.append(event.text)

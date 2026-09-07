@@ -75,8 +75,11 @@ class AgentLoop:
         tool_context_factory: ToolContextFactory | None = None,
         max_tool_iterations: int | None = 25,
         artifact_threshold_chars: int = _DEFAULT_ARTIFACT_THRESHOLD_CHARS,
+        max_response_tokens: int | None = None,
     ) -> None:
-        """`max_tool_iterations=None` means unlimited (local-api mode)."""
+        """`max_tool_iterations=None` means unlimited (local-api mode).
+        `max_response_tokens=None` means no cap is sent (the gateway's own
+        default applies) — see set_max_response_tokens."""
         self._client = gateway_client
         self._model = model
         self._tool_registry = tool_registry
@@ -84,6 +87,7 @@ class AgentLoop:
         self._tool_context_factory = tool_context_factory
         self._max_tool_iterations = max_tool_iterations
         self._artifact_threshold_chars = artifact_threshold_chars
+        self._max_response_tokens = max_response_tokens
 
     @property
     def model(self) -> str | None:
@@ -101,6 +105,19 @@ class AgentLoop:
 
     def set_artifact_threshold_chars(self, artifact_threshold_chars: int) -> None:
         self._artifact_threshold_chars = artifact_threshold_chars
+
+    def set_max_response_tokens(self, max_response_tokens: int | None) -> None:
+        """The dynamic per-request max_tokens cap (cost/context.py's
+        compute_max_response_tokens) — recomputed and set by the caller
+        (ChatScreen) once per user-submitted turn, from live session usage
+        AgentLoop itself has no access to (it's deliberately decoupled from
+        sessions/TUI — see the module docstring). Applied to every
+        chat_stream call this run_turn makes, including tool-call
+        round-trips within the same turn, so it doesn't shrink further as
+        those round-trips add their own usage — a reasonable simplification
+        given the bug this fixes (a single very long response, not a
+        many-tool-call turn) rather than a live per-call recomputation."""
+        self._max_response_tokens = max_response_tokens
 
     async def run_turn(
         self, messages: list[ChatMessage], *, ask: AskCallback | None = None
@@ -133,7 +150,8 @@ class AgentLoop:
             text_parts: list[str] = []
             tool_calls_collected: list[ToolCall] = []
             async for event in self._client.chat_stream(
-                working_messages, model=self._model, tools=tools
+                working_messages, model=self._model, tools=tools,
+                max_tokens=self._max_response_tokens,
             ):
                 if event.kind == "text_delta":
                     text_parts.append(event.text)

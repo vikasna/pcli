@@ -425,6 +425,23 @@ as a normal system message instead.
   time — no restart needed. Rejects anything that isn't `off`, `on`, or a
   positive integer (zero and negative values are rejected, with a message
   pointing at `off` instead of `0` to disable pruning).
+- **`/max-response-tokens [off|on|<margin>]`** — view/toggle/set the dynamic
+  per-request `max_tokens` cap (`compute_max_response_tokens`,
+  `src/pcli/cost/context.py`, recomputed fresh before every turn by
+  `ChatScreen._run_one_turn` — see [Dynamic response
+  cap](#dynamic-response-cap) below for the full mechanism and the bug it
+  fixes). With no argument, reports whether it's enabled (default: enabled),
+  the configured `max_response_tokens_safety_margin` (default 512 tokens),
+  and what `max_tokens` value it would send right now given the session's
+  current context usage. `off` disables it (`max_response_tokens_enabled =
+  False` — no cap sent, gateway default applies); `on` re-enables it without
+  changing the margin. A positive integer (`/max-response-tokens 1000`) sets
+  `max_response_tokens_safety_margin` and implicitly re-enables it if it was
+  off. All three forms persist to `config.toml` the same way `/timeout`
+  persists `request_timeout_s`, and take effect on the next turn (the cap is
+  computed once per turn, not live mid-turn). Rejects anything that isn't
+  `off`, `on`, or a positive integer (zero and negative values are rejected,
+  with a message pointing at `off` instead of `0` to disable the cap).
 - **`/rename [name]`** — with no argument, reports the session's current
   title (`Session.derive_title()` — the value shown in `/sessions`'s list).
   With an argument (`/rename my-feature-branch`), sets `Session.title`
@@ -548,6 +565,60 @@ persist to `config.toml` and can be viewed or changed live with
 [`/prune-tool-results`](#slash-commands) (unlike auto-compaction's three
 settings, which are env-var/config.toml-only with no slash command) — see
 [`configuration.md`](configuration.md#tool-result-pruning) for the full
+settings reference.
+
+## Dynamic response cap
+
+Auto-compaction and tool-result pruning above both react to context that's
+already accumulated in history, checked *between* turns. Neither has a
+checkpoint *inside* a single response while it's still generating — so a
+turn that ends comfortably under `auto_compact_threshold` gives compaction no
+reason to run, and the very next turn's response can then, all by itself,
+generate enough tokens to consume the entire remaining context window before
+anyone gets a chance to react. That's exactly what happened in a real
+debugged session: a turn ended 69% full (under the 80% default threshold),
+and the next turn's response generated 4,663 tokens in a single ~100-minute
+generation, consumed the remaining ~31% of the window by itself, and got
+hard-truncated mid-stream by the gateway's own context ceiling.
+
+The dynamic response cap is a tighter-grained, complementary safeguard for
+exactly this gap — it does not replace auto-compaction or tool-result
+pruning, which still run as described above. If `max_response_tokens_enabled`
+is on (default: on), `ChatScreen._run_one_turn` computes a `max_tokens` cap
+fresh before every turn and applies it to the outbound request
+(`compute_max_response_tokens`, `src/pcli/cost/context.py`, plumbed through
+`AgentLoop.set_max_response_tokens` into `GatewayClient.chat_stream`/
+`collect`'s `max_tokens` parameter):
+
+```
+max_tokens = context_limit - last_known_used_tokens - max_response_tokens_safety_margin
+```
+
+- `context_limit` and `last_known_used_tokens` come from the same
+  `current_context_usage` (`cost/context.py`) that auto-compaction's own
+  threshold check already uses — pcli has no local tokenizer for a generic
+  gateway (see that module's docstring), so this is exactly as accurate as
+  pcli's other context-usage decisions, no more, no less.
+- `max_response_tokens_safety_margin` (default 512 tokens) is headroom kept
+  below the limit on top of the cap itself.
+- **It's a dynamic cap, not a fixed number** — it shrinks every turn as
+  `last_known_used_tokens` grows, tracking however much of the window is
+  actually left.
+- **Silently skipped (no `max_tokens` sent, gateway default applies) in two
+  cases**: the first turn of a session (no prior usage yet to compute
+  headroom from), or once the computed headroom is already `<= 0` (the
+  window's essentially full — by that point auto-compaction should already
+  have intervened).
+- Computed once per user-submitted turn, not recomputed live mid-turn: a
+  turn's own tool-call round-trips reuse the same cap rather than shrinking
+  it further as they add their own usage — a deliberate simplification
+  given the bug this fixes (one very long response, not a many-tool-call
+  turn). See `AgentLoop.set_max_response_tokens`'s docstring
+  (`src/pcli/agent/loop.py`) for the exact reasoning.
+
+Both settings persist to `config.toml` and can be viewed or changed live with
+[`/max-response-tokens`](#slash-commands) — see
+[`configuration.md`](configuration.md#dynamic-response-cap) for the full
 settings reference.
 
 ## Shell passthrough: `!command`, `!!command`, and `!!!command`

@@ -51,6 +51,42 @@ async def test_chat_stream_reconstructs_text_and_usage():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_chat_stream_sends_max_tokens_when_given():
+    import json
+
+    route = respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200, content=_sse({"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]})
+        )
+    )
+
+    async with GatewayClient(_settings()) as client:
+        await client.collect([ChatMessage(role="user", content="hi")], max_tokens=1234)
+
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["max_tokens"] == 1234
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_chat_stream_omits_max_tokens_when_not_given():
+    import json
+
+    route = respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200, content=_sse({"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]})
+        )
+    )
+
+    async with GatewayClient(_settings()) as client:
+        await client.collect([ChatMessage(role="user", content="hi")])
+
+    sent = json.loads(route.calls.last.request.content)
+    assert "max_tokens" not in sent
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_chat_stream_reconstructs_fragmented_tool_call():
     chunks = [
         {

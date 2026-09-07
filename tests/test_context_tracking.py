@@ -7,6 +7,7 @@ from textual.app import App, ComposeResult
 from pcli.cost.context import (
     ContextLimitTable,
     ContextUsage,
+    compute_max_response_tokens,
     current_context_usage,
     looks_like_context_ceiling,
     set_model_context_limit,
@@ -113,6 +114,69 @@ def test_current_context_usage_empty_session():
 def test_context_usage_fraction():
     usage = ContextUsage(used_tokens=64_000, limit_tokens=128_000)
     assert usage.fraction == 0.5
+
+
+# --- compute_max_response_tokens ---
+
+
+def test_compute_max_response_tokens_returns_none_for_a_fresh_session():
+    session = Session(model="gpt-4o")
+    assert compute_max_response_tokens(session, limit_table=_fixture_limits(), safety_margin=512) is None
+
+
+def test_compute_max_response_tokens_leaves_the_configured_headroom():
+    session = Session(model="claude-sonnet-exact")  # limit_tokens == 200_000
+    session.cost.turns.append(
+        TurnCost(
+            turn_index=0,
+            model="claude-sonnet-exact",
+            usage=Usage(prompt_tokens=100_000, completion_tokens=0, total_tokens=100_000),
+            cost_usd=0.0,
+        )
+    )
+    result = compute_max_response_tokens(session, limit_table=_fixture_limits(), safety_margin=1_000)
+    assert result == 200_000 - 100_000 - 1_000
+
+
+def test_compute_max_response_tokens_returns_none_once_headroom_is_exhausted():
+    """Regression coverage for the real bug this exists to fix: a session
+    that ended a turn already essentially full (or over, post-truncation)
+    must not get a non-positive/nonsensical max_tokens - by this point
+    auto-compaction should already have intervened, and the request should
+    go through with no cap rather than a broken one."""
+    session = Session(model="gpt-4o")  # limit_tokens == 128_000
+    session.cost.turns.append(
+        TurnCost(
+            turn_index=0,
+            model="gpt-4o",
+            usage=Usage(prompt_tokens=127_800, completion_tokens=100, total_tokens=127_900),
+            cost_usd=0.0,
+        )
+    )
+    result = compute_max_response_tokens(session, limit_table=_fixture_limits(), safety_margin=512)
+    assert result is None  # 128_000 - 127_900 - 512 < 0
+
+
+def test_compute_max_response_tokens_uses_only_the_last_turns_usage():
+    session = Session(model="gpt-4o")
+    session.cost.turns.append(
+        TurnCost(
+            turn_index=0,
+            model="gpt-4o",
+            usage=Usage(prompt_tokens=1_000, completion_tokens=100, total_tokens=1_100),
+            cost_usd=0.0,
+        )
+    )
+    session.cost.turns.append(
+        TurnCost(
+            turn_index=1,
+            model="gpt-4o",
+            usage=Usage(prompt_tokens=5_000, completion_tokens=200, total_tokens=5_200),
+            cost_usd=0.0,
+        )
+    )
+    result = compute_max_response_tokens(session, limit_table=_fixture_limits(), safety_margin=500)
+    assert result == 128_000 - 5_200 - 500
     assert ContextUsage(used_tokens=0, limit_tokens=0).fraction == 0.0  # no div-by-zero
 
 

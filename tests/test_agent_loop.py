@@ -745,6 +745,57 @@ async def test_set_max_tool_iterations_takes_effect_on_the_next_run_turn(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_set_max_response_tokens_takes_effect_on_the_next_run_turn(tmp_path: Path):
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    async with GatewayClient(_settings()) as client:
+        loop = AgentLoop(
+            client,
+            permission_manager=permission_manager,
+            tool_context_factory=lambda: ToolContext(
+                sandbox=FakeSandbox(), guardrails=permission_manager.guardrails, cwd=tmp_path
+            ),
+        )
+        assert loop._max_response_tokens is None
+
+        loop.set_max_response_tokens(3000)
+        assert loop._max_response_tokens == 3000
+
+        loop.set_max_response_tokens(None)
+        assert loop._max_response_tokens is None
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_run_turn_sends_the_configured_max_response_tokens(tmp_path: Path):
+    """End-to-end: the value set via set_max_response_tokens actually
+    reaches the outbound chat-completions request, the mechanism
+    compute_max_response_tokens (cost/context.py) exists to feed."""
+    route = respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=httpx.Response(200, content=_sse(*_final_text_chunks()))
+    )
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    async with GatewayClient(_settings()) as client:
+        loop = AgentLoop(
+            client,
+            permission_manager=permission_manager,
+            tool_context_factory=lambda: ToolContext(
+                sandbox=FakeSandbox(), guardrails=permission_manager.guardrails, cwd=tmp_path
+            ),
+        )
+        loop.set_max_response_tokens(2048)
+
+        async for _event in loop.run_turn([ChatMessage(role="user", content="hi")]):
+            pass
+
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["max_tokens"] == 2048
+
+
+@pytest.mark.asyncio
 async def test_set_artifact_threshold_chars_takes_effect_on_the_next_tool_result(tmp_path: Path):
     permission_manager = PermissionManager(
         guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
