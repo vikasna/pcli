@@ -36,6 +36,16 @@ from pcli.tools.registry import ToolRegistry
 
 _DEFAULT_ARTIFACT_THRESHOLD_CHARS = 4000
 _ARTIFACT_PREVIEW_CHARS = 2000
+_MAX_IDENTICAL_TOOL_CALL_REPEATS = 3
+"""Confirmed against a real debugged session: a heavily-quantized local
+model called run_shell with byte-identical arguments 12 times in a row,
+getting the exact same (unhelpful) result each time, before finally trying
+something else — the system prompt's own "Recovering from a failed tool
+call" guidance already says a third near-identical retry is never the right
+move, but that's a suggestion the model has to choose to follow. This is
+the mechanical backstop: independent of whether the model notices or
+complies, pcli itself refuses to run an exact repeat a third time — see
+_dispatch_tool_call's own repeat-tracking below."""
 
 
 class ToolStartEvent(BaseModel):
@@ -92,6 +102,11 @@ class AgentLoop:
         self._artifact_threshold_chars = artifact_threshold_chars
         self._max_response_tokens = max_response_tokens
         self._temperature = temperature
+        # Identical-tool-call repeat tracking (see _MAX_IDENTICAL_TOOL_CALL_
+        # REPEATS above) - reset at the start of every run_turn so a fresh
+        # user turn never inherits a stale count from an unrelated one.
+        self._last_tool_call_signature: str | None = None
+        self._identical_tool_call_repeats: int = 0
 
     @property
     def model(self) -> str | None:
@@ -134,6 +149,8 @@ class AgentLoop:
         working_messages = list(messages)
         original_len = len(working_messages)
         iterations = 0
+        self._last_tool_call_signature = None
+        self._identical_tool_call_repeats = 0
         tool_calls_dispatched = 0
         max_tool_calls_per_turn = (
             self._permission_manager.guardrails.max_tool_calls_per_turn
@@ -260,6 +277,32 @@ class AgentLoop:
         # session's assistant message) is left untouched, which is what lets
         # context_pruning.py re-extract it later for a pruned placeholder.
         arguments.pop("purpose", None)
+
+        # Mechanical backstop for a real observed failure mode (see
+        # _MAX_IDENTICAL_TOOL_CALL_REPEATS above): a model that keeps
+        # resending the exact same call, byte-for-byte, expecting a
+        # different result. Signature is built from the same
+        # purpose-stripped `arguments` dict everything below uses, so
+        # changing only the "purpose" explanation while repeating the same
+        # real action still counts as a repeat. Checked before the
+        # permission gate specifically so an already-decided identical call
+        # can't re-trigger another interactive prompt for the same thing.
+        signature = f"{tool.name}:{json.dumps(arguments, sort_keys=True)}"
+        if signature == self._last_tool_call_signature:
+            self._identical_tool_call_repeats += 1
+        else:
+            self._last_tool_call_signature = signature
+            self._identical_tool_call_repeats = 1
+        if self._identical_tool_call_repeats >= _MAX_IDENTICAL_TOOL_CALL_REPEATS:
+            blocked_message = (
+                f"Blocked: this exact {tool.name} call (identical arguments) has now been "
+                f"attempted {self._identical_tool_call_repeats} times in a row with no change "
+                "in between — pcli is refusing to run it again, since repeating it will not "
+                "produce a different result. Stop and change strategy: re-read the actual "
+                "output from the previous attempts above, diagnose why it didn't help, and try "
+                "something meaningfully different — or use ask_user_question if you're stuck."
+            )
+            return blocked_message, True, [], None
 
         try:
             jsonschema.validate(arguments, tool.parameters)

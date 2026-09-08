@@ -6,7 +6,10 @@ tools into every session's `ToolRegistry`. Toolbox-discovered tools
 [`toolbox-plugins.md`](toolbox-plugins.md).
 
 Every tool call goes through `AgentLoop._dispatch_tool_call`
-(`src/pcli/agent/loop.py`): JSON-schema validation of arguments, then
+(`src/pcli/agent/loop.py`): an identical-repeat check first (the same tool
+name plus the same purpose-stripped arguments, three times in a row, is
+blocked outright — see [`sandbox-and-permissions.md`](sandbox-and-permissions.md#identical-tool-call-repeat-guard)),
+then JSON-schema validation of arguments, then
 `PermissionManager.check_with_reason` (guardrails first, then remembered
 grants/ask-the-user — see [`sandbox-and-permissions.md`](sandbox-and-permissions.md)),
 then the handler runs, then the result passes through the artifact-archiving

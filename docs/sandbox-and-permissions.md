@@ -221,10 +221,70 @@ that disables these two guardrail limits; the security guardrails just above
 `max_output_bytes` are untouched by local-api mode and still enforced exactly
 as normal.
 
+## Identical tool call repeat guard
+
+Before any of the checks below even run, `AgentLoop._dispatch_tool_call`
+(`src/pcli/agent/loop.py`) has its own always-on, non-configurable backstop
+against a model that keeps resending the exact same call expecting a
+different result: `_MAX_IDENTICAL_TOOL_CALL_REPEATS = 3` (a module-level
+constant, not a guardrails.toml setting — there's no command or config
+option for this, by design, the same way `max_tool_calls_per_turn`'s check
+nearby in the same flow is unconditionally always-on regardless of its
+configurable threshold).
+
+- **Signature:** `f"{tool.name}:{json.dumps(arguments, sort_keys=True)}"`,
+  built from the same purpose-stripped `arguments` dict (see [The `purpose`
+  argument](tools.md#the-purpose-argument)) used for everything else in
+  `_dispatch_tool_call` — `sort_keys=True` means key ordering never affects
+  the comparison, and stripping `purpose` first means a model that only
+  varies its one-sentence explanation while repeating the same real call
+  still counts as a repeat.
+- **Counting:** compared against the signature of the *immediately preceding*
+  tool call. A match increments a running counter; a mismatch (a different
+  tool, or the same tool with genuinely different arguments) resets the
+  counter to 1 for the new signature. Once the counter reaches 3 — i.e. the
+  third identical call in a row — `_dispatch_tool_call` returns a hard
+  `is_error=True` result instead of proceeding any further:
+
+  ```
+  Blocked: this exact {tool.name} call (identical arguments) has now been
+  attempted {N} times in a row with no change in between — pcli is refusing
+  to run it again, since repeating it will not produce a different result.
+  Stop and change strategy: re-read the actual output from the previous
+  attempts above, diagnose why it didn't help, and try something
+  meaningfully different — or use ask_user_question if you're stuck.
+  ```
+
+  The model gets two real attempts through to a handler; the third identical
+  one is where it's blocked.
+- **Ordering:** checked before JSON-schema validation and before
+  `PermissionManager.check_with_reason` — in particular, it runs *before*
+  the permission-decision flow below, deliberately, so an identical call
+  that already got an interactive "allow"/"deny" decision can't re-trigger
+  a second prompt for the exact same thing; it's blocked outright instead.
+- **Reset:** the tracked signature and counter
+  (`self._last_tool_call_signature`, `self._identical_tool_call_repeats`)
+  live on the `AgentLoop` instance but are reset to `None`/`0` at the very
+  top of every `run_turn` call, so the count never carries over from one
+  user-submitted turn into the next — only repeats *within* a single turn's
+  tool-call loop trigger it.
+
+This is a mechanical version of what the system prompt's "Recovering from a
+failed tool call" section (`src/pcli/agent/prompt.py`) already tells the
+model to do on its own (stop after two near-identical failures rather than
+trying a third) — added because an advisory instruction only helps a model
+that reliably follows it, and this was written up against a real session
+where a heavily-quantized local model called `run_shell` with byte-for-byte
+identical arguments 12 times in a row before eventually trying something
+else unprompted. The prompt section now says as much: the third identical
+retry doesn't just get discouraged, it mechanically never reaches the tool.
+
 ## Permission manager
 
 `PermissionManager.check(...)` (`src/pcli/permissions/manager.py`) is the
-full decision flow for one tool call, run from `AgentLoop._dispatch_tool_call`.
+full decision flow for one tool call, run from `AgentLoop._dispatch_tool_call`
+— after the identical-call repeat guard above has already let the call
+through.
 `check(...)` itself is now a thin wrapper around `check_with_reason(...)`,
 which returns `tuple[PermissionDecision, str | None]` instead of just the
 decision — kept as a separate method so the many existing call sites that

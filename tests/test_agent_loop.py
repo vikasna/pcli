@@ -604,6 +604,278 @@ async def test_agent_loop_max_tool_iterations_none_is_unlimited(tmp_path: Path):
     assert route.call_count == 31  # all 30 tool-call rounds plus the final text round
 
 
+# --- identical-tool-call repeat guard ---
+#
+# Regression coverage for a real debugged session: a heavily-quantized local
+# model called run_shell with byte-identical arguments 12 times in a row,
+# getting the exact same unhelpful result every time. The system prompt's
+# own "Recovering from a failed tool call" guidance already says a third
+# near-identical retry is never the right move, but that's a suggestion the
+# model has to choose to follow - _MAX_IDENTICAL_TOOL_CALL_REPEATS is the
+# mechanical backstop that doesn't depend on the model noticing or complying.
+
+
+async def _other_tool_handler(arguments: dict, ctx: ToolContext) -> ToolResult:
+    return ToolResult(output="ok")
+
+
+def _tool_call_round(call_id: str, arguments: dict) -> list[dict]:
+    return [
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": call_id,
+                                "function": {"name": "echo_tool", "arguments": json.dumps(arguments)},
+                            }
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        },
+        {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+    ]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_dispatch_blocks_the_third_identical_tool_call_in_a_row(tmp_path: Path):
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(200, content=_sse(*_single_tool_call_round("call_1"))),
+        httpx.Response(200, content=_sse(*_single_tool_call_round("call_2"))),
+        httpx.Response(200, content=_sse(*_single_tool_call_round("call_3"))),
+        httpx.Response(200, content=_sse(*_final_text_chunks("giving up"))),
+    ]
+
+    registry = ToolRegistry()
+    registry.register(ECHO_TOOL)
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    sandbox = FakeSandbox()
+
+    async with GatewayClient(_settings()) as client:
+        loop = AgentLoop(
+            client,
+            tool_registry=registry,
+            permission_manager=permission_manager,
+            tool_context_factory=lambda: ToolContext(
+                sandbox=sandbox, guardrails=GuardrailsConfig(), cwd=tmp_path
+            ),
+        )
+        events = []
+        async for event in loop.run_turn([ChatMessage(role="user", content="do the thing")]):
+            events.append(event)
+
+    tool_results = [e for e in events if isinstance(e, ToolResultEvent)]
+    assert len(tool_results) == 3
+    assert tool_results[0].is_error is False
+    assert tool_results[0].output == "echoed: x"
+    assert tool_results[1].is_error is False
+    assert tool_results[1].output == "echoed: x"
+    assert tool_results[2].is_error is True
+    assert "Blocked" in tool_results[2].output
+    assert "3 times in a row" in tool_results[2].output
+    # The 3rd call must never have reached the real handler.
+    assert sandbox.calls == []
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_dispatch_does_not_block_when_arguments_differ(tmp_path: Path):
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(200, content=_sse(*_tool_call_round("call_1", {"text": "a"}))),
+        httpx.Response(200, content=_sse(*_tool_call_round("call_2", {"text": "b"}))),
+        httpx.Response(200, content=_sse(*_tool_call_round("call_3", {"text": "c"}))),
+        httpx.Response(200, content=_sse(*_final_text_chunks("done"))),
+    ]
+
+    registry = ToolRegistry()
+    registry.register(ECHO_TOOL)
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+
+    async with GatewayClient(_settings()) as client:
+        loop = AgentLoop(
+            client,
+            tool_registry=registry,
+            permission_manager=permission_manager,
+            tool_context_factory=lambda: ToolContext(
+                sandbox=FakeSandbox(), guardrails=GuardrailsConfig(), cwd=tmp_path
+            ),
+        )
+        events = []
+        async for event in loop.run_turn([ChatMessage(role="user", content="do three things")]):
+            events.append(event)
+
+    tool_results = [e for e in events if isinstance(e, ToolResultEvent)]
+    assert [r.output for r in tool_results] == ["echoed: a", "echoed: b", "echoed: c"]
+    assert all(not r.is_error for r in tool_results)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_dispatch_treats_a_different_purpose_as_still_identical(tmp_path: Path):
+    """purpose is stripped before the handler ever sees it (see
+    test_purpose_argument_never_reaches_the_tool_handler) - it must be
+    stripped before the repeat signature is built too, or a model could
+    dodge the guard by varying only its own free-text explanation while
+    repeating the exact same real action."""
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(
+            200, content=_sse(*_tool_call_round("call_1", {"text": "x", "purpose": "first try"}))
+        ),
+        httpx.Response(
+            200, content=_sse(*_tool_call_round("call_2", {"text": "x", "purpose": "second try"}))
+        ),
+        httpx.Response(
+            200, content=_sse(*_tool_call_round("call_3", {"text": "x", "purpose": "third try"}))
+        ),
+        httpx.Response(200, content=_sse(*_final_text_chunks("giving up"))),
+    ]
+
+    registry = ToolRegistry()
+    registry.register(ECHO_TOOL)
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+
+    async with GatewayClient(_settings()) as client:
+        loop = AgentLoop(
+            client,
+            tool_registry=registry,
+            permission_manager=permission_manager,
+            tool_context_factory=lambda: ToolContext(
+                sandbox=FakeSandbox(), guardrails=GuardrailsConfig(), cwd=tmp_path
+            ),
+        )
+        events = []
+        async for event in loop.run_turn([ChatMessage(role="user", content="do the thing")]):
+            events.append(event)
+
+    tool_results = [e for e in events if isinstance(e, ToolResultEvent)]
+    assert len(tool_results) == 3
+    assert tool_results[2].is_error is True
+    assert "Blocked" in tool_results[2].output
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_dispatch_resets_the_repeat_count_after_a_different_tool_call(tmp_path: Path):
+    other_tool = ToolSpec(
+        name="other_tool",
+        description="A distinct tool standing in for 'the model tried something else'.",
+        parameters={"type": "object", "properties": {}},
+        handler=_other_tool_handler,
+        needs_permission=False,
+    )
+
+    def _other_tool_round(call_id: str) -> list[dict]:
+        return [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": call_id,
+                                    "function": {"name": "other_tool", "arguments": "{}"},
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ]
+            },
+            {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(200, content=_sse(*_single_tool_call_round("call_1"))),
+        httpx.Response(200, content=_sse(*_single_tool_call_round("call_2"))),
+        httpx.Response(200, content=_sse(*_other_tool_round("call_3"))),
+        httpx.Response(200, content=_sse(*_single_tool_call_round("call_4"))),
+        httpx.Response(200, content=_sse(*_single_tool_call_round("call_5"))),
+        httpx.Response(200, content=_sse(*_final_text_chunks("done"))),
+    ]
+
+    registry = ToolRegistry()
+    registry.register(ECHO_TOOL)
+    registry.register(other_tool)
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+
+    async with GatewayClient(_settings()) as client:
+        loop = AgentLoop(
+            client,
+            tool_registry=registry,
+            permission_manager=permission_manager,
+            tool_context_factory=lambda: ToolContext(
+                sandbox=FakeSandbox(), guardrails=GuardrailsConfig(), cwd=tmp_path
+            ),
+        )
+        events = []
+        async for event in loop.run_turn([ChatMessage(role="user", content="do the thing")]):
+            events.append(event)
+
+    tool_results = [e for e in events if isinstance(e, ToolResultEvent)]
+    assert len(tool_results) == 5
+    # 2 identical echo_tool calls, then other_tool (resets the count), then 2
+    # more identical echo_tool calls - never reaches 3 in a row, so nothing
+    # is ever blocked.
+    assert all(not r.is_error for r in tool_results)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_identical_tool_call_repeat_count_resets_between_separate_turns(tmp_path: Path):
+    """Two separate run_turn calls, 2 identical echo_tool calls each - if
+    the tracking didn't reset at the start of run_turn, the second turn's
+    very first call would already be the "3rd in a row" and get wrongly
+    blocked."""
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(200, content=_sse(*_single_tool_call_round("call_1"))),
+        httpx.Response(200, content=_sse(*_final_text_chunks("done with turn 1"))),
+        httpx.Response(200, content=_sse(*_single_tool_call_round("call_2"))),
+        httpx.Response(200, content=_sse(*_final_text_chunks("done with turn 2"))),
+    ]
+
+    registry = ToolRegistry()
+    registry.register(ECHO_TOOL)
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+
+    async with GatewayClient(_settings()) as client:
+        loop = AgentLoop(
+            client,
+            tool_registry=registry,
+            permission_manager=permission_manager,
+            tool_context_factory=lambda: ToolContext(
+                sandbox=FakeSandbox(), guardrails=GuardrailsConfig(), cwd=tmp_path
+            ),
+        )
+        events_1 = [e async for e in loop.run_turn([ChatMessage(role="user", content="turn 1")])]
+        events_2 = [e async for e in loop.run_turn([ChatMessage(role="user", content="turn 2")])]
+
+    results_1 = [e for e in events_1 if isinstance(e, ToolResultEvent)]
+    results_2 = [e for e in events_2 if isinstance(e, ToolResultEvent)]
+    assert len(results_1) == 1 and results_1[0].is_error is False
+    assert len(results_2) == 1 and results_2[0].is_error is False
+
+
 @pytest.mark.asyncio
 @respx.mock
 async def test_dispatch_denies_a_non_plan_mode_safe_tool_when_ctx_plan_mode_is_true(tmp_path: Path):

@@ -149,6 +149,11 @@ def test_prompt_instructs_diagnosing_before_retrying_a_failed_tool_call():
     assert "write_file" in section
     assert "precondition" in section
     assert "two consecutive attempts" in section
+    # The retry cap is mechanically enforced (AgentLoop._dispatch_tool_call's
+    # identical-call guard), not just advisory - the model should know a
+    # third identical attempt will actually be refused, not merely
+    # discouraged.
+    assert "mechanically blocked" in section
 
 
 def test_prompt_guides_toward_network_tools_over_shell_downloads():

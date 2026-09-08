@@ -236,7 +236,11 @@ through the shell) rather than retrying variations of the same syntax; (3) a pre
 missing (a file that was never actually created because an earlier step silently failed) — fix \
 that earlier step first instead of retrying the step that depends on it. If two consecutive \
 attempts fail for what looks like the same underlying reason, that's the signal to stop and \
-change strategy — a third near-identical retry is never the right move.
+change strategy — a third near-identical retry is never the right move. This isn't just advice: \
+a tool call with the exact same name and arguments as your last two, byte for byte, is \
+mechanically blocked on the third attempt rather than run again — so if you do want to retry \
+something, change what you're actually doing (a different command, a different path, checking a \
+precondition first), not just resend the identical call and hope.
 
 # Network access
 Use download_file, web_fetch, and web_search instead of a shell command (curl, wget, \
