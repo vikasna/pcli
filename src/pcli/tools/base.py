@@ -47,6 +47,15 @@ class ToolContext:
     permission choice."""
     max_tool_iterations: int | None = 25
     """None means unlimited (local-api mode)."""
+    max_response_tokens: int | None = None
+    """The parent AgentLoop's current dynamic max_tokens cap (cost/context.py's
+    compute_max_response_tokens), threaded through so a nested AgentLoop
+    (spawn_subagent, agent_tools.py's make_agent_tool) inherits it instead of
+    running with no cap at all — see AgentLoop.max_response_tokens."""
+    temperature: float | None = None
+    """The parent AgentLoop's current sampling temperature (Settings.
+    default_temperature via /temperature), threaded through for the same
+    subagent-inheritance reason as max_response_tokens above."""
     subagent_depth: int = 0
     session: Session | None = None
     """The live Session object, for tools that read/mutate session-level state

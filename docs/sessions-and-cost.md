@@ -215,11 +215,11 @@ zeroed.
 
 ### Recording cost
 
-`CostTracker.record_turn(model, usage)` (`src/pcli/cost/tracker.py`) is
-called once per underlying LLM call (`UsageEvent` from `chat_stream`) — note
-this is per *LLM call*, not per user-visible turn: a single turn involving
-tool calls makes several. It computes `cost_usd` from the pricing table,
-appends a `TurnCost` to `Session.cost.turns`, updates
+`CostTracker.record_turn(model, usage, *, source="main")` (`src/pcli/cost/
+tracker.py`) is called once per underlying LLM call (`UsageEvent` from
+`chat_stream`) — note this is per *LLM call*, not per user-visible turn: a
+single turn involving tool calls makes several. It computes `cost_usd` from
+the pricing table, appends a `TurnCost` to `Session.cost.turns`, updates
 `session_total_usd`/`total_tokens`, and appends a line to the **global**
 ledger at `cost_ledger_file()` (`data_dir()/cost_ledger.jsonl`) — a
 newline-delimited JSON log spanning all sessions, independent of any single
@@ -229,6 +229,43 @@ A subagent's own LLM usage is folded into the *parent* session's cost the
 same way, via `ToolResult.extra_usage` (see `spawn_subagent` in
 [`tools.md`](tools.md)) — real spend the session total must reflect, even
 though the subagent's individual tool calls aren't otherwise recorded.
+
+#### `TurnCost.source`
+
+Every `TurnCost` (`src/pcli/session/models.py`) carries a `source: Literal["main",
+"subagent", "compaction"]` field, defaulting to `"main"` (so a session
+persisted before this field existed still validates and behaves exactly as
+it did before — every entry back then was implicitly a main-turn entry).
+`ChatScreen` (`src/pcli/tui/screens/chat.py`) tags each of its three real
+`record_turn(...)` call sites explicitly:
+
+- **`"main"`** (the default, passed implicitly) — the plain per-turn `usage`
+  chunk handler, i.e. an actual LLM call that's part of the main
+  conversation the user is having.
+- **`"compaction"`** — `_run_compaction`'s own summarization call, whether
+  triggered automatically (crossing `auto_compact_threshold`) or via
+  `/compact`.
+- **`"subagent"`** — a tool result's `extra_usage` (a `spawn_subagent` or
+  `make_agent_tool`-based tool's nested `AgentLoop` spend), recorded right
+  after the tool-call chunk that produced it.
+
+**This only changes which entry represents "the main conversation" — it does
+not change cost totals.** `session_total_usd` and `total_tokens` still
+accumulate every recorded `TurnCost` regardless of `source`; subagent and
+compaction spend is real money/tokens and was never excluded from the
+running totals or the global ledger. What changed is `cost/context.py`'s
+`current_context_usage`, `compute_max_response_tokens`, and
+`looks_like_context_ceiling` — see [Context-window
+tracking](#context-window-tracking) below and
+[`configuration.md`](configuration.md#dynamic-response-cap) — which use "the
+most recent entry" as a proxy for "how full is the main conversation's
+context window," and now filter to `source == "main"` first rather than
+trusting the literal last entry in `Session.cost.turns`. Before this, a
+compaction call's usage (guaranteed to be the literal last entry every time
+compaction ran, since `_run_compaction` records its own usage right after
+the real turn finishes) or a subagent's usage (possible in an edge case)
+could stand in for the main conversation's size, even though it reflects a
+completely unrelated conversation.
 
 ### `pcli cost report`
 
@@ -253,8 +290,11 @@ for the manual `/context-limit` fallback.
 
 There's no local tokenizer for a generic gateway, so `current_context_usage`
 doesn't estimate from message text — it uses the **most recently reported**
-`usage.total_tokens` from `Session.cost.turns[-1]` (prompt + completion
-tokens of the last actual LLM call), which is exactly the size of what gets
-resent as history on the next call. The status bar's `ctx: used/limit (pct%)`
-is driven specifically by the *parent* loop's own usage events (never a
-subagent's smaller, isolated context) — see `ChatScreen._refresh_context_display`.
+`usage.total_tokens` from the last `source="main"` entry in
+`Session.cost.turns` (prompt + completion tokens of the last actual main-
+conversation LLM call, skipping over any `"subagent"`/`"compaction"` entries
+that may sit after it — see [`TurnCost.source`](#turncostsource) above),
+which is exactly the size of what gets resent as history on the next call.
+The status bar's `ctx: used/limit (pct%)` is driven specifically by the
+*parent* loop's own usage events (never a subagent's smaller, isolated
+context) — see `ChatScreen._refresh_context_display`.

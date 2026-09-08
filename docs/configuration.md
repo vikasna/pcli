@@ -191,7 +191,13 @@ using the same `current_context_usage` basis (`context_limit` from
 `TurnCost`) that auto-compaction's own threshold check already uses — there's
 no local tokenizer to do better (see `cost/context.py`'s module docstring),
 so this is exactly as accurate as pcli's other context-usage decisions, no
-more, no less. The result is passed as `max_tokens` on the outbound request
+more, no less. "The last recorded `TurnCost`" specifically means the last one
+with `source="main"` — `current_context_usage` and `compute_max_response_tokens`
+both filter `Session.cost.turns` down to main-conversation entries before
+looking at the tail (see [Context-limit detection and
+correction](#context-limit-detection-and-correction) below and
+[`sessions-and-cost.md`](sessions-and-cost.md) for why entries can have a
+different `source`). The result is passed as `max_tokens` on the outbound request
 via `AgentLoop.set_max_response_tokens` -> `GatewayClient.chat_stream`/
 `collect`, applied to every `chat_stream` call a turn makes, including its
 own tool-call round-trips (the cap is computed once per user-submitted turn,
@@ -210,6 +216,19 @@ Like the pruning settings, both settings here are persisted via a slash
 command: [`/max-response-tokens`](tui-guide.md#slash-commands) writes them to
 `config.toml` through `update_config_file` and applies them live starting
 with the very next turn.
+
+**Subagents inherit this cap.** `AgentLoop.max_response_tokens` is a
+read-only property mirroring whatever `set_max_response_tokens` last set on
+that loop; `ChatScreen._make_tool_context` reads it into
+`ToolContext.max_response_tokens`, and both `spawn_subagent`
+(`src/pcli/tools/builtin/subagent_tool.py`) and the `explore_codebase`/
+`deep_research`/`write_documentation`/`verify_computation`/`data_analysis`
+family (`make_agent_tool` in `src/pcli/tools/agent_tools.py`) pass
+`max_response_tokens=ctx.max_response_tokens` when constructing the nested
+`AgentLoop` for the subagent. Previously a freshly constructed `AgentLoop`
+always defaulted this to `None`, so a subagent ran with no response-length
+cap at all regardless of what `/max-response-tokens` had configured on the
+parent session — it now tracks the same live, per-turn value the parent uses.
 
 ## Sampling temperature
 
@@ -255,6 +274,14 @@ the session's `AgentLoop` (`temperature=self._settings.default_temperature`,
 - `/temperature` with no argument reports the current value, or `"unset
   (gateway/model default)"` when it's `None`.
 
+**Subagents inherit this too**, via the same `ToolContext.temperature` field
+and the same `AgentLoop.temperature` read-only property described in
+[Dynamic response cap](#dynamic-response-cap) above — `spawn_subagent` and
+`make_agent_tool`-based tools both pass `temperature=ctx.temperature` when
+building the nested `AgentLoop`. Before this, a subagent always ran at the
+gateway/model's own default temperature no matter what `/temperature` had
+set on the parent session.
+
 ## Context-limit detection and correction
 
 `ContextLimitTable` (`src/pcli/cost/context.py`) is itself just an assumption
@@ -269,6 +296,20 @@ no matching entry and a real window much smaller than 128,000, the
 fraction-based trigger can read a session as mostly empty when the model has
 actually run out of room.
 
+`current_context_usage()`'s `used_tokens` comes from the most recent
+`TurnCost` in `Session.cost.turns` whose `source` is `"main"` — not simply
+the last entry in the list. A subagent call (`source="subagent"`) or an
+auto/manual compaction summarization call (`source="compaction"`) also
+appends its own real `TurnCost`, but that usage reflects a completely
+different, unrelated conversation's size, not how full the main conversation
+actually is. Before this filtering existed, whichever of those happened to
+be the literal last entry — guaranteed on every compaction run, since the
+compaction call's own usage is recorded right after the real turn finishes —
+would get used as "the current context usage" for the *next* turn's
+`current_context_usage`/`compute_max_response_tokens` computation instead of
+the real conversation size. See [`sessions-and-cost.md`](sessions-and-cost.md)
+for the full `TurnCost.source` field documentation.
+
 `looks_like_context_ceiling(session)` (`src/pcli/cost/context.py:100`) is a
 second, independent check for exactly that failure mode: instead of trusting
 `ContextLimitTable`'s assumed limit at all, it looks at the session's own
@@ -280,7 +321,12 @@ keeps growing as more history gets resent. Comparing the two most recent
 turns, if `prompt_tokens` grew but `total_tokens` grew by no more than 10% of
 that growth (`_CEILING_STALL_RATIO`) — and the current turn's `total_tokens`
 is at least 2,000 (`_CEILING_MIN_TOTAL_TOKENS`, avoiding false positives on
-trivial early turns) — that's the fingerprint of a real ceiling. This was
+trivial early turns) — that's the fingerprint of a real ceiling. Like
+`current_context_usage()` above, "the two most recent turns" means the two
+most recent `source="main"` entries specifically, so a subagent or
+compaction call sitting between them in `Session.cost.turns` — with its own
+unrelated prompt/total sizes — is skipped rather than compared as if it were
+consecutive turns. This was
 confirmed against a real debugged session with `google/gemma-4-12b-qat` (no
 built-in table entry, so pcli was assuming the generic 128,000-token
 default): three consecutive turns each landed on `total_tokens` around

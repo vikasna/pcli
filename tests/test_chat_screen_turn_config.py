@@ -553,3 +553,27 @@ async def test_temperature_sets_persists_and_takes_effect_on_the_live_agent_loop
         assert screen._agent_loop._temperature is None
         raw = tomllib.loads(config_file().read_text(encoding="utf-8"))
         assert "default_temperature" not in raw
+
+
+@pytest.mark.asyncio
+async def test_make_tool_context_carries_max_response_tokens_and_temperature_for_subagents(
+    tmp_path: Path,
+):
+    """Regression coverage for a real gap: ToolContext.max_response_tokens/
+    temperature is how spawn_subagent/agent_tools.py's make_agent_tool
+    inherit the parent's current values - without this field actually being
+    populated here, a subagent always ran with neither, regardless of what
+    /max-response-tokens or /temperature had configured."""
+    screen, _session = _make_screen(tmp_path)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert screen._agent_loop is not None
+
+        screen._handle_command("/temperature 0.4")
+        screen._agent_loop.set_max_response_tokens(4321)
+        await pilot.pause()
+
+        ctx = screen._make_tool_context()
+        assert ctx.temperature == 0.4
+        assert ctx.max_response_tokens == 4321

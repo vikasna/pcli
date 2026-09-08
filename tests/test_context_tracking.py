@@ -111,6 +111,59 @@ def test_current_context_usage_empty_session():
     assert usage.limit_tokens == 128_000
 
 
+def test_current_context_usage_skips_trailing_subagent_and_compaction_entries():
+    """Regression coverage for a real bug: a subagent's or compaction's own
+    LLM call is real spend (correctly recorded via CostTracker.record_turn)
+    but reflects a completely different, unrelated conversation's size - if
+    one of those happens to be the literal last entry in session.cost.turns,
+    it must not be mistaken for "how full the main conversation is"."""
+    session = Session(model="gpt-4o")
+    session.cost.turns.append(
+        TurnCost(
+            turn_index=0,
+            model="gpt-4o",
+            usage=Usage(prompt_tokens=50_000, completion_tokens=1000, total_tokens=51_000),
+            cost_usd=0.0,
+            source="main",
+        )
+    )
+    session.cost.turns.append(
+        TurnCost(
+            turn_index=1,
+            model="gpt-4o",
+            usage=Usage(prompt_tokens=200, completion_tokens=100, total_tokens=300),
+            cost_usd=0.0,
+            source="compaction",
+        )
+    )
+    session.cost.turns.append(
+        TurnCost(
+            turn_index=2,
+            model="gpt-4o",
+            usage=Usage(prompt_tokens=500, completion_tokens=200, total_tokens=700),
+            cost_usd=0.0,
+            source="subagent",
+        )
+    )
+    usage = current_context_usage(session, limit_table=_fixture_limits())
+    assert usage.used_tokens == 51_000  # the last MAIN entry, not the literal last one
+
+
+def test_current_context_usage_zero_when_only_non_main_entries_exist():
+    session = Session(model="gpt-4o")
+    session.cost.turns.append(
+        TurnCost(
+            turn_index=0,
+            model="gpt-4o",
+            usage=Usage(prompt_tokens=500, completion_tokens=200, total_tokens=700),
+            cost_usd=0.0,
+            source="subagent",
+        )
+    )
+    usage = current_context_usage(session, limit_table=_fixture_limits())
+    assert usage.used_tokens == 0
+
+
 def test_context_usage_fraction():
     usage = ContextUsage(used_tokens=64_000, limit_tokens=128_000)
     assert usage.fraction == 0.5
@@ -180,6 +233,36 @@ def test_compute_max_response_tokens_uses_only_the_last_turns_usage():
     assert ContextUsage(used_tokens=0, limit_tokens=0).fraction == 0.0  # no div-by-zero
 
 
+def test_compute_max_response_tokens_ignores_a_trailing_compaction_entry():
+    """Regression coverage for a real bug: compaction's own summarization
+    call is recorded as its own TurnCost (source="compaction") immediately
+    after a real turn finishes - without source-filtering, the very next
+    turn's cap would be computed from compaction's own small, unrelated
+    prompt size instead of the real (pre-compaction, so a conservative
+    overestimate - safe, not permissive) main-conversation size."""
+    session = Session(model="gpt-4o")
+    session.cost.turns.append(
+        TurnCost(
+            turn_index=0,
+            model="gpt-4o",
+            usage=Usage(prompt_tokens=100_000, completion_tokens=1000, total_tokens=101_000),
+            cost_usd=0.0,
+            source="main",
+        )
+    )
+    session.cost.turns.append(
+        TurnCost(
+            turn_index=1,
+            model="gpt-4o",
+            usage=Usage(prompt_tokens=300, completion_tokens=100, total_tokens=400),
+            cost_usd=0.0,
+            source="compaction",
+        )
+    )
+    result = compute_max_response_tokens(session, limit_table=_fixture_limits(), safety_margin=500)
+    assert result == 128_000 - 101_000 - 500  # from the real turn, not the compaction call
+
+
 def test_format_token_count():
     assert format_token_count(999) == "999"
     assert format_token_count(1_500) == "1.5k"
@@ -237,12 +320,13 @@ def test_status_bar_renders_second_line_only_while_subagent_active():
 # full and never triggered.
 
 
-def _turn(index: int, prompt: int, completion: int) -> TurnCost:
+def _turn(index: int, prompt: int, completion: int, source: str = "main") -> TurnCost:
     return TurnCost(
         turn_index=index,
         model="m",
         usage=Usage(prompt_tokens=prompt, completion_tokens=completion, total_tokens=prompt + completion),
         cost_usd=0.0,
+        source=source,
     )
 
 
@@ -286,6 +370,19 @@ def test_looks_like_context_ceiling_false_when_prompt_did_not_grow():
     session.cost.turns.append(_turn(0, 15414, 970))  # total 16384
     session.cost.turns.append(_turn(1, 15400, 984))  # prompt shrank (e.g. after /compact)
     assert looks_like_context_ceiling(session) is False
+
+
+def test_looks_like_context_ceiling_skips_a_subagent_entry_in_between():
+    """Regression coverage for a real bug: a subagent call between two real
+    turns has its own unrelated prompt/total sizes - comparing it against a
+    real turn as if they were consecutive would produce a meaningless (or
+    outright wrong) result. The two real main turns must still be compared
+    against each other, subagent entry or not."""
+    session = Session(model="m")
+    session.cost.turns.append(_turn(0, 14984, 1377))  # total 16361, real content
+    session.cost.turns.append(_turn(1, 500, 200, source="subagent"))  # unrelated small call
+    session.cost.turns.append(_turn(2, 15414, 970))  # total 16384, empty turn
+    assert looks_like_context_ceiling(session) is True
 
 
 # --- set_model_context_limit ---

@@ -574,7 +574,18 @@ parent's gateway/permissions. Only the subagent's final text and tool-call
 count are returned to the parent — its own tool calls aren't individually
 recorded in the parent session, though they still pass through the same
 guardrail/permission gates. The subagent's own LLM usage is folded into cost
-tracking via `ToolResult.extra_usage`.
+tracking via `ToolResult.extra_usage`, tagged `source="subagent"` on the
+recorded `TurnCost` so it's counted toward the session total but not mistaken
+for the main conversation's own size (see
+[`sessions-and-cost.md`](sessions-and-cost.md#turncostsource)).
+
+The nested `AgentLoop` also **inherits the parent's current dynamic
+response-length cap and sampling temperature** — `max_response_tokens=
+ctx.max_response_tokens, temperature=ctx.temperature` — rather than always
+running uncapped at the gateway's default temperature. Both values track
+whatever `/max-response-tokens` and `/temperature` currently have configured
+on the parent session; see
+[`configuration.md`](configuration.md#dynamic-response-cap).
 
 **Subagents can never spawn further subagents** — `spawn_subagent` is always
 filtered out of the tool registry a subagent runs with (by name, in
@@ -622,6 +633,10 @@ tools themselves.
 - **`plan_mode_safe=True`** for all three (`src/pcli/tools/agent_tools.py`) —
   they stay available while [plan mode](tui-guide.md#plan-mode) is active,
   since every tool each one is restricted to is itself read-only.
+- Like `spawn_subagent`, each nested `AgentLoop` inherits the parent's
+  current `max_response_tokens`/`temperature` (`ctx.max_response_tokens`/
+  `ctx.temperature` in `make_agent_tool`) and its own usage is recorded with
+  `source="subagent"` — see the `spawn_subagent` entry above.
 
 **`explore_codebase`** — delegates a focused code-exploration question (e.g.
 "how is auth implemented", "where is X defined") to a subagent restricted to

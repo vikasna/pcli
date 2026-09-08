@@ -190,6 +190,44 @@ async def test_spawn_subagent_registry_never_contains_itself(tmp_path: Path):
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_spawn_subagent_inherits_max_response_tokens_and_temperature(tmp_path: Path):
+    """Regression coverage for a real gap: a fresh AgentLoop defaults both
+    to None, so without this a subagent silently ran with no response-
+    length cap and the gateway's default temperature regardless of what
+    /max-response-tokens or /temperature had configured on the parent."""
+    captured_kwargs: list[dict] = []
+    original_init = AgentLoop.__init__
+
+    def _spying_init(self, *args, **kwargs):
+        captured_kwargs.append(kwargs)
+        return original_init(self, *args, **kwargs)
+
+    import pcli.tools.builtin.subagent_tool as subagent_module
+
+    subagent_module.AgentLoop.__init__ = _spying_init  # type: ignore[method-assign]
+
+    try:
+        respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+            return_value=_text_response("done")
+        )
+        permission_manager = PermissionManager(
+            guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+        )
+        registry = _make_registry_with_echo_and_subagent()
+
+        async with GatewayClient(_settings()) as client:
+            ctx = _make_ctx(tmp_path, registry, client, permission_manager)
+            ctx = replace(ctx, max_response_tokens=1234, temperature=0.55)
+            await SPAWN_SUBAGENT.handler({"task": "do something"}, ctx)
+    finally:
+        subagent_module.AgentLoop.__init__ = original_init  # type: ignore[method-assign]
+
+    assert captured_kwargs[0]["max_response_tokens"] == 1234
+    assert captured_kwargs[0]["temperature"] == 0.55
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_spawn_subagent_respects_allowed_tools_filter(tmp_path: Path):
     captured_registries: list[ToolRegistry] = []
     original_init = AgentLoop.__init__

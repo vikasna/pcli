@@ -441,6 +441,8 @@ class ChatScreen(Screen):
             ask_question=self._current_ask_question,
             brave_search_api_key=self._settings.brave_search_api_key,
             max_tool_iterations=self._effective_max_tool_iterations(),
+            max_response_tokens=self._agent_loop.max_response_tokens if self._agent_loop else None,
+            temperature=self._agent_loop.temperature if self._agent_loop else None,
             session=self._session,
             artifact_store=self._artifact_store,
             activity=self._activity,
@@ -1291,12 +1293,16 @@ class ChatScreen(Screen):
                 full_result_ref=SessionArtifactStore.blob_name_for(result.artifact_id),
             )
         )
-        # Real spend, so it counts toward cost — but deliberately not fed into
-        # _refresh_context_display, for the same reason subagent usage isn't:
-        # it's not the main conversation's context size. The status bar
-        # self-corrects on the next real turn's usage report.
+        # Real spend, so it counts toward cost — but tagged source="compaction"
+        # so current_context_usage/compute_max_response_tokens (which look for
+        # the last *main*-conversation entry, not just the literal last one)
+        # aren't misled into thinking the main conversation is however big
+        # this one summarization call's own prompt happened to be. Also
+        # deliberately not fed into _refresh_context_display, for the same
+        # reason subagent usage isn't - the status bar self-corrects on the
+        # next real turn's usage report.
         self._cost_tracker.record_turn(
-            self._settings.default_model or self._session.model, result.usage
+            self._settings.default_model or self._session.model, result.usage, source="compaction"
         )
         self._refresh_cost_display(status_bar)
         message_view.add_message(
@@ -1421,9 +1427,15 @@ class ChatScreen(Screen):
                     self._record_tool_invocation(chunk)
                     if chunk.tool_call.function.name == "write_todos":
                         self._refresh_todo_pane()
+                    # source="subagent": real spend from a nested AgentLoop
+                    # (spawn_subagent/explore_*/etc.), not the main
+                    # conversation - see the "compaction" note above for why
+                    # this tag matters, not just that it counts toward cost.
                     for extra in chunk.extra_usage:
                         self._cost_tracker.record_turn(
-                            self._settings.default_model or self._session.model, extra
+                            self._settings.default_model or self._session.model,
+                            extra,
+                            source="subagent",
                         )
                     if chunk.extra_usage:
                         self._refresh_cost_display(status_bar)

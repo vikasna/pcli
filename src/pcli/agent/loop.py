@@ -115,6 +115,20 @@ class AgentLoop:
     def set_model(self, model: str | None) -> None:
         self._model = model
 
+    @property
+    def max_response_tokens(self) -> int | None:
+        """Read side of set_max_response_tokens — lets a caller building a
+        nested AgentLoop for a subagent (spawn_subagent, agent_tools.py's
+        make_agent_tool) inherit the parent's current cap instead of the
+        subagent silently running with none at all."""
+        return self._max_response_tokens
+
+    @property
+    def temperature(self) -> float | None:
+        """Read side of set_temperature — same inheritance purpose as
+        max_response_tokens above."""
+        return self._temperature
+
     def set_tool_registry(self, tool_registry: ToolRegistry | None) -> None:
         self._tool_registry = tool_registry
 

@@ -6,8 +6,19 @@ from message text — it uses the most recently *reported* usage.total_tokens
 is exactly the size of what gets resent as history on the next call, which
 is what "context used" means in practice. Since CostTracker records one
 TurnCost per underlying LLM call (not per user-visible turn — a single turn
-with tool calls makes several), the *last* entry in Session.cost.turns is
-always the most recent call, tool-call round-trips included.
+with tool calls makes several), the most recent *main*-conversation entry in
+Session.cost.turns reflects the most recent real call, tool-call round-trips
+included.
+
+"Most recent main-conversation entry" is deliberately not just "the last
+entry": TurnCost.source distinguishes a real main-conversation call from a
+subagent's or a compaction summarization's own LLM call, both of which are
+real spend (see CostTracker.record_turn) but reflect a completely different,
+unrelated conversation's size — trusting the literal last entry regardless
+of source previously let a subagent call (in an edge case) or a compaction
+call (every single time compaction ran) leave a stray, unrelated token count
+as what the *next* turn's context-usage/max_tokens-cap math was computed
+from. See _last_main_turn/_main_turns below, used by every function here.
 """
 
 from __future__ import annotations
@@ -17,7 +28,19 @@ from dataclasses import dataclass
 
 from pcli.config.paths import context_limits_file
 from pcli.cost.pricing_table import match_model_pattern
-from pcli.session.models import Session
+from pcli.llm.models import Usage
+from pcli.session.models import Session, TurnCost
+
+
+def _main_turns(turns: list[TurnCost]) -> list[TurnCost]:
+    return [turn for turn in turns if turn.source == "main"]
+
+
+def _last_main_turn_usage(turns: list[TurnCost]) -> Usage | None:
+    for turn in reversed(turns):
+        if turn.source == "main":
+            return turn.usage
+    return None
 
 DEFAULT_CONTEXT_LIMITS_TOML = """\
 # pcli model context-window limits (tokens). Edit freely — entries here
@@ -123,7 +146,8 @@ def current_context_usage(
     session: Session, *, limit_table: ContextLimitTable | None = None
 ) -> ContextUsage:
     limit_table = limit_table or ContextLimitTable.load()
-    used = session.cost.turns[-1].usage.total_tokens if session.cost.turns else 0
+    last_main_usage = _last_main_turn_usage(session.cost.turns)
+    used = last_main_usage.total_tokens if last_main_usage is not None else 0
     return ContextUsage(used_tokens=used, limit_tokens=limit_table.lookup(session.model))
 
 
@@ -147,11 +171,13 @@ def compute_max_response_tokens(
     other context-usage decisions, no more, no less.
 
     Returns None (no cap sent - the gateway's own default applies) if
-    there's no prior usage yet (first turn - nothing to compute headroom
-    from yet) or if the computed headroom is already <= 0 (essentially
-    full; sending a non-positive max_tokens would be nonsensical, and by
-    this point auto-compaction should already have intervened)."""
-    if not session.cost.turns:
+    there's no prior *main*-conversation usage yet (first turn - nothing to
+    compute headroom from yet, regardless of whether a subagent or
+    compaction call happened to run before it) or if the computed headroom
+    is already <= 0 (essentially full; sending a non-positive max_tokens
+    would be nonsensical, and by this point auto-compaction should already
+    have intervened)."""
+    if _last_main_turn_usage(session.cost.turns) is None:
         return None
     usage = current_context_usage(session, limit_table=limit_table)
     available = usage.limit_tokens - usage.used_tokens - safety_margin
@@ -181,8 +207,13 @@ def looks_like_context_ceiling(session: Session) -> bool:
     landed on total_tokens=16384 (or within a few tokens of it) despite
     prompt_tokens climbing every turn — the model's real ~16k window, for a
     model pcli had no entry for (it was assuming 128000, i.e. reading the
-    session as ~13% full when it was actually exhausted)."""
-    turns = session.cost.turns
+    session as ~13% full when it was actually exhausted).
+
+    Compares the last two *main*-conversation entries specifically (see
+    module docstring) — a subagent or compaction call sitting between them
+    in Session.cost.turns has its own unrelated prompt/total sizes and would
+    otherwise be compared as if it were consecutive turns."""
+    turns = _main_turns(session.cost.turns)
     if len(turns) < 2:
         return False
     current = turns[-1].usage

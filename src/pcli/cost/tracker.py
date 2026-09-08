@@ -6,6 +6,7 @@ import json
 from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from pcli.config.paths import cost_ledger_file
 from pcli.cost.pricing_table import PricingTable
@@ -25,7 +26,9 @@ class CostTracker:
         self._pricing = pricing_table or PricingTable.load()
         self._ledger_path = ledger_path or cost_ledger_file()
 
-    def record_turn(self, model: str, usage: Usage) -> TurnCost:
+    def record_turn(
+        self, model: str, usage: Usage, *, source: Literal["main", "subagent", "compaction"] = "main"
+    ) -> TurnCost:
         cost_usd = self._pricing.cost_usd(
             model,
             prompt_tokens=usage.prompt_tokens,
@@ -37,6 +40,7 @@ class CostTracker:
             usage=usage,
             cost_usd=cost_usd,
             estimated=usage.estimated,
+            source=source,
         )
         self._session.cost.turns.append(turn)
         self._session.cost.session_total_usd += cost_usd

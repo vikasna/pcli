@@ -76,6 +76,12 @@ async def _spawn_subagent(arguments: dict, ctx: ToolContext) -> ToolResult:
         permission_manager=ctx.permission_manager,
         tool_context_factory=lambda: child_ctx,
         max_tool_iterations=max_iterations,
+        # Inherit the parent's current dynamic max_tokens cap and sampling
+        # temperature - without this the subagent silently ran uncapped/at-
+        # default regardless of /max-response-tokens or /temperature, since
+        # a fresh AgentLoop defaults both to None.
+        max_response_tokens=ctx.max_response_tokens,
+        temperature=ctx.temperature,
     )
 
     messages = [

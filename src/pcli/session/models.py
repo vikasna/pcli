@@ -74,6 +74,17 @@ class TurnCost(BaseModel):
     cost_usd: float
     estimated: bool = False
     created_at: datetime = Field(default_factory=_utcnow)
+    source: Literal["main", "subagent", "compaction"] = "main"
+    """Which conversation this usage actually came from. cost/context.py's
+    current_context_usage/looks_like_context_ceiling need this to find the
+    last *main*-conversation entry specifically — a subagent's or
+    compaction's own usage is real spend (still counted in
+    SessionCost.total_tokens/session_total_usd) but reflects a completely
+    different, unrelated conversation's size, not how full the main
+    conversation's context window actually is. Defaults to "main" so a
+    session persisted before this field existed still validates and behaves
+    exactly as it did before (every entry was implicitly a main-turn entry
+    back then)."""
 
 
 class SessionCost(BaseModel):
