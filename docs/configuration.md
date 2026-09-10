@@ -518,6 +518,21 @@ looking like a normal completion, specifically so a weak model can't
 fabricate a success report over a subagent that never actually finished —
 see [`tools.md#spawn_subagent`](tools.md#spawn_subagent).
 
+Separately, every subagent's result also carries `context_usage: ContextUsage
+| None` (`NestedAgentResult`, `src/pcli/tools/_nested_agent.py`), computed
+after the loop finishes from the last LLM call's reported
+`usage.total_tokens` against `ContextLimitTable.load().lookup(ctx.model)` —
+the same basis the main conversation's own `current_context_usage` uses (see
+[Context-limit detection and correction](#context-limit-detection-and-correction)
+above). `context_usage_note()` appends a note to the reported summary
+whenever `context_usage.fraction` is at or above `HIGH_CONTEXT_USAGE_FRACTION`
+(0.85 — deliberately higher than `auto_compact_threshold`'s default of 0.8,
+since a subagent's own conversation has no compaction of its own and this is
+just "worth mentioning" rather than a trigger for an actual summarization
+pass). Unlike the DID NOT FINISH prefix, this is purely informational: it's
+appended without setting `is_error=True`, even on an otherwise-successful,
+normal completion.
+
 `ChatScreen` also shows a one-time system message on mount when local-api
 mode is active for the session's gateway.
 
@@ -542,6 +557,27 @@ API gateway" and that local models are often much slower than hosted ones,
 when applicable. The same pattern (name the setting, suggest a value, say how
 to set it) covers connect timeouts, connection errors, HTTP 401/403 (bad or
 missing `gateway_api_key`), HTTP 429 (points at `max_retries`), and HTTP 5xx.
+
+HTTP 400 gets its own check ahead of the rest: `_http_status_hint()`
+(`src/pcli/llm/client.py`) now takes the raw response body text as well as
+the status code, and for a 400 whose body mentions
+`"context_length_exceeded"`, `"context length"`, `"context window"`, or
+`"maximum"` together with `"token"` (case-insensitive — OpenAI-compatible
+gateways, including llama.cpp/LM Studio, word this differently by backend)
+it returns: "This looks like a context-length overflow — the request
+(conversation history plus tool results) is larger than the model can
+accept in one call. If this is the main conversation, /context-limit sets
+the context window pcli assumes for auto-compaction; if it's a subagent's
+own task, its conversation has no compaction of its own, so try splitting
+the task into smaller, narrower steps." Both call sites
+(`chat_stream`'s streaming error path and `list_models`) pass the body text
+through. This applies to any chat-completions call, not just subagents, but
+it's the one context-length failure mode pcli's own turn-based
+auto-compaction can't catch: a subagent's own nested tool-calling loop has
+no compaction of its own (see [above](#local-api-mode) and
+[`tools.md#spawn_subagent`](tools.md#spawn_subagent)), so a long subagent
+task can hit this mid-turn with no prior warning.
+
 The "reached the max tool-call iteration limit" / "reached the guardrail
 limit of N tool calls" turn-ending notices (`agent/loop.py`) got the same
 treatment: they now name `max_tool_iterations`/`PCLI_MAX_TOOL_ITERATIONS` and

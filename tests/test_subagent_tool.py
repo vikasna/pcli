@@ -585,3 +585,63 @@ async def test_agent_loop_propagates_subagent_cost_via_extra_usage(tmp_path: Pat
 
     turn_complete = [e for e in events if isinstance(e, TurnCompleteEvent)]
     assert turn_complete[0].new_messages[-1].content == "The subagent found it."
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_spawn_subagent_notes_high_context_usage(tmp_path: Path, monkeypatch):
+    """A subagent's own conversation has no compaction of its own - if it
+    ends up using most of the model's context window, that must be surfaced
+    to the parent as a real explanation, not silently dropped. Isolated from
+    the real user's context_limits.toml the same way test_context_tracking.py
+    does, so "fake-model" deterministically falls back to the built-in
+    128_000 default regardless of what's on the machine running this test."""
+    import pcli.cost.context as context_module
+
+    monkeypatch.setattr(context_module, "context_limits_file", lambda: tmp_path / "context_limits.toml")
+
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=_text_response(
+            "Done.",
+            usage={"prompt_tokens": 110_000, "completion_tokens": 1000, "total_tokens": 111_000},
+        )
+    )
+
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    registry = _make_registry_with_echo_and_subagent()
+
+    async with GatewayClient(_settings()) as client:
+        ctx = _make_ctx(tmp_path, registry, client, permission_manager)
+        result = await SPAWN_SUBAGENT.handler({"task": "do something"}, ctx)
+
+    assert result.is_error is False  # finished normally - this is informational, not a failure
+    assert "reached 87%" in result.output
+    assert "128,000-token context limit" in result.output
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_spawn_subagent_does_not_note_low_context_usage(tmp_path: Path, monkeypatch):
+    import pcli.cost.context as context_module
+
+    monkeypatch.setattr(context_module, "context_limits_file", lambda: tmp_path / "context_limits.toml")
+
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=_text_response(
+            "Done.",
+            usage={"prompt_tokens": 900, "completion_tokens": 100, "total_tokens": 1000},
+        )
+    )
+
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    registry = _make_registry_with_echo_and_subagent()
+
+    async with GatewayClient(_settings()) as client:
+        ctx = _make_ctx(tmp_path, registry, client, permission_manager)
+        result = await SPAWN_SUBAGENT.handler({"task": "do something"}, ctx)
+
+    assert "context limit" not in result.output

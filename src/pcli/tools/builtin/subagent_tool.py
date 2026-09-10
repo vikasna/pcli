@@ -15,7 +15,7 @@ spend the session total must reflect.
 
 from __future__ import annotations
 
-from pcli.tools._nested_agent import run_nested_agent
+from pcli.tools._nested_agent import context_usage_note, run_nested_agent
 from pcli.tools.base import ToolContext, ToolResult, ToolSpec
 
 SPAWN_SUBAGENT_TOOL_NAME = "spawn_subagent"
@@ -88,6 +88,9 @@ async def _spawn_subagent(arguments: dict, ctx: ToolContext) -> ToolResult:
             "subagent_max_iterations via PCLI_SUBAGENT_MAX_ITERATIONS/config.toml, or split the "
             "work into a narrower follow-up task.\n\n" + summary
         )
+    note = context_usage_note(result)
+    if note:
+        summary += "\n\n" + note
     return ToolResult(output=summary, is_error=result.terminated_early, extra_usage=result.usages)
 
 

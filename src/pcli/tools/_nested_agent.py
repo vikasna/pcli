@@ -12,8 +12,19 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
 from pcli.agent.loop import AgentLoop, ToolStartEvent, TurnCompleteEvent
+from pcli.cost.context import ContextLimitTable, ContextUsage
 from pcli.llm.models import ChatMessage, Usage, UsageEvent
 from pcli.tools.base import ToolContext, ToolSpec
+
+# A subagent's own conversation has no compaction of its own (unlike the
+# main loop's auto-compaction) - this is purely informational, appended to
+# a subagent's result so the parent/user has a real explanation on hand if
+# the work looks incomplete, rather than just a bare iteration-cap note or
+# an opaque gateway error. Deliberately higher than auto_compact_threshold's
+# default of 0.8: that number triggers an actual summarization pass with
+# headroom to spare, this one is just "worth mentioning", so it can sit
+# closer to the ceiling before it's worth the noise.
+HIGH_CONTEXT_USAGE_FRACTION = 0.85
 
 
 @dataclass
@@ -22,6 +33,12 @@ class NestedAgentResult:
     tool_call_count: int
     terminated_early: bool
     usages: list[Usage] = field(default_factory=list)
+    context_usage: ContextUsage | None = None
+    """How much of the model's context window the subagent's own
+    conversation was using by the end of its run (based on the last LLM
+    call's reported usage.total_tokens, same basis cost/context.py's
+    current_context_usage uses for the main loop) - None if no call
+    completed or the model has no known context limit."""
 
 
 async def run_nested_agent(
@@ -86,9 +103,34 @@ async def run_nested_agent(
         if ctx.activity is not None:
             ctx.activity.finish_subagent()
 
+    context_usage = None
+    if usages and ctx.model:
+        limit_tokens = ContextLimitTable.load().lookup(ctx.model)
+        context_usage = ContextUsage(used_tokens=usages[-1].total_tokens, limit_tokens=limit_tokens)
+
     return NestedAgentResult(
         final_text="\n\n".join(part for part in final_text_parts if part).strip(),
         tool_call_count=tool_call_count,
         terminated_early=terminated_early,
         usages=usages,
+        context_usage=context_usage,
+    )
+
+
+def context_usage_note(result: NestedAgentResult) -> str | None:
+    """A note to append to a subagent's reported summary when its own
+    conversation ended up using a large fraction of the model's context
+    window - None if usage was unremarkable or unknown. Shared wording
+    since, unlike the DID NOT FINISH message, there's nothing tool-specific
+    to say here."""
+    usage = result.context_usage
+    if usage is None or usage.fraction < HIGH_CONTEXT_USAGE_FRACTION:
+        return None
+    return (
+        f"[pcli] Note: this subagent's own conversation reached {usage.fraction:.0%} of its "
+        f"~{usage.limit_tokens:,}-token context limit by the end of its run. Its own task history "
+        "has no automatic compaction (unlike the main conversation) - if the result above looks "
+        "incomplete or cut off, context size may be the real cause even if it wasn't reported as "
+        "an iteration-limit failure. Consider splitting the task into smaller, narrower subagent "
+        "calls rather than just raising iteration limits."
     )

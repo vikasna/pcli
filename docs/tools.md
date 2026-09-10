@@ -631,6 +631,26 @@ filtered out of the tool registry a subagent runs with (by name, in
   finished; the message also points the model at raising
   `subagent_max_iterations` or splitting the work into a narrower follow-up
   task.
+- **A note gets appended when the subagent's own context usage ran high —
+  even on an otherwise-normal completion.** `NestedAgentResult.context_usage`
+  (`src/pcli/tools/_nested_agent.py`) is computed after the loop finishes,
+  from the last LLM call's reported `usage.total_tokens` against
+  `ContextLimitTable.load().lookup(ctx.model)` — the same basis the main
+  conversation's own `current_context_usage` uses (see
+  [`configuration.md`](configuration.md#context-limit-detection-and-correction)).
+  `context_usage_note()` returns a note whenever `context_usage.fraction` is
+  at or above `HIGH_CONTEXT_USAGE_FRACTION` (0.85 — deliberately higher than
+  `auto_compact_threshold`'s default of 0.8, since this is "worth
+  mentioning" rather than a trigger for an actual summarization pass):
+  "[pcli] Note: this subagent's own conversation reached N% of its
+  ~M-token context limit by the end of its run. Its own task history has no
+  automatic compaction (unlike the main conversation) - if the result above
+  looks incomplete or cut off, context size may be the real cause even if it
+  wasn't reported as an iteration-limit failure. Consider splitting the task
+  into smaller, narrower subagent calls rather than just raising iteration
+  limits." Unlike the DID NOT FINISH prefix above, this is purely
+  informational — it's appended to the summary without setting
+  `is_error=True`, since the task may genuinely have completed fine.
 
 ## explore_codebase, explore_files, explore_logs
 
@@ -668,6 +688,10 @@ tools themselves.
   iteration limit (N) before completing.` prefix
   (`src/pcli/tools/agent_tools.py`'s `make_agent_tool`) — see the
   `spawn_subagent` entry above for the full reasoning.
+- Same `context_usage_note()` appended when the subagent's own context usage
+  ran high (`fraction >= HIGH_CONTEXT_USAGE_FRACTION`, 0.85) — purely
+  informational, doesn't set `is_error=True` — see the `spawn_subagent` entry
+  above for the exact wording.
 
 **`explore_codebase`** — delegates a focused code-exploration question (e.g.
 "how is auth implemented", "where is X defined") to a subagent restricted to
@@ -699,8 +723,9 @@ Four more ready-made agent tools registered by default in
 `explore_codebase`/`explore_files`/`explore_logs` above. Same shape: a single
 `query` argument, `needs_permission=True`, the same live-progress reporting
 to `ActivityTracker`, and the same `ctx.subagent_max_iterations` cap plus
-"DID NOT FINISH" failure treatment if it's hit (see the `explore_codebase`
-entry above). Unlike the three `explore_*` tools, these are *not* uniformly
+"DID NOT FINISH" failure treatment and `context_usage_note()` high-context
+note if either is hit (see the `explore_codebase` entry above). Unlike the
+three `explore_*` tools, these are *not* uniformly
 read-only — the `plan_mode_safe` value is chosen per tool based on whether
 its allowed-tool list is itself entirely read-only.
 

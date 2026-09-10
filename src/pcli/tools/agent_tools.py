@@ -10,7 +10,7 @@ register_agent_tool (tools/builtin/agent_tool_register_tool.py).
 
 from __future__ import annotations
 
-from pcli.tools._nested_agent import run_nested_agent
+from pcli.tools._nested_agent import context_usage_note, run_nested_agent
 from pcli.tools.base import ToolContext, ToolResult, ToolSpec
 
 
@@ -67,6 +67,9 @@ def make_agent_tool(
                 "do not report the task as done without verifying what was actually produced.\n\n"
                 + summary
             )
+        note = context_usage_note(result)
+        if note:
+            summary += "\n\n" + note
         return ToolResult(
             output=summary, is_error=result.terminated_early, extra_usage=result.usages
         )

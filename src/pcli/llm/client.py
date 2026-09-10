@@ -89,7 +89,32 @@ class GatewayClient:
             )
         return None
 
-    def _http_status_hint(self, status_code: int) -> str | None:
+    def _http_status_hint(self, status_code: int, body: str = "") -> str | None:
+        # Checked before the status-code-specific branches below: OpenAI-
+        # compatible gateways (including llama.cpp/LM Studio) report a
+        # context-length overflow as a 400 with wording that varies by
+        # backend, so this is a text match on the body rather than a status
+        # code alone. Worth surfacing as its own hint rather than a raw
+        # gateway error string, since the cause isn't obvious from a bare
+        # "invalid_request_error" — this is also the one context-length
+        # failure mode pcli's own turn-based auto-compaction can't catch: a
+        # subagent's own nested tool-calling loop has no compaction of its
+        # own (see tools/_nested_agent.py), so a long subagent task can hit
+        # this mid-turn with no prior warning.
+        body_lower = body.lower()
+        if status_code == 400 and (
+            "context_length_exceeded" in body_lower
+            or "context length" in body_lower
+            or "context window" in body_lower
+            or ("maximum" in body_lower and "token" in body_lower)
+        ):
+            return (
+                "This looks like a context-length overflow — the request (conversation history "
+                "plus tool results) is larger than the model can accept in one call. If this is "
+                "the main conversation, /context-limit sets the context window pcli assumes for "
+                "auto-compaction; if it's a subagent's own task, its conversation has no "
+                "compaction of its own, so try splitting the task into smaller, narrower steps."
+            )
         if status_code in (401, 403):
             if self._settings.gateway_api_key:
                 return "The gateway rejected the configured gateway_api_key — check it's correct and hasn't expired."
@@ -165,10 +190,11 @@ class GatewayClient:
                 ) as response:
                     if response.status_code >= 400:
                         body = await response.aread()
+                        body_text = body.decode(errors="replace")
                         raise GatewayError.from_http_status(
                             response.status_code,
-                            body.decode(errors="replace"),
-                            hint=self._http_status_hint(response.status_code),
+                            body_text,
+                            hint=self._http_status_hint(response.status_code, body_text),
                         )
                     async for event in parse_sse_stream(response.aiter_lines()):
                         started = True
@@ -241,7 +267,9 @@ class GatewayClient:
             raise GatewayError.from_network_error(str(exc), hint=self._network_error_hint(exc)) from exc
         if response.status_code >= 400:
             raise GatewayError.from_http_status(
-                response.status_code, response.text, hint=self._http_status_hint(response.status_code)
+                response.status_code,
+                response.text,
+                hint=self._http_status_hint(response.status_code, response.text),
             )
         payload = response.json()
         entries = payload.get("data", []) if isinstance(payload, dict) else []

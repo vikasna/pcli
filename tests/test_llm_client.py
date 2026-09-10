@@ -446,6 +446,48 @@ async def test_500_response_hints_that_it_is_usually_transient():
 
 
 @pytest.mark.asyncio
+@respx.mock
+async def test_400_context_length_exceeded_response_hints_at_the_actual_cause():
+    """OpenAI-compatible gateways (including llama.cpp/LM Studio) report a
+    context overflow as a 400 with wording that varies by backend - this
+    must be recognized from the body text, not just the status code, and
+    turned into an explanation rather than left as a raw gateway string.
+    Real-world motivation: a subagent's own conversation has no compaction
+    of its own, so this is the failure mode it can actually hit."""
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            400,
+            content=b'{"error": {"message": "This model\'s maximum context length is 8192 '
+            b'tokens. However, your messages resulted in 9000 tokens.", '
+            b'"code": "context_length_exceeded"}}',
+        )
+    )
+
+    async with GatewayClient(_settings()) as client:
+        with pytest.raises(GatewayError) as exc_info:
+            async for _ in client.chat_stream([ChatMessage(role="user", content="hi")]):
+                pass
+
+    assert "context-length overflow" in exc_info.value.message
+    assert "subagent" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_400_unrelated_bad_request_does_not_get_the_context_length_hint():
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=httpx.Response(400, content=b'{"error": "invalid tool schema"}')
+    )
+
+    async with GatewayClient(_settings()) as client:
+        with pytest.raises(GatewayError) as exc_info:
+            async for _ in client.chat_stream([ChatMessage(role="user", content="hi")]):
+                pass
+
+    assert "context-length overflow" not in exc_info.value.message
+
+
+@pytest.mark.asyncio
 async def test_client_uses_the_local_api_timeout_floor_not_the_raw_setting():
     settings = _settings(
         request_timeout_s=120.0,
