@@ -10,13 +10,8 @@ register_agent_tool (tools/builtin/agent_tool_register_tool.py).
 
 from __future__ import annotations
 
-from dataclasses import replace
-
-from pcli.agent.loop import AgentLoop, ToolStartEvent, TurnCompleteEvent
-from pcli.llm.models import ChatMessage, Usage, UsageEvent
+from pcli.tools._nested_agent import run_nested_agent
 from pcli.tools.base import ToolContext, ToolResult, ToolSpec
-
-_DEFAULT_MAX_ITERATIONS = 15
 
 
 def make_agent_tool(
@@ -38,11 +33,6 @@ def make_agent_tool(
             )
 
         query = arguments["query"]
-        max_iterations = (
-            min(ctx.max_tool_iterations, _DEFAULT_MAX_ITERATIONS)
-            if ctx.max_tool_iterations is not None
-            else _DEFAULT_MAX_ITERATIONS
-        )
 
         def _allowed(tool: ToolSpec) -> bool:
             if tool.name not in allowed_tool_names:
@@ -51,66 +41,35 @@ def make_agent_tool(
             # tool can't be used as a bypass while the parent is restricted.
             return not (ctx.plan_mode and not tool.plan_mode_safe)
 
-        sub_registry = ctx.tool_registry.filtered(_allowed)
-
-        child_ctx = replace(ctx, tool_registry=sub_registry, subagent_depth=ctx.subagent_depth + 1)
-        sub_loop = AgentLoop(
-            ctx.gateway_client,
-            model=ctx.model,
-            tool_registry=sub_registry,
-            permission_manager=ctx.permission_manager,
-            tool_context_factory=lambda: child_ctx,
-            max_tool_iterations=max_iterations,
-            # Inherit the parent's current dynamic max_tokens cap and
-            # sampling temperature - without this a subagent silently ran
-            # uncapped/at-default regardless of /max-response-tokens or
-            # /temperature, since a fresh AgentLoop defaults both to None.
-            max_response_tokens=ctx.max_response_tokens,
-            temperature=ctx.temperature,
-        )
-
-        messages = [
-            ChatMessage(role="system", content=persona_prompt),
-            ChatMessage(role="user", content=query),
-        ]
-
-        final_text_parts: list[str] = []
-        tool_call_count = 0
-        usages: list[Usage] = []
-        if ctx.activity is not None:
-            ctx.activity.start_subagent(f"{name}: {query}")
         try:
-            async for event in sub_loop.run_turn(messages, ask=ctx.ask):
-                if isinstance(event, UsageEvent):
-                    usages.append(event.usage)
-                elif isinstance(event, ToolStartEvent):
-                    if ctx.activity is not None:
-                        ctx.activity.record_subagent_tool_call(event.tool_call.function.name)
-                elif isinstance(event, TurnCompleteEvent):
-                    for message in event.new_messages:
-                        if message.role != "assistant":
-                            continue
-                        if message.tool_calls:
-                            tool_call_count += len(message.tool_calls)
-                        if message.content:
-                            final_text_parts.append(message.content)
+            result = await run_nested_agent(
+                ctx,
+                system_prompt=persona_prompt,
+                task=query,
+                activity_label=f"{name}: {query}",
+                allowed=_allowed,
+                max_iterations=ctx.subagent_max_iterations,
+            )
         except Exception as exc:  # noqa: BLE001 - surface failure, don't crash the parent turn
             return ToolResult(
                 output=f"'{name}' failed: {exc}\n"
                 "[pcli] Suggestion: retry with a narrower, more specific query, or handle it "
                 "directly yourself instead of delegating.",
                 is_error=True,
-                extra_usage=usages,
             )
-        finally:
-            if ctx.activity is not None:
-                ctx.activity.finish_subagent()
 
-        result_text = "\n\n".join(part for part in final_text_parts if part).strip()
-        if not result_text:
-            result_text = f"({name} produced no final text output)"
-        summary = f"[{name} made {tool_call_count} tool call(s)]\n{result_text}"
-        return ToolResult(output=summary, extra_usage=usages)
+        result_text = result.final_text or f"({name} produced no final text output)"
+        summary = f"[{name} made {result.tool_call_count} tool call(s)]\n{result_text}"
+        if result.terminated_early:
+            summary = (
+                f"[pcli] '{name}' DID NOT FINISH — it hit its tool-call iteration limit "
+                f"({ctx.subagent_max_iterations}) before completing. Treat this as INCOMPLETE: "
+                "do not report the task as done without verifying what was actually produced.\n\n"
+                + summary
+            )
+        return ToolResult(
+            output=summary, is_error=result.terminated_early, extra_usage=result.usages
+        )
 
     return ToolSpec(
         name=name,

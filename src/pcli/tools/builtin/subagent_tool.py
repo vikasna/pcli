@@ -15,15 +15,10 @@ spend the session total must reflect.
 
 from __future__ import annotations
 
-from dataclasses import replace
-
-from pcli.agent.loop import AgentLoop, ToolStartEvent, TurnCompleteEvent
-from pcli.llm.models import ChatMessage, Usage, UsageEvent
+from pcli.tools._nested_agent import run_nested_agent
 from pcli.tools.base import ToolContext, ToolResult, ToolSpec
 
 SPAWN_SUBAGENT_TOOL_NAME = "spawn_subagent"
-
-_DEFAULT_MAX_ITERATIONS = 15
 
 _SUBAGENT_SYSTEM_PROMPT = (
     "You are a subagent spawned by another AI agent (pcli) to handle one focused task. "
@@ -49,13 +44,11 @@ async def _spawn_subagent(arguments: dict, ctx: ToolContext) -> ToolResult:
     # Subagents keep this structural safety cap even in local-api mode
     # (ctx.max_tool_iterations may be None there, meaning "unlimited" for the
     # parent) — nesting depth/iteration count is a distinct concern from
-    # turn/cost limiting, see spawn_subagent's module docstring.
+    # turn/cost limiting, see this module's own docstring.
     if requested_max_iterations:
-        max_iterations = min(int(requested_max_iterations), _DEFAULT_MAX_ITERATIONS)
-    elif ctx.max_tool_iterations is None:
-        max_iterations = _DEFAULT_MAX_ITERATIONS
+        max_iterations = min(int(requested_max_iterations), ctx.subagent_max_iterations)
     else:
-        max_iterations = min(ctx.max_tool_iterations, _DEFAULT_MAX_ITERATIONS)
+        max_iterations = ctx.subagent_max_iterations
 
     def _allowed(tool: ToolSpec) -> bool:
         if tool.name == SPAWN_SUBAGENT_TOOL_NAME:
@@ -66,66 +59,36 @@ async def _spawn_subagent(arguments: dict, ctx: ToolContext) -> ToolResult:
         # as a bypass — it inherits the same restriction.
         return not (ctx.plan_mode and not tool.plan_mode_safe)
 
-    sub_registry = ctx.tool_registry.filtered(_allowed)
-
-    child_ctx = replace(ctx, tool_registry=sub_registry, subagent_depth=ctx.subagent_depth + 1)
-    sub_loop = AgentLoop(
-        ctx.gateway_client,
-        model=ctx.model,
-        tool_registry=sub_registry,
-        permission_manager=ctx.permission_manager,
-        tool_context_factory=lambda: child_ctx,
-        max_tool_iterations=max_iterations,
-        # Inherit the parent's current dynamic max_tokens cap and sampling
-        # temperature - without this the subagent silently ran uncapped/at-
-        # default regardless of /max-response-tokens or /temperature, since
-        # a fresh AgentLoop defaults both to None.
-        max_response_tokens=ctx.max_response_tokens,
-        temperature=ctx.temperature,
-    )
-
-    messages = [
-        ChatMessage(role="system", content=_SUBAGENT_SYSTEM_PROMPT),
-        ChatMessage(role="user", content=task),
-    ]
-
-    final_text_parts: list[str] = []
-    tool_call_count = 0
-    usages: list[Usage] = []
-    if ctx.activity is not None:
-        ctx.activity.start_subagent(task)
     try:
-        async for event in sub_loop.run_turn(messages, ask=ctx.ask):
-            if isinstance(event, UsageEvent):
-                usages.append(event.usage)
-            elif isinstance(event, ToolStartEvent):
-                if ctx.activity is not None:
-                    ctx.activity.record_subagent_tool_call(event.tool_call.function.name)
-            elif isinstance(event, TurnCompleteEvent):
-                for message in event.new_messages:
-                    if message.role != "assistant":
-                        continue
-                    if message.tool_calls:
-                        tool_call_count += len(message.tool_calls)
-                    if message.content:
-                        final_text_parts.append(message.content)
+        result = await run_nested_agent(
+            ctx,
+            system_prompt=_SUBAGENT_SYSTEM_PROMPT,
+            task=task,
+            activity_label=task,
+            allowed=_allowed,
+            max_iterations=max_iterations,
+        )
     except Exception as exc:  # noqa: BLE001 - surface subagent failure, don't crash the parent turn
         return ToolResult(
             output=f"Subagent failed: {exc}\n"
             "[pcli] Suggestion: retry with a narrower, more specific task description, or "
             "handle it directly yourself instead of delegating.",
             is_error=True,
-            extra_usage=usages,
         )
-    finally:
-        if ctx.activity is not None:
-            ctx.activity.finish_subagent()
 
-    result_text = "\n\n".join(part for part in final_text_parts if part).strip()
-    if not result_text:
-        result_text = "(subagent produced no final text output)"
-    summary = f"[subagent made {tool_call_count} tool call(s)]\n{result_text}"
-    return ToolResult(output=summary, extra_usage=usages)
+    result_text = result.final_text or "(subagent produced no final text output)"
+    summary = f"[subagent made {result.tool_call_count} tool call(s)]\n{result_text}"
+    if result.terminated_early:
+        summary = (
+            "[pcli] SUBAGENT DID NOT FINISH — it hit its tool-call iteration limit "
+            f"({max_iterations}) before completing the task below. Treat this as INCOMPLETE: "
+            "do not report the task as done, and verify what (if anything) was actually "
+            "produced (e.g. list_dir/read_file the expected output) before telling the user it "
+            "succeeded. If the task genuinely needs more tool calls, either raise "
+            "subagent_max_iterations via PCLI_SUBAGENT_MAX_ITERATIONS/config.toml, or split the "
+            "work into a narrower follow-up task.\n\n" + summary
+        )
+    return ToolResult(output=summary, is_error=result.terminated_early, extra_usage=result.usages)
 
 
 SPAWN_SUBAGENT = ToolSpec(
@@ -151,8 +114,11 @@ SPAWN_SUBAGENT = ToolSpec(
             },
             "max_iterations": {
                 "type": "integer",
-                "description": "Optional cap on the subagent's own tool-call iterations "
-                "(default: a conservative built-in limit).",
+                "description": "Optional cap on the subagent's own tool-call iterations. There "
+                "is always a hard built-in ceiling regardless of this value (configurable via "
+                "subagent_max_iterations) - if a task genuinely needs many tool calls (running "
+                "several scripts, iterating on errors, generating a report), request a "
+                "generous number here rather than assuming the default is enough.",
             },
         },
         "required": ["task"],

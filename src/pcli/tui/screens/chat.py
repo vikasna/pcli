@@ -53,7 +53,7 @@ from pcli.tui.screens.permission_modal import ask_via_modal
 from pcli.tui.shell_passthrough import run_passthrough_command
 from pcli.tui.widgets.chat_input import ChatInput
 from pcli.tui.widgets.message_view import MessageView
-from pcli.tui.widgets.status_bar import StatusBar
+from pcli.tui.widgets.status_bar import StatusBar, truncate
 from pcli.tui.widgets.status_pane import StatusPane
 
 # Used for local-api-mode sessions: always $0, regardless of pricing.toml or
@@ -130,6 +130,10 @@ tools (no writes, edits, or shell commands) until you exit.
 - **/toolbox** — discover, list, or remove toolbox tools (CLI programs/\
 scripts wrapped as callable tools): `/toolbox discover NAME [path]`, \
 `/toolbox list`, `/toolbox remove NAME`.
+- **/subagent** — show the currently-running subagent's task and its full \
+tool-call history so far, plus any question it's currently waiting on an \
+answer to. Nothing to show once it finishes (only its final text and \
+tool-call count come back to the main conversation).
 
 # Shell passthrough
 
@@ -441,6 +445,7 @@ class ChatScreen(Screen):
             ask_question=self._current_ask_question,
             brave_search_api_key=self._settings.brave_search_api_key,
             max_tool_iterations=self._effective_max_tool_iterations(),
+            subagent_max_iterations=self._settings.subagent_max_iterations,
             max_response_tokens=self._agent_loop.max_response_tokens if self._agent_loop else None,
             temperature=self._agent_loop.temperature if self._agent_loop else None,
             session=self._session,
@@ -632,6 +637,8 @@ class ChatScreen(Screen):
             )
         elif command == "prune-tool-results":
             self._handle_prune_tool_results_command(rest or None)
+        elif command == "subagent":
+            self._handle_subagent_command()
         elif command == "max-response-tokens":
             self._handle_max_response_tokens_command(rest or None)
         elif command == "rename":
@@ -881,6 +888,32 @@ class ChatScreen(Screen):
             setattr(guardrails, attr_name, value)
             note = f" Takes effect on the next {window}."
         message_view.add_message("system", f"{config_key} set to {value}.{note}")
+
+    def _handle_subagent_command(self) -> None:
+        """`/subagent` — shows the currently-running subagent's task and its
+        full tool-call history so far (name + arguments), plus any question
+        it's currently blocked on. The status bar's second line only has
+        room for a one-line summary (last tool name); this is the detailed
+        view — mirrors what ask_tool.py already folds into an in-flight
+        ask_user_question's own prompt text, available on demand for anyone
+        just watching progress rather than actively being asked something."""
+        message_view = self.query_one(MessageView)
+        sub = self._activity.subagent
+        if sub is None:
+            message_view.add_message("system", "No subagent is currently running.")
+            return
+
+        lines = [f"Subagent task: {sub.task}", f"Tool calls so far: {len(sub.call_log)}"]
+        if sub.pending_question is not None:
+            question, options = sub.pending_question
+            lines.append(f"\nCurrently waiting on your answer to:\n{question}")
+            if options:
+                lines.append("Options: " + ", ".join(options))
+        if sub.call_log:
+            lines.append("")
+            for i, call in enumerate(sub.call_log, start=1):
+                lines.append(f"{i}. {call.name}({truncate(call.arguments, 200)})")
+        message_view.add_message("system", "\n".join(lines))
 
     def _handle_prune_tool_results_command(self, arg: str | None) -> None:
         """`/prune-tool-results [off|on|<n>]` — view/toggle/set the

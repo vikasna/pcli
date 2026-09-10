@@ -99,6 +99,15 @@ class Settings(BaseSettings):
         default=25,
         validation_alias=AliasChoices("PCLI_MAX_TOOL_ITERATIONS", "max_tool_iterations"),
     )
+    subagent_max_iterations: int = Field(
+        default=30,
+        validation_alias=AliasChoices("PCLI_SUBAGENT_MAX_ITERATIONS", "subagent_max_iterations"),
+        description="Hard ceiling on a subagent's (spawn_subagent, explore_codebase, etc.) own "
+        "tool-call iterations - a model requesting more via spawn_subagent's max_iterations "
+        "argument is still capped at this value. Always enforced, even in local-api mode where "
+        "max_tool_iterations itself is uncapped: nesting depth/runaway cost is a distinct "
+        "safety concern from the parent turn's own iteration limit.",
+    )
     sandbox_backend: str = Field(
         default="auto",
         validation_alias=AliasChoices("PCLI_SANDBOX_BACKEND", "sandbox_backend"),

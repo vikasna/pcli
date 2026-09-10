@@ -67,6 +67,13 @@ class ToolResultEvent(BaseModel):
 class TurnCompleteEvent(BaseModel):
     kind: Literal["turn_complete"] = "turn_complete"
     new_messages: list[ChatMessage]
+    terminated_early: bool = False
+    """True if the turn was cut off by max_tool_iterations or the
+    max_tool_calls_per_turn guardrail rather than the model choosing to
+    stop on its own - the model's work here is genuinely incomplete, not
+    just finished. Consumers that treat a turn's outcome as a result (namely
+    spawn_subagent/make_agent_tool reporting back to a parent loop) use this
+    to mark that result as an error instead of a normal completion."""
 
 
 AgentEvent = StreamEvent | ToolStartEvent | ToolResultEvent | TurnCompleteEvent
@@ -171,6 +178,7 @@ class AgentLoop:
             if self._permission_manager is not None
             else None
         )
+        terminated_early = False
 
         while True:
             iterations += 1
@@ -184,6 +192,7 @@ class AgentLoop:
                 )
                 yield TextDelta(text=note)
                 working_messages.append(ChatMessage(role="assistant", content=note))
+                terminated_early = True
                 break
 
             text_parts: list[str] = []
@@ -251,9 +260,12 @@ class AgentLoop:
                 )
                 yield TextDelta(text=note)
                 working_messages.append(ChatMessage(role="assistant", content=note))
+                terminated_early = True
                 break
 
-        yield TurnCompleteEvent(new_messages=working_messages[original_len:])
+        yield TurnCompleteEvent(
+            new_messages=working_messages[original_len:], terminated_early=terminated_early
+        )
 
     def _archive_if_large(self, output: str, ctx: ToolContext) -> tuple[str, str | None]:
         if len(output) <= self._artifact_threshold_chars or ctx.artifact_store is None:

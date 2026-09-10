@@ -577,3 +577,73 @@ async def test_make_tool_context_carries_max_response_tokens_and_temperature_for
         ctx = screen._make_tool_context()
         assert ctx.temperature == 0.4
         assert ctx.max_response_tokens == 4321
+
+
+@pytest.mark.asyncio
+async def test_make_tool_context_carries_subagent_max_iterations(tmp_path: Path):
+    screen, _session = _make_screen(tmp_path, subagent_max_iterations=42)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        ctx = screen._make_tool_context()
+        assert ctx.subagent_max_iterations == 42
+
+
+# --- /subagent ---
+
+
+@pytest.mark.asyncio
+async def test_subagent_command_with_none_running_reports_that(tmp_path: Path):
+    screen, _session = _make_screen(tmp_path)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        screen._handle_command("/subagent")
+        await pilot.pause()
+
+        message_view = screen.query_one(MessageView)
+        assert "No subagent is currently running" in message_view._current_text
+
+
+@pytest.mark.asyncio
+async def test_subagent_command_shows_task_and_call_log(tmp_path: Path):
+    screen, _session = _make_screen(tmp_path)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        screen._activity.start_subagent("build the report")
+        screen._activity.record_subagent_tool_call("read_file", '{"path": "data.csv"}')
+        screen._activity.record_subagent_tool_call("run_shell", '{"command": "python train.py"}')
+
+        screen._handle_command("/subagent")
+        await pilot.pause()
+
+        message_view = screen.query_one(MessageView)
+        text = message_view._current_text
+        assert "build the report" in text
+        assert "read_file" in text
+        assert "run_shell" in text
+        assert "Tool calls so far: 2" in text
+
+
+@pytest.mark.asyncio
+async def test_subagent_command_shows_pending_question(tmp_path: Path):
+    screen, _session = _make_screen(tmp_path)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        screen._activity.start_subagent("build the report")
+        screen._activity.set_subagent_pending_question(
+            "Overwrite the existing report.html?", ["Yes", "No"]
+        )
+
+        screen._handle_command("/subagent")
+        await pilot.pause()
+
+        message_view = screen.query_one(MessageView)
+        text = message_view._current_text
+        assert "Overwrite the existing report.html?" in text
+        assert "Yes" in text and "No" in text

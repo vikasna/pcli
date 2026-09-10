@@ -111,9 +111,9 @@ async def test_make_agent_tool_inherits_max_response_tokens_and_temperature(tmp_
         captured_kwargs.append(kwargs)
         return original_init(self, *args, **kwargs)
 
-    import pcli.tools.agent_tools as agent_tools_module
+    import pcli.tools._nested_agent as nested_agent_module
 
-    agent_tools_module.AgentLoop.__init__ = _spying_init  # type: ignore[method-assign]
+    nested_agent_module.AgentLoop.__init__ = _spying_init  # type: ignore[method-assign]
 
     try:
         respx.post("http://fake-gateway.test/v1/chat/completions").mock(
@@ -130,7 +130,7 @@ async def test_make_agent_tool_inherits_max_response_tokens_and_temperature(tmp_
             ctx = replace(ctx, max_response_tokens=1234, temperature=0.55)
             await tool.handler({"query": "do something"}, ctx)
     finally:
-        agent_tools_module.AgentLoop.__init__ = original_init  # type: ignore[method-assign]
+        nested_agent_module.AgentLoop.__init__ = original_init  # type: ignore[method-assign]
 
     assert captured_kwargs[0]["max_response_tokens"] == 1234
     assert captured_kwargs[0]["temperature"] == 0.55
@@ -157,9 +157,9 @@ async def test_make_agent_tool_restricts_nested_subagent_to_allowed_tool_names(t
         captured_registries.append(kwargs.get("tool_registry"))
         return original_init(self, *args, **kwargs)
 
-    import pcli.tools.agent_tools as agent_tools_module
+    import pcli.tools._nested_agent as nested_agent_module
 
-    agent_tools_module.AgentLoop.__init__ = _spying_init  # type: ignore[method-assign]
+    nested_agent_module.AgentLoop.__init__ = _spying_init  # type: ignore[method-assign]
 
     try:
         respx.post("http://fake-gateway.test/v1/chat/completions").mock(
@@ -175,7 +175,7 @@ async def test_make_agent_tool_restricts_nested_subagent_to_allowed_tool_names(t
             ctx = _make_ctx(tmp_path, registry, client, permission_manager)
             await tool.handler({"query": "do something"}, ctx)
     finally:
-        agent_tools_module.AgentLoop.__init__ = original_init  # type: ignore[method-assign]
+        nested_agent_module.AgentLoop.__init__ = original_init  # type: ignore[method-assign]
 
     assert len(captured_registries) == 1
     assert "echo_a" in captured_registries[0]
@@ -227,6 +227,51 @@ async def test_make_agent_tool_can_actually_call_an_allowed_tool(tmp_path: Path)
     assert "Used echo_a successfully." in result.output
 
 
+def _tool_call_round(call_id: str) -> list[dict]:
+    return [
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": call_id,
+                                "function": {"name": "echo_a", "arguments": "{}"},
+                            }
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        },
+        {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+    ]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_make_agent_tool_marks_hitting_the_iteration_cap_as_an_error(tmp_path: Path):
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(200, content=_sse(*_tool_call_round(f"call_{i}"))) for i in range(5)
+    ]
+
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    registry = _make_registry("echo_a")
+    tool = make_agent_tool("explorer", "desc", "persona", ["echo_a"])
+
+    async with GatewayClient(_settings()) as client:
+        ctx = replace(_make_ctx(tmp_path, registry, client, permission_manager), subagent_max_iterations=2)
+        result = await tool.handler({"query": "use echo_a forever"}, ctx)
+
+    assert result.is_error is True
+    assert "DID NOT FINISH" in result.output
+    assert route.call_count == 2
+
+
 @pytest.mark.asyncio
 async def test_default_agent_tools_are_present_in_build_default_registry():
     registry = build_default_registry()
@@ -246,9 +291,9 @@ async def test_explore_codebase_default_is_restricted_to_its_documented_allowed_
         captured_registries.append(kwargs.get("tool_registry"))
         return original_init(self, *args, **kwargs)
 
-    import pcli.tools.agent_tools as agent_tools_module
+    import pcli.tools._nested_agent as nested_agent_module
 
-    agent_tools_module.AgentLoop.__init__ = _spying_init  # type: ignore[method-assign]
+    nested_agent_module.AgentLoop.__init__ = _spying_init  # type: ignore[method-assign]
 
     try:
         respx.post("http://fake-gateway.test/v1/chat/completions").mock(
@@ -263,7 +308,7 @@ async def test_explore_codebase_default_is_restricted_to_its_documented_allowed_
             ctx = _make_ctx(tmp_path, registry, client, permission_manager)
             await EXPLORE_CODEBASE.handler({"query": "how does X work"}, ctx)
     finally:
-        agent_tools_module.AgentLoop.__init__ = original_init  # type: ignore[method-assign]
+        nested_agent_module.AgentLoop.__init__ = original_init  # type: ignore[method-assign]
 
     sub_registry = captured_registries[0]
     for name in ("read_file", "list_dir", "glob_search", "grep", "search_python", "inspect_python_module"):
@@ -284,9 +329,9 @@ async def test_explore_logs_default_excludes_run_shell(tmp_path: Path):
         captured_registries.append(kwargs.get("tool_registry"))
         return original_init(self, *args, **kwargs)
 
-    import pcli.tools.agent_tools as agent_tools_module
+    import pcli.tools._nested_agent as nested_agent_module
 
-    agent_tools_module.AgentLoop.__init__ = _spying_init  # type: ignore[method-assign]
+    nested_agent_module.AgentLoop.__init__ = _spying_init  # type: ignore[method-assign]
 
     try:
         respx.post("http://fake-gateway.test/v1/chat/completions").mock(
@@ -301,7 +346,7 @@ async def test_explore_logs_default_excludes_run_shell(tmp_path: Path):
             ctx = _make_ctx(tmp_path, registry, client, permission_manager)
             await EXPLORE_LOGS.handler({"query": "find the first error"}, ctx)
     finally:
-        agent_tools_module.AgentLoop.__init__ = original_init  # type: ignore[method-assign]
+        nested_agent_module.AgentLoop.__init__ = original_init  # type: ignore[method-assign]
 
     sub_registry = captured_registries[0]
     assert "read_file" in sub_registry
@@ -340,9 +385,9 @@ async def _captured_sub_registry(tmp_path: Path, tool: ToolSpec, arguments: dict
         captured_registries.append(kwargs.get("tool_registry"))
         return original_init(self, *args, **kwargs)
 
-    import pcli.tools.agent_tools as agent_tools_module
+    import pcli.tools._nested_agent as nested_agent_module
 
-    agent_tools_module.AgentLoop.__init__ = _spying_init  # type: ignore[method-assign]
+    nested_agent_module.AgentLoop.__init__ = _spying_init  # type: ignore[method-assign]
 
     try:
         with respx.mock:
@@ -358,7 +403,7 @@ async def _captured_sub_registry(tmp_path: Path, tool: ToolSpec, arguments: dict
                 ctx = _make_ctx(tmp_path, registry, client, permission_manager)
                 await tool.handler(arguments, ctx)
     finally:
-        agent_tools_module.AgentLoop.__init__ = original_init  # type: ignore[method-assign]
+        nested_agent_module.AgentLoop.__init__ = original_init  # type: ignore[method-assign]
 
     return captured_registries[0]
 

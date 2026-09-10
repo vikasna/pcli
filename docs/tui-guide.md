@@ -450,6 +450,20 @@ as a normal system message instead.
   time — no restart needed. Rejects anything that isn't `off`, `on`, or a
   positive integer (zero and negative values are rejected, with a message
   pointing at `off` instead of `0` to disable pruning).
+- **`/subagent`** — shows the currently-running subagent's full detail: its
+  task, every tool call made so far (name + arguments, not just the last
+  tool name the status bar's second line shows — see [Status
+  bar](#status-bar) below), and, if it's currently blocked inside
+  `ask_user_question`, the question it's waiting on you to answer
+  (`ChatScreen._handle_subagent_command`, reading `ActivityTracker.subagent`
+  and its `SubagentActivity.call_log`/`.pending_question` fields,
+  `src/pcli/agent/activity.py`). Each call-log entry is shown as `N.
+  tool_name(arguments)`, arguments truncated to 200 characters. Reports "No
+  subagent is currently running." if `ActivityTracker.subagent` is `None` —
+  either none has run yet this session, or the last one already finished
+  (only its final text and tool-call count ever reach the main conversation
+  — see [`tools.md#spawn_subagent`](tools.md#spawn_subagent)). Takes no
+  argument.
 - **`/max-response-tokens [off|on|<margin>]`** — view/toggle/set the dynamic
   per-request `max_tokens` cap (`compute_max_response_tokens`,
   `src/pcli/cost/context.py`, recomputed fresh before every turn by
@@ -757,6 +771,26 @@ an `ask_question` closure is created per turn in `_run_one_turn`, stored as
 from `ToolContext.ask` (permission decisions only, a fixed allow/deny/
 remember-scope shape), since this one is a free-form question/answer.
 
+**Called from inside a subagent**, the question text shown in the modal is
+automatically prefixed with what that subagent has been working on — its
+task and the 5 most recent tool call names — since otherwise you'd see a
+bare, context-free question with nothing to relate it to (a subagent's own
+intermediate work never enters the main conversation; see
+[`tools.md#spawn_subagent`](tools.md#spawn_subagent)):
+
+```
+[This question is from a subagent working on: "investigate failing test" —
+3 tool call(s) so far, most recent: read_file, grep, run_shell. Use
+/subagent for the full detail.]
+
+<the model's actual question>
+```
+
+This happens automatically (`_ask_user_question`,
+`src/pcli/tools/builtin/ask_tool.py`) — no user action needed. `/subagent`
+(see [Slash commands](#slash-commands) above) is the on-demand way to see
+the subagent's complete tool-call history instead of just the last 5 names.
+
 ## Tool calls and results
 
 Before a call's result is known, `ChatScreen._run_one_turn` (on a
@@ -962,7 +996,10 @@ Line 1:
 Line 2 appears only while `spawn_subagent` is running (`subagent_task` is
 non-`None`) and shows its task (truncated to 60 chars), tool-call count, and
 the last tool it called; it disappears and the bar shrinks back to one line
-once the subagent finishes.
+once the subagent finishes. For the full tool-call history (name +
+arguments, not just the last tool name) and any question the subagent is
+currently blocked on, use [`/subagent`](#slash-commands) instead — this
+line is deliberately just a glanceable summary.
 
 ## Status pane (top)
 

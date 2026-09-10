@@ -483,6 +483,7 @@ async def test_agent_loop_enforces_max_tool_calls_per_turn(tmp_path: Path):
     assert "max_tool_calls_per_turn" in note
     assert "guardrails.toml" in note
     assert route.call_count == 1  # stopped after this batch, no further chat_stream call
+    assert turn_complete.terminated_early is True
 
 
 @pytest.mark.asyncio
@@ -563,6 +564,37 @@ async def test_agent_loop_default_max_tool_iterations_stops_the_turn(tmp_path: P
     assert "PCLI_MAX_TOOL_ITERATIONS" in note
     # Stopped exactly at the cap: never reached the 26th round or the final one.
     assert route.call_count == 25
+    # Consumers (spawn_subagent, make_agent_tool) rely on this to tell a
+    # forced cutoff apart from the model choosing to stop on its own.
+    assert turn_complete.terminated_early is True
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_agent_loop_turn_complete_not_terminated_early_when_model_stops_on_its_own(
+    tmp_path: Path,
+):
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=httpx.Response(200, content=_sse(*_final_text_chunks("done")))
+    )
+
+    async with GatewayClient(_settings()) as client:
+        loop = AgentLoop(
+            client,
+            tool_registry=ToolRegistry(),
+            permission_manager=PermissionManager(
+                guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+            ),
+            tool_context_factory=lambda: ToolContext(
+                sandbox=FakeSandbox(), guardrails=GuardrailsConfig(), cwd=tmp_path
+            ),
+        )
+        events = []
+        async for event in loop.run_turn([ChatMessage(role="user", content="hi")]):
+            events.append(event)
+
+    turn_complete = next(e for e in events if isinstance(e, TurnCompleteEvent))
+    assert turn_complete.terminated_early is False
 
 
 @pytest.mark.asyncio

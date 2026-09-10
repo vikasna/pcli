@@ -163,9 +163,9 @@ async def test_spawn_subagent_registry_never_contains_itself(tmp_path: Path):
         captured_registries.append(kwargs.get("tool_registry"))
         return original_init(self, *args, **kwargs)
 
-    import pcli.tools.builtin.subagent_tool as subagent_module
+    import pcli.tools._nested_agent as nested_agent_module
 
-    subagent_module.AgentLoop.__init__ = _spying_init  # type: ignore[method-assign]
+    nested_agent_module.AgentLoop.__init__ = _spying_init  # type: ignore[method-assign]
 
     try:
         respx.post("http://fake-gateway.test/v1/chat/completions").mock(
@@ -181,7 +181,7 @@ async def test_spawn_subagent_registry_never_contains_itself(tmp_path: Path):
             ctx = _make_ctx(tmp_path, registry, client, permission_manager)
             await SPAWN_SUBAGENT.handler({"task": "do something"}, ctx)
     finally:
-        subagent_module.AgentLoop.__init__ = original_init  # type: ignore[method-assign]
+        nested_agent_module.AgentLoop.__init__ = original_init  # type: ignore[method-assign]
 
     assert len(captured_registries) == 1
     assert SPAWN_SUBAGENT_TOOL_NAME not in captured_registries[0]
@@ -202,9 +202,9 @@ async def test_spawn_subagent_inherits_max_response_tokens_and_temperature(tmp_p
         captured_kwargs.append(kwargs)
         return original_init(self, *args, **kwargs)
 
-    import pcli.tools.builtin.subagent_tool as subagent_module
+    import pcli.tools._nested_agent as nested_agent_module
 
-    subagent_module.AgentLoop.__init__ = _spying_init  # type: ignore[method-assign]
+    nested_agent_module.AgentLoop.__init__ = _spying_init  # type: ignore[method-assign]
 
     try:
         respx.post("http://fake-gateway.test/v1/chat/completions").mock(
@@ -220,7 +220,7 @@ async def test_spawn_subagent_inherits_max_response_tokens_and_temperature(tmp_p
             ctx = replace(ctx, max_response_tokens=1234, temperature=0.55)
             await SPAWN_SUBAGENT.handler({"task": "do something"}, ctx)
     finally:
-        subagent_module.AgentLoop.__init__ = original_init  # type: ignore[method-assign]
+        nested_agent_module.AgentLoop.__init__ = original_init  # type: ignore[method-assign]
 
     assert captured_kwargs[0]["max_response_tokens"] == 1234
     assert captured_kwargs[0]["temperature"] == 0.55
@@ -236,9 +236,9 @@ async def test_spawn_subagent_respects_allowed_tools_filter(tmp_path: Path):
         captured_registries.append(kwargs.get("tool_registry"))
         return original_init(self, *args, **kwargs)
 
-    import pcli.tools.builtin.subagent_tool as subagent_module
+    import pcli.tools._nested_agent as nested_agent_module
 
-    subagent_module.AgentLoop.__init__ = _spying_init  # type: ignore[method-assign]
+    nested_agent_module.AgentLoop.__init__ = _spying_init  # type: ignore[method-assign]
 
     try:
         respx.post("http://fake-gateway.test/v1/chat/completions").mock(
@@ -255,7 +255,7 @@ async def test_spawn_subagent_respects_allowed_tools_filter(tmp_path: Path):
                 {"task": "do something", "allowed_tools": ["echo_tool"]}, ctx
             )
     finally:
-        subagent_module.AgentLoop.__init__ = original_init  # type: ignore[method-assign]
+        nested_agent_module.AgentLoop.__init__ = original_init  # type: ignore[method-assign]
 
     assert len(captured_registries[0]) == 1
     assert "echo_tool" in captured_registries[0]
@@ -276,9 +276,9 @@ async def test_spawn_subagent_excludes_non_plan_mode_safe_tools_when_parent_is_i
         captured_registries.append(kwargs.get("tool_registry"))
         return original_init(self, *args, **kwargs)
 
-    import pcli.tools.builtin.subagent_tool as subagent_module
+    import pcli.tools._nested_agent as nested_agent_module
 
-    subagent_module.AgentLoop.__init__ = _spying_init  # type: ignore[method-assign]
+    nested_agent_module.AgentLoop.__init__ = _spying_init  # type: ignore[method-assign]
 
     try:
         respx.post("http://fake-gateway.test/v1/chat/completions").mock(
@@ -296,7 +296,7 @@ async def test_spawn_subagent_excludes_non_plan_mode_safe_tools_when_parent_is_i
             ctx = replace(_make_ctx(tmp_path, registry, client, permission_manager), plan_mode=True)
             await SPAWN_SUBAGENT.handler({"task": "do something"}, ctx)
     finally:
-        subagent_module.AgentLoop.__init__ = original_init  # type: ignore[method-assign]
+        nested_agent_module.AgentLoop.__init__ = original_init  # type: ignore[method-assign]
 
     assert len(captured_registries) == 1
     assert len(captured_registries[0]) == 0  # echo_tool filtered out, spawn_subagent excluded too
@@ -345,6 +345,106 @@ async def test_spawn_subagent_can_actually_call_a_tool(tmp_path: Path):
     assert "1 tool call(s)" in result.output
     assert "Used the echo tool successfully." in result.output
     assert route.call_count == 2
+
+
+def _tool_call_round(call_id: str) -> list[dict]:
+    return [
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": call_id,
+                                "function": {"name": "echo_tool", "arguments": "{}"},
+                            }
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        },
+        {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+    ]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_spawn_subagent_marks_hitting_the_iteration_cap_as_an_error(tmp_path: Path):
+    """Regression coverage for the real failure this was built for: a
+    subagent that never finishes (keeps calling tools past its cap) must
+    come back to the parent as an error with a DID NOT FINISH marker, not a
+    normal-looking result a weak model can mistake for success."""
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(200, content=_sse(*_tool_call_round(f"call_{i}"))) for i in range(5)
+    ]
+
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    registry = _make_registry_with_echo_and_subagent()
+
+    async with GatewayClient(_settings()) as client:
+        ctx = replace(_make_ctx(tmp_path, registry, client, permission_manager), subagent_max_iterations=2)
+        result = await SPAWN_SUBAGENT.handler({"task": "echo forever"}, ctx)
+
+    assert result.is_error is True
+    assert "DID NOT FINISH" in result.output
+    assert "INCOMPLETE" in result.output
+    assert route.call_count == 2  # stopped exactly at the cap
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_spawn_subagent_requested_max_iterations_is_capped_by_ctx_subagent_max_iterations(
+    tmp_path: Path,
+):
+    """The model can ask for more iterations via the tool's own
+    max_iterations argument, but it's still clamped to the configured
+    ceiling (ctx.subagent_max_iterations) - never silently ignored, but
+    never unbounded either."""
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(200, content=_sse(*_tool_call_round(f"call_{i}"))) for i in range(5)
+    ]
+
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    registry = _make_registry_with_echo_and_subagent()
+
+    async with GatewayClient(_settings()) as client:
+        ctx = replace(_make_ctx(tmp_path, registry, client, permission_manager), subagent_max_iterations=3)
+        result = await SPAWN_SUBAGENT.handler(
+            {"task": "echo forever", "max_iterations": 100}, ctx
+        )
+
+    assert result.is_error is True
+    assert route.call_count == 3  # capped at ctx.subagent_max_iterations, not the requested 100
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_spawn_subagent_normal_completion_is_not_marked_as_error(tmp_path: Path):
+    """A subagent finishing well within its cap must NOT get the DID NOT
+    FINISH treatment - only an actual forced cutoff should."""
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=_text_response("The answer is 42.")
+    )
+
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    registry = _make_registry_with_echo_and_subagent()
+
+    async with GatewayClient(_settings()) as client:
+        ctx = replace(_make_ctx(tmp_path, registry, client, permission_manager), subagent_max_iterations=25)
+        result = await SPAWN_SUBAGENT.handler({"task": "What is the answer?"}, ctx)
+
+    assert result.is_error is False
+    assert "DID NOT FINISH" not in result.output
 
 
 @pytest.mark.asyncio

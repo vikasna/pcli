@@ -45,6 +45,7 @@ to `table_key` when reading back, so both shapes round-trip.
 | `request_timeout_s` | `PCLI_REQUEST_TIMEOUT_S` | *(none)* | `request_timeout_s` | `120.0` | HTTP timeout applied per-request (chat completions, `/models`, health check) via `GatewayClient`'s `_effective_timeout()` helper, which reads `Settings.effective_request_timeout_s` fresh on every call rather than a value baked into the client at construction — so a change takes effect on the very next gateway request, no restart needed. Changeable live in the TUI with [`/timeout`](tui-guide.md#slash-commands), which persists it to `config.toml` the same way `/models <model-id>` persists `default_model`. See the local-api floor below. |
 | `max_retries` | `PCLI_MAX_RETRIES` | *(none)* | `max_retries` | `4` | Max attempts for `GatewayClient.chat_stream` on retryable failures (network errors, HTTP 429/5xx) — retried only if no stream data has been yielded yet. |
 | `max_tool_iterations` | `PCLI_MAX_TOOL_ITERATIONS` | *(none)* | `max_tool_iterations` | `25` | Cap on tool-call round-trips within a single `AgentLoop.run_turn`; beyond this the loop appends a "reached the max tool-call iteration limit" note and stops. |
+| `subagent_max_iterations` | `PCLI_SUBAGENT_MAX_ITERATIONS` | *(none)* | `subagent_max_iterations` | `30` | Hard ceiling on a subagent's own tool-call iterations — `spawn_subagent`, and the built-in `explore_codebase`/`explore_files`/`explore_logs`/`write_documentation`/`verify_computation`/`deep_research`/`data_analysis` agent tools (all built via `tools/agent_tools.py`'s `make_agent_tool`). `spawn_subagent`'s own `max_iterations` argument can only tighten this, never loosen it. Always enforced, even in local-api mode, unlike `max_tool_iterations` above — see [Local-API mode](#local-api-mode) below. |
 | `sandbox_backend` | `PCLI_SANDBOX_BACKEND` | *(none)* | `sandbox_backend` | `"auto"` | `auto` \| `docker` \| `subprocess` \| `none` (see note below). |
 | `artifact_threshold_chars` | `PCLI_ARTIFACT_THRESHOLD_CHARS` | `--artifact-threshold` | `artifact_threshold_chars` | `4000` | Tool results longer than this (in characters) are truncated out of the live conversation and archived; see [`tools.md`](tools.md#artifact-archiving). |
 | `local_api_gateways` | `PCLI_LOCAL_API_GATEWAYS` | `--local-api` | `local_api_gateways` | `[]` | Gateway base URLs running in local-api mode (uncapped iterations/rate limits, $0 cost). Additive, not a direct override — see [Local-API mode](#local-api-mode) below. |
@@ -490,11 +491,32 @@ at client construction, this floor (and any manual change to
 applies starting with the very next gateway request — nothing about it
 requires restarting pcli.
 
-A subagent spawned via `spawn_subagent` keeps its own separate iteration cap
-(`_DEFAULT_MAX_ITERATIONS = 15`, `src/pcli/tools/builtin/subagent_tool.py`)
-regardless of local-api mode — nesting depth/runaway recursion is treated as
-a distinct, deliberately non-configurable structural safety cap, not the
-same concern as turn-count or cost limiting.
+Every subagent — `spawn_subagent`, and the built-in `explore_codebase`/
+`explore_files`/`explore_logs`/`write_documentation`/`verify_computation`/
+`deep_research`/`data_analysis` agent tools, all built via
+`tools/agent_tools.py`'s `make_agent_tool` — keeps its own separate
+iteration cap, `subagent_max_iterations` (default 30, see the settings
+table above). Unlike `max_tool_iterations` in point 1 above, **this one is
+never uncapped in local-api mode.** `ToolContext.subagent_max_iterations`
+(`src/pcli/tools/base.py`) is always the real configured value, never
+`None` — `run_nested_agent` (`src/pcli/tools/_nested_agent.py`), the shared
+helper both `spawn_subagent` and `make_agent_tool` build their nested
+`AgentLoop` through, passes it straight in as that loop's
+`max_tool_iterations`. This is deliberate, not an oversight: nesting
+depth/runaway subagent cost is a distinct safety concern from the parent
+turn's own iteration limit, and local-api mode's whole point is removing
+turn/cost friction against a free/local model, not removing the structural
+cap on how deep a single tool call can recurse.
+
+When a subagent's turn is cut off by hitting this cap instead of the model
+stopping on its own — `TurnCompleteEvent.terminated_early`
+(`src/pcli/agent/loop.py`) — the `ToolResult` `spawn_subagent`/the agent
+tools report back to the parent is marked `is_error=True` with a
+"SUBAGENT DID NOT FINISH" / "DID NOT FINISH" prefix (wording differs
+slightly between `subagent_tool.py` and `agent_tools.py`) instead of
+looking like a normal completion, specifically so a weak model can't
+fabricate a success report over a subagent that never actually finished —
+see [`tools.md#spawn_subagent`](tools.md#spawn_subagent).
 
 `ChatScreen` also shows a one-time system message on mount when local-api
 mode is active for the session's gateway.

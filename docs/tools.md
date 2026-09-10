@@ -594,19 +594,43 @@ filtered out of the tool registry a subagent runs with (by name, in
 - **Parameters:** `task` (string, required), `allowed_tools` (array of
   strings, optional — restricts the subagent's toolset), `max_iterations`
   (integer, optional).
-- **Iteration cap:** `min(requested_max_iterations, 15)` if given, else
-  `min(ctx.max_tool_iterations, 15)` — 15 is `_DEFAULT_MAX_ITERATIONS`.
+- **Iteration cap:** `min(requested_max_iterations, ctx.subagent_max_iterations)`
+  if `max_iterations` is given, else `ctx.subagent_max_iterations` itself —
+  `subagent_max_iterations` defaults to 30 and is configurable via
+  `PCLI_SUBAGENT_MAX_ITERATIONS`/`config.toml` (see
+  [`configuration.md`](configuration.md#settings-fields)). Requesting a
+  larger `max_iterations` than this never raises the effective cap, only
+  lowers it — there's always a hard ceiling regardless of what the model
+  asks for, and it's enforced even in
+  [local-api mode](configuration.md#local-api-mode), unlike
+  `max_tool_iterations` itself.
 - **Permission:** required. `risk_description`: "Spawns a subagent that can
   call tools (including sandboxed ones) on its own."
 - **Live progress:** while running, reports task/tool-call-count/last-tool to
-  `ActivityTracker`, which the TUI's status bar renders as a second line (see
-  [`tui-guide.md`](tui-guide.md)).
+  `ActivityTracker`, which the TUI's status bar renders as a second line, and
+  the full call history (name + arguments) plus any pending
+  `ask_user_question` to `/subagent` (see [`tui-guide.md`](tui-guide.md) and
+  [`tui-guide.md#slash-commands`](tui-guide.md#slash-commands)).
 - **Failures get a suggestion, not just the raw error**
   (`src/pcli/tools/builtin/subagent_tool.py:39`): if subagents aren't
   available in this context (no gateway/tools/permissions configured), the
   suggestion is to handle the task directly instead of delegating; if the
   subagent itself raised an exception, the suggestion is to retry with a
   narrower task description or handle it directly.
+- **A subagent that gets cut off before finishing is reported as a failure,
+  not a success.** If the subagent's own turn hits the iteration cap above
+  (or the `max_tool_calls_per_turn` guardrail) instead of the model
+  concluding on its own — `TurnCompleteEvent.terminated_early`,
+  `src/pcli/agent/loop.py` — the `ToolResult` returned to the parent is
+  marked `is_error=True` and its output is prefixed with "SUBAGENT DID NOT
+  FINISH — it hit its tool-call iteration limit (N) before completing the
+  task below. Treat this as INCOMPLETE: do not report the task as done, and
+  verify what (if anything) was actually produced ... before telling the
+  user it succeeded." This exists specifically so a weak model can't
+  fabricate a success report over a subagent whose task genuinely wasn't
+  finished; the message also points the model at raising
+  `subagent_max_iterations` or splitting the work into a narrower follow-up
+  task.
 
 ## explore_codebase, explore_files, explore_logs
 
@@ -637,6 +661,13 @@ tools themselves.
   current `max_response_tokens`/`temperature` (`ctx.max_response_tokens`/
   `ctx.temperature` in `make_agent_tool`) and its own usage is recorded with
   `source="subagent"` — see the `spawn_subagent` entry above.
+- Same `ctx.subagent_max_iterations` cap as `spawn_subagent` (no
+  per-call `max_iterations` argument to tighten it further here, since these
+  take only `query`), and the same "DID NOT FINISH" treatment if it's hit:
+  `is_error=True` with a `'<name>' DID NOT FINISH — it hit its tool-call
+  iteration limit (N) before completing.` prefix
+  (`src/pcli/tools/agent_tools.py`'s `make_agent_tool`) — see the
+  `spawn_subagent` entry above for the full reasoning.
 
 **`explore_codebase`** — delegates a focused code-exploration question (e.g.
 "how is auth implemented", "where is X defined") to a subagent restricted to
@@ -666,10 +697,12 @@ model itself via `register_agent_tool` (above), or by extending
 Four more ready-made agent tools registered by default in
 `build_default_registry()`, built on the same `make_agent_tool` mechanism as
 `explore_codebase`/`explore_files`/`explore_logs` above. Same shape: a single
-`query` argument, `needs_permission=True`, and the same live-progress
-reporting to `ActivityTracker`. Unlike the three `explore_*` tools, these are
-*not* uniformly read-only — the `plan_mode_safe` value is chosen per tool
-based on whether its allowed-tool list is itself entirely read-only.
+`query` argument, `needs_permission=True`, the same live-progress reporting
+to `ActivityTracker`, and the same `ctx.subagent_max_iterations` cap plus
+"DID NOT FINISH" failure treatment if it's hit (see the `explore_codebase`
+entry above). Unlike the three `explore_*` tools, these are *not* uniformly
+read-only — the `plan_mode_safe` value is chosen per tool based on whether
+its allowed-tool list is itself entirely read-only.
 
 **`write_documentation`** — delegates writing or updating documentation for a
 code change to a subagent that reads the existing docs' style and the actual
@@ -778,6 +811,17 @@ the user a context switch.
   (`src/pcli/tui/screens/ask_question_modal.py`) — see
   [`tui-guide.md`](tui-guide.md#ask-question-modal) for how it renders and
   blocks the turn until answered.
+- **Called from inside a subagent**, the question text is automatically
+  prefixed with what that subagent has been working on (its task and the 5
+  most recent tool call names, e.g. `[This question is from a subagent
+  working on: "..." — N tool call(s) so far, most recent: ...]`) before
+  being handed to `ctx.ask_question` (`_ask_user_question`,
+  `src/pcli/tools/builtin/ask_tool.py`) — otherwise the user would see a
+  bare, context-free question, since a subagent's own intermediate work
+  never enters the main conversation (see the `spawn_subagent` entry above).
+  This also records the question on `ActivityTracker.subagent.pending_question`
+  for the duration of the ask, so [`/subagent`](tui-guide.md#slash-commands)
+  can show it while it's waiting.
 
 ## record_decision
 

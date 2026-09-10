@@ -47,6 +47,10 @@ class ToolContext:
     permission choice."""
     max_tool_iterations: int | None = 25
     """None means unlimited (local-api mode)."""
+    subagent_max_iterations: int = 30
+    """Hard ceiling on a nested subagent's own tool-call iterations (see
+    Settings.subagent_max_iterations) - unlike max_tool_iterations above,
+    this is never None/unlimited, even in local-api mode."""
     max_response_tokens: int | None = None
     """The parent AgentLoop's current dynamic max_tokens cap (cost/context.py's
     compute_max_response_tokens), threaded through so a nested AgentLoop

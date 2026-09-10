@@ -21,7 +21,31 @@ async def _ask_user_question(arguments: dict, ctx: ToolContext) -> ToolResult:
 
     question = arguments["question"]
     options = arguments.get("options")
-    answer = await ctx.ask_question(question, options)
+
+    # When this fires from inside a subagent, the user otherwise sees a bare
+    # question with zero context - the subagent's own intermediate work never
+    # enters the main conversation (see tools/builtin/subagent_tool.py), so
+    # there's nothing else to relate the question to. Prepend a short summary
+    # of what the subagent has been doing so far, directly in the question
+    # text itself (rather than a separate UI channel), so it reaches whatever
+    # implements ask_question - the TUI modal today, anything else later.
+    activity = ctx.activity
+    sub = activity.subagent if activity is not None else None
+    asked_question = question
+    if sub is not None and activity is not None:
+        activity.set_subagent_pending_question(question, options)
+        recent = ", ".join(c.name for c in sub.call_log[-5:]) or "none yet"
+        asked_question = (
+            f"[This question is from a subagent working on: \"{sub.task}\" — "
+            f"{len(sub.call_log)} tool call(s) so far, most recent: {recent}. "
+            "Use /subagent for the full detail.]\n\n" + question
+        )
+
+    try:
+        answer = await ctx.ask_question(asked_question, options)
+    finally:
+        if sub is not None and activity is not None:
+            activity.clear_subagent_pending_question()
     return ToolResult(output=answer)
 
 
