@@ -651,11 +651,39 @@ filtered out of the tool registry a subagent runs with (by name, in
   limits." Unlike the DID NOT FINISH prefix above, this is purely
   informational — it's appended to the summary without setting
   `is_error=True`, since the task may genuinely have completed fine.
+- **Every nested agent's own system prompt is also prefixed with
+  `environment_section()`** (`src/pcli/agent/prompt.py` — public now,
+  renamed from the private `_environment_section()`; its only other caller
+  is `build_system_prompt`, used for the main loop's own prompt). The full
+  message `run_nested_agent` sends as `role="system"` is
+  `f"{environment_section()}\n\n{system_prompt}\n\n{discipline}"` —
+  environment facts first, then the persona, then the discipline
+  paragraph(s) below. This closes a gap in the same family as
+  `_CORE_DISCIPLINE`: a subagent's system prompt fully replaces the main
+  loop's rather than extending it, so before this a subagent got zero
+  OS/shell/path facts and would independently default to the same
+  Linux/bash training-data assumption the main loop's own environment
+  section exists to prevent — the classic "wrote a bash heredoc on Windows"
+  failure mode, but for subagents. `environment_section()`'s own docstring
+  documents this second caller directly. Its body also gained a fourth
+  paragraph, appended after the Windows/Linux+Darwin/unknown branches
+  converge and after the existing Docker-sandbox-caveat paragraph (it's
+  OS-independent, unlike the rest of the function, which is why it lives
+  there instead of inside just the Windows branch): "For any tool call that
+  takes a file or directory path, prefer one relative to the working
+  directory over an absolute path you construct yourself, unless the user
+  gave you an explicit absolute path — a relative path resolves against the
+  actual known working directory, while a guessed absolute path (especially
+  in the wrong OS's convention) is far more likely to be wrong." Because
+  both `build_system_prompt` (main loop) and `run_nested_agent` (every
+  subagent, including `spawn_subagent` and all `make_agent_tool` personas)
+  call the same function, this guidance reaches both without duplicating it.
 - **Every nested agent's own system prompt gets an appended discipline
   paragraph, regardless of persona.** `_CORE_DISCIPLINE`
   (`src/pcli/tools/_nested_agent.py`) is appended in `run_nested_agent` —
   the single function `spawn_subagent` and every `make_agent_tool` persona
-  funnel through — as `f"{system_prompt}\n\n{discipline}"`. It tells the
+  funnel through — as the tail of that same composed message, right after
+  `system_prompt`. It tells the
   subagent that its final answer must describe only actions it actually
   took via tool calls in that run, never a step described as done because
   it's "what a typical solution would include," and to verify any concrete
@@ -760,6 +788,8 @@ tools themselves.
   `run_nested_agent` — see that entry for the exact wording. `_TODO_DISCIPLINE`
   never applies to these three: none of `explore_codebase`/`explore_files`/
   `explore_logs`'s fixed `allowed_tool_names` lists include `write_todos`.
+  Same `environment_section()` prefix ahead of the persona prompt too, for
+  the same reason — see the `spawn_subagent` entry above.
 
 **`explore_codebase`** — delegates a focused code-exploration question (e.g.
 "how is auth implemented", "where is X defined") to a subagent restricted to
@@ -796,7 +826,9 @@ note if either is hit (see the `explore_codebase` entry above), plus the same
 `_CORE_DISCIPLINE` system-prompt paragraph from `run_nested_agent` (see the
 `spawn_subagent` entry above) — again with `_TODO_DISCIPLINE` never applying,
 since none of these four personas' `allowed_tool_names` include `write_todos`
-either. Unlike the three `explore_*` tools, these are *not* uniformly
+either — and the same `environment_section()` prefix ahead of the persona
+prompt (see the `spawn_subagent` entry above). Unlike the three `explore_*`
+tools, these are *not* uniformly
 read-only — the `plan_mode_safe` value is chosen per tool based on whether
 its allowed-tool list is itself entirely read-only.
 

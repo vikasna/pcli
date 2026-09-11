@@ -206,3 +206,28 @@ def test_build_system_prompt_leads_with_a_real_environment_fact():
     elif system in ("Linux", "Darwin"):
         assert f"running on {system}" in result
     assert "Docker" in result  # the sandbox caveat is present regardless of host OS
+
+
+def test_environment_section_instructs_preferring_relative_paths():
+    """A relative path resolves against the actual known working directory
+    (see tools/builtin/fs_tools.py's path resolution); a model-guessed
+    absolute path, especially in the wrong OS's convention, is far more
+    likely to be wrong - this must hold regardless of host OS, so it's part
+    of environment_section() rather than only the Windows-specific branch."""
+    from pcli.agent.prompt import environment_section
+
+    text = environment_section()
+    assert "relative to the working directory" in text
+    assert "unless the user gave you an explicit absolute path" in text
+
+
+def test_environment_section_is_reused_verbatim_by_nested_agents():
+    """Regression coverage for a real gap: a subagent's system prompt fully
+    replaces the main loop's rather than extending it, so it previously got
+    no OS/shell/path facts at all and independently defaulted to the same
+    Linux/bash assumption the main loop's own environment section exists to
+    prevent. tools/_nested_agent.py imports and reuses this exact function."""
+    import pcli.tools._nested_agent as nested_agent_module
+    from pcli.agent.prompt import environment_section
+
+    assert nested_agent_module.environment_section is environment_section

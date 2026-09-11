@@ -731,6 +731,35 @@ async def test_spawn_subagent_system_prompt_includes_core_discipline(tmp_path: P
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_spawn_subagent_system_prompt_includes_environment_section(tmp_path: Path):
+    """Regression coverage for a real gap: a subagent's system prompt fully
+    replaces the main loop's rather than extending it, so it previously got
+    no OS/shell/path facts at all and independently defaulted to the same
+    Linux/bash training-data assumption the main loop's own environment
+    section exists to prevent."""
+    from pcli.agent.prompt import environment_section
+
+    route = respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=_text_response("done")
+    )
+
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    registry = _make_registry_with_echo_and_subagent()
+
+    async with GatewayClient(_settings()) as client:
+        ctx = _make_ctx(tmp_path, registry, client, permission_manager)
+        await SPAWN_SUBAGENT.handler({"task": "do something"}, ctx)
+
+    sent = json.loads(route.calls.last.request.content)
+    system_message = sent["messages"][0]["content"]
+    assert environment_section() in system_message
+    assert "relative to the working directory" in system_message
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_spawn_subagent_omits_todo_discipline_when_write_todos_not_available(tmp_path: Path):
     """write_todos isn't in this test registry's tool set at all - telling
     the subagent to use it would be actively wrong guidance."""

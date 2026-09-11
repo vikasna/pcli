@@ -21,7 +21,7 @@ _WINDOWS_ENVIRONMENT_NOTE = (
 )
 
 
-def _environment_section() -> str:
+def environment_section() -> str:
     """Ground truth about the host OS, computed fresh per process (not
     baked into BASE_SYSTEM_PROMPT, which is a static string) — the
     dedicated fix for a real, repeatedly-observed failure mode: with no
@@ -30,7 +30,13 @@ def _environment_section() -> str:
     heredoc failing with a cmd.exe syntax error, a write_file call denied
     for targeting /tmp on a Windows host where that resolves to a path
     outside the working directory, ...). Telling it up front is far more
-    reliable than expecting it to diagnose its way there after a failure."""
+    reliable than expecting it to diagnose its way there after a failure.
+
+    Also used verbatim by tools/_nested_agent.py's run_nested_agent, for
+    the same reason: a subagent's own system prompt fully replaces the
+    main loop's (see _nested_agent.py's _CORE_DISCIPLINE) rather than
+    extending it, so without this it never received any environment fact
+    at all and defaulted to the same Linux/bash assumption independently."""
     system = platform.system()
     if system == "Windows":
         body = f"This session is running on Windows. {_WINDOWS_ENVIRONMENT_NOTE}"
@@ -45,6 +51,13 @@ def _environment_section() -> str:
         " If a Docker-based sandbox is active for tool execution, shell commands instead run "
         "inside a Linux container regardless of this host OS — a command's own result is the "
         "ground truth if this note and reality ever disagree."
+    )
+    body += (
+        " For any tool call that takes a file or directory path, prefer one relative to the "
+        "working directory over an absolute path you construct yourself, unless the user gave "
+        "you an explicit absolute path — a relative path resolves against the actual known "
+        "working directory, while a guessed absolute path (especially in the wrong OS's "
+        "convention) is far more likely to be wrong."
     )
     return "# Environment\n" + body
 
@@ -300,7 +313,7 @@ doesn't need a callout."""
 
 
 def build_system_prompt(*, extra_sections: list[str] | None = None) -> str:
-    sections = [_environment_section(), BASE_SYSTEM_PROMPT]
+    sections = [environment_section(), BASE_SYSTEM_PROMPT]
     if extra_sections:
         sections.extend(extra_sections)
     return "\n\n".join(sections)

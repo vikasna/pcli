@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
 from pcli.agent.loop import AgentLoop, ToolStartEvent, TurnCompleteEvent
+from pcli.agent.prompt import environment_section
 from pcli.cost.context import ContextLimitTable, ContextUsage
 from pcli.llm.models import ChatMessage, Usage, UsageEvent
 from pcli.tools.base import ToolContext, ToolSpec
@@ -30,13 +31,17 @@ HIGH_CONTEXT_USAGE_FRACTION = 0.85
 # generic persona, and every make_agent_tool persona in agent_tools.py) -
 # none of them otherwise inherit BASE_SYSTEM_PROMPT's "Verifying your own
 # work"/"Tracking work" discipline, since a subagent's system prompt fully
-# replaces the main loop's rather than extending it. Confirmed as a real gap
-# from an observed session: a subagent made a single tool call, never used
-# write_todos despite having it available, and reported a large multi-file
-# assignment as fully complete - the parent then relayed that fabricated
-# summary to the user with no verification of its own. This is a single
-# injection point (every nested-agent tool funnels through run_nested_agent)
-# rather than duplicating this text across each persona string.
+# replaces the main loop's rather than extending it (same reason
+# environment_section() below is prepended separately - a subagent
+# previously got no OS/shell/path facts at all and independently defaulted
+# to the same Linux/bash training-data bias the main loop's own environment
+# section exists to prevent). Confirmed as a real gap from an observed
+# session: a subagent made a single tool call, never used write_todos
+# despite having it available, and reported a large multi-file assignment
+# as fully complete - the parent then relayed that fabricated summary to
+# the user with no verification of its own. This is a single injection
+# point (every nested-agent tool funnels through run_nested_agent) rather
+# than duplicating this text across each persona string.
 _CORE_DISCIPLINE = (
     "Your final answer must describe only actions you actually took via tool calls in this run — "
     "never describe a step as done because it's what a typical solution would include; if you "
@@ -106,7 +111,9 @@ async def run_nested_agent(
     if "write_todos" in sub_registry:
         discipline += _TODO_DISCIPLINE
     messages = [
-        ChatMessage(role="system", content=f"{system_prompt}\n\n{discipline}"),
+        ChatMessage(
+            role="system", content=f"{environment_section()}\n\n{system_prompt}\n\n{discipline}"
+        ),
         ChatMessage(role="user", content=task),
     ]
 

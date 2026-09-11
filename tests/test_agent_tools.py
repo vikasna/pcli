@@ -507,3 +507,27 @@ async def test_make_agent_tool_system_prompt_includes_core_discipline_but_not_to
     system_message = sent["messages"][0]["content"]
     assert "only actions you actually took via tool calls" in system_message
     assert "write_todos" not in system_message
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_make_agent_tool_system_prompt_includes_environment_section(tmp_path: Path):
+    from pcli.agent.prompt import environment_section
+
+    route = respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=_text_response("done")
+    )
+
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    registry = _make_registry("echo_a")
+    tool = make_agent_tool("explorer", "desc", "persona", ["echo_a"])
+
+    async with GatewayClient(_settings()) as client:
+        ctx = _make_ctx(tmp_path, registry, client, permission_manager)
+        await tool.handler({"query": "do something"}, ctx)
+
+    sent = json.loads(route.calls.last.request.content)
+    system_message = sent["messages"][0]["content"]
+    assert environment_section() in system_message
