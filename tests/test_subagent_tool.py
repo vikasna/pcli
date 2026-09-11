@@ -263,6 +263,60 @@ async def test_spawn_subagent_respects_allowed_tools_filter(tmp_path: Path):
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_spawn_subagent_always_includes_write_todos_even_if_the_model_omits_it(
+    tmp_path: Path,
+):
+    """The calling model's own allowed_tools list can't be relied on to
+    consistently include write_todos (the exact model behind the session
+    this was built from omitted it more often than not) - write_todos is
+    let through regardless, the same structural guarantee spawn_subagent
+    itself already gets (never spawnable from within a subagent) - so the
+    "use write_todos for multi-step work" discipline
+    (tools/_nested_agent.py's _TODO_DISCIPLINE) doesn't silently go missing
+    just because the model forgot to list it."""
+    from pcli.tools.builtin.todo_tool import WRITE_TODOS
+
+    captured_registries: list[ToolRegistry] = []
+    original_init = AgentLoop.__init__
+
+    def _spying_init(self, *args, **kwargs):
+        captured_registries.append(kwargs.get("tool_registry"))
+        return original_init(self, *args, **kwargs)
+
+    import pcli.tools._nested_agent as nested_agent_module
+
+    nested_agent_module.AgentLoop.__init__ = _spying_init  # type: ignore[method-assign]
+
+    try:
+        route = respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+            return_value=_text_response("done")
+        )
+        permission_manager = PermissionManager(
+            guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+        )
+        registry = _make_registry_with_echo_and_subagent()
+        registry.register(WRITE_TODOS)
+
+        async with GatewayClient(_settings()) as client:
+            ctx = _make_ctx(tmp_path, registry, client, permission_manager)
+            # Deliberately omits "write_todos" - this is the exact scenario
+            # that must still work.
+            await SPAWN_SUBAGENT.handler(
+                {"task": "do something", "allowed_tools": ["echo_tool"]}, ctx
+            )
+    finally:
+        nested_agent_module.AgentLoop.__init__ = original_init  # type: ignore[method-assign]
+
+    assert "write_todos" in captured_registries[0]
+    assert "echo_tool" in captured_registries[0]
+
+    sent = json.loads(route.calls.last.request.content)
+    system_message = sent["messages"][0]["content"]
+    assert "write_todos to lay out a plan" in system_message
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_spawn_subagent_excludes_non_plan_mode_safe_tools_when_parent_is_in_plan_mode(
     tmp_path: Path,
 ):
@@ -645,3 +699,78 @@ async def test_spawn_subagent_does_not_note_low_context_usage(tmp_path: Path, mo
         result = await SPAWN_SUBAGENT.handler({"task": "do something"}, ctx)
 
     assert "context limit" not in result.output
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_spawn_subagent_system_prompt_includes_core_discipline(tmp_path: Path):
+    """Regression coverage for a real observed session: a subagent made a
+    single tool call and reported a large multi-file task as fully
+    complete. The subagent's own system prompt never inherited
+    BASE_SYSTEM_PROMPT's verification discipline (it fully replaces the
+    main loop's prompt rather than extending it) - run_nested_agent now
+    appends a shared discipline block to every nested agent regardless."""
+    route = respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=_text_response("done")
+    )
+
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    registry = _make_registry_with_echo_and_subagent()
+
+    async with GatewayClient(_settings()) as client:
+        ctx = _make_ctx(tmp_path, registry, client, permission_manager)
+        await SPAWN_SUBAGENT.handler({"task": "do something"}, ctx)
+
+    sent = json.loads(route.calls.last.request.content)
+    system_message = sent["messages"][0]["content"]
+    assert "only actions you actually took via tool calls" in system_message
+    assert "list_dir/read_file it" in system_message
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_spawn_subagent_omits_todo_discipline_when_write_todos_not_available(tmp_path: Path):
+    """write_todos isn't in this test registry's tool set at all - telling
+    the subagent to use it would be actively wrong guidance."""
+    route = respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=_text_response("done")
+    )
+
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    registry = _make_registry_with_echo_and_subagent()
+
+    async with GatewayClient(_settings()) as client:
+        ctx = _make_ctx(tmp_path, registry, client, permission_manager)
+        await SPAWN_SUBAGENT.handler({"task": "do something"}, ctx)
+
+    sent = json.loads(route.calls.last.request.content)
+    system_message = sent["messages"][0]["content"]
+    assert "write_todos" not in system_message
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_spawn_subagent_includes_todo_discipline_when_write_todos_is_available(tmp_path: Path):
+    from pcli.tools.builtin.todo_tool import WRITE_TODOS
+
+    route = respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=_text_response("done")
+    )
+
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    registry = _make_registry_with_echo_and_subagent()
+    registry.register(WRITE_TODOS)
+
+    async with GatewayClient(_settings()) as client:
+        ctx = _make_ctx(tmp_path, registry, client, permission_manager)
+        await SPAWN_SUBAGENT.handler({"task": "do something"}, ctx)
+
+    sent = json.loads(route.calls.last.request.content)
+    system_message = sent["messages"][0]["content"]
+    assert "write_todos to lay out a plan" in system_message

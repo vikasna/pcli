@@ -98,7 +98,7 @@ Screen {
     margin: 0 1 1 1;
 }
 
-PermissionPromptModal, ImportPathModal, ModelListScreen, AskQuestionModal, SubagentActivityModal {
+PermissionPromptModal, ImportPathModal, ModelListScreen, AskQuestionModal {
     align: center middle;
 }
 
@@ -111,13 +111,31 @@ PermissionPromptModal, ImportPathModal, ModelListScreen, AskQuestionModal, Subag
     padding: 1 2;
 }
 
+/* Full-screen, unlike the other (centered, floating-box) modals above -
+   this is a dedicated view for watching a subagent work, not a quick
+   prompt, so it takes over the whole window the same way the main chat
+   screen does. */
 #subagent-activity-modal {
-    width: 80%;
-    height: auto;
-    max-height: 90%;
+    width: 100%;
+    height: 100%;
     background: $panel;
-    border: thick $primary;
     padding: 1 2;
+}
+
+#subagent-activity-title {
+    height: auto;
+    text-style: bold;
+    padding-bottom: 1;
+    border-bottom: solid $primary;
+}
+
+#subagent-activity-scroll {
+    height: 1fr;
+}
+
+#subagent-activity-close-button {
+    width: 100%;
+    margin-top: 1;
 }
 
 #ask-question-options {

@@ -26,6 +26,38 @@ from pcli.tools.base import ToolContext, ToolSpec
 # closer to the ceiling before it's worth the noise.
 HIGH_CONTEXT_USAGE_FRACTION = 0.85
 
+# Appended to every nested agent's own system prompt (spawn_subagent's
+# generic persona, and every make_agent_tool persona in agent_tools.py) -
+# none of them otherwise inherit BASE_SYSTEM_PROMPT's "Verifying your own
+# work"/"Tracking work" discipline, since a subagent's system prompt fully
+# replaces the main loop's rather than extending it. Confirmed as a real gap
+# from an observed session: a subagent made a single tool call, never used
+# write_todos despite having it available, and reported a large multi-file
+# assignment as fully complete - the parent then relayed that fabricated
+# summary to the user with no verification of its own. This is a single
+# injection point (every nested-agent tool funnels through run_nested_agent)
+# rather than duplicating this text across each persona string.
+_CORE_DISCIPLINE = (
+    "Your final answer must describe only actions you actually took via tool calls in this run — "
+    "never describe a step as done because it's what a typical solution would include; if you "
+    "didn't execute it, it isn't done. Before writing that final answer, verify any concrete "
+    "deliverable you're about to claim (a file, a report, a script, a downloaded dataset) actually "
+    "exists and has the content you're about to describe — e.g. list_dir/read_file it — rather "
+    "than asserting it from the task description alone."
+)
+
+# Appended separately, and only when write_todos is actually in this
+# subagent's own tool registry - it's a fixed, curated allowed-tool list for
+# every make_agent_tool persona (explore_codebase, write_documentation, ...)
+# and none of them include write_todos, so telling them to use a tool they
+# don't have would be actively wrong. Only spawn_subagent can ever have it
+# (only when the calling model includes it in its own allowed_tools).
+_TODO_DISCIPLINE = (
+    " Before starting a task with more than a couple of steps, use write_todos to lay out a plan "
+    "and keep it updated as you go — this is what keeps a multi-step task from collapsing into a "
+    "single tool call that doesn't actually do the work."
+)
+
 
 @dataclass
 class NestedAgentResult:
@@ -70,8 +102,11 @@ async def run_nested_agent(
         temperature=ctx.temperature,
     )
 
+    discipline = _CORE_DISCIPLINE
+    if "write_todos" in sub_registry:
+        discipline += _TODO_DISCIPLINE
     messages = [
-        ChatMessage(role="system", content=system_prompt),
+        ChatMessage(role="system", content=f"{system_prompt}\n\n{discipline}"),
         ChatMessage(role="user", content=task),
     ]
 

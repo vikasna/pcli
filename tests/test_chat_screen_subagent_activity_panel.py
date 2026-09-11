@@ -114,6 +114,45 @@ async def test_escape_dismisses_the_modal(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_clicking_close_button_dismisses_the_modal(tmp_path: Path):
+    """Regression coverage: the Close button previously rendered as plain
+    text inside the body ("[Esc] Close") rather than a real Button, so
+    clicking it did nothing."""
+    screen, _session = _make_screen(tmp_path)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        screen._activity.start_subagent("build the report")
+        await pilot.press("ctrl+g")
+        await pilot.pause()
+        assert isinstance(app.screen, SubagentActivityModal)
+
+        await pilot.click("#subagent-activity-close-button")
+        await pilot.pause()
+
+        assert not isinstance(app.screen, SubagentActivityModal)
+
+
+@pytest.mark.asyncio
+async def test_modal_hints_escape_returns_to_main_window(tmp_path: Path):
+    screen, _session = _make_screen(tmp_path)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        screen._activity.start_subagent("build the report")
+        await pilot.press("ctrl+g")
+        await pilot.pause()
+
+        modal = app.screen
+        assert isinstance(modal, SubagentActivityModal)
+        title_text = str(modal.query_one("#subagent-activity-title").render())
+        assert "Esc" in title_text
+        assert "main agent's window" in title_text
+
+
+@pytest.mark.asyncio
 async def test_status_bar_still_updates_after_the_modal_closes(tmp_path: Path):
     """Regression coverage for the exact bug this feature's design had to
     avoid: ActivityTracker used to support only one subscriber, so opening

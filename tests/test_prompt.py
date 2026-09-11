@@ -59,6 +59,19 @@ def test_prompt_instructs_verifying_work_before_declaring_done():
     assert "tests/build/lint" in section
 
 
+def test_prompt_instructs_verifying_a_subagents_claims_before_relaying_them():
+    """Regression coverage for a real observed session: a subagent made a
+    single tool call, reported a large multi-file task as fully complete,
+    and the parent relayed that fabricated summary to the user with no
+    verification of its own."""
+    section_start = BASE_SYSTEM_PROMPT.index("# Verifying your own work")
+    section_end = BASE_SYSTEM_PROMPT.index("# Editing files")
+    section = BASE_SYSTEM_PROMPT[section_start:section_end]
+    assert "subagent" in section
+    assert "claim" in section
+    assert "tool-call count" in section
+
+
 def test_prompt_instructs_outcome_based_todo_items():
     section_start = BASE_SYSTEM_PROMPT.index("# Tracking work")
     section_end = BASE_SYSTEM_PROMPT.index("# Resuming after a break")

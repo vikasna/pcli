@@ -480,3 +480,30 @@ def test_new_agent_tools_plan_mode_safety_matches_their_primary_purpose():
     assert WRITE_DOCUMENTATION.plan_mode_safe is False
     assert VERIFY_COMPUTATION.plan_mode_safe is False
     assert DATA_ANALYSIS.plan_mode_safe is False
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_make_agent_tool_system_prompt_includes_core_discipline_but_not_todos(tmp_path: Path):
+    """No make_agent_tool persona (explore_codebase, write_documentation,
+    ...) includes write_todos in its fixed allowed_tool_names - telling one
+    to use it would be actively wrong guidance, unlike spawn_subagent where
+    the calling model can choose to include it."""
+    route = respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=_text_response("done")
+    )
+
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    registry = _make_registry("echo_a")
+    tool = make_agent_tool("explorer", "desc", "persona", ["echo_a"])
+
+    async with GatewayClient(_settings()) as client:
+        ctx = _make_ctx(tmp_path, registry, client, permission_manager)
+        await tool.handler({"query": "do something"}, ctx)
+
+    sent = json.loads(route.calls.last.request.content)
+    system_message = sent["messages"][0]["content"]
+    assert "only actions you actually took via tool calls" in system_message
+    assert "write_todos" not in system_message

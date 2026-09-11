@@ -651,6 +651,69 @@ filtered out of the tool registry a subagent runs with (by name, in
   limits." Unlike the DID NOT FINISH prefix above, this is purely
   informational — it's appended to the summary without setting
   `is_error=True`, since the task may genuinely have completed fine.
+- **Every nested agent's own system prompt gets an appended discipline
+  paragraph, regardless of persona.** `_CORE_DISCIPLINE`
+  (`src/pcli/tools/_nested_agent.py`) is appended in `run_nested_agent` —
+  the single function `spawn_subagent` and every `make_agent_tool` persona
+  funnel through — as `f"{system_prompt}\n\n{discipline}"`. It tells the
+  subagent that its final answer must describe only actions it actually
+  took via tool calls in that run, never a step described as done because
+  it's "what a typical solution would include," and to verify any concrete
+  deliverable it's about to claim (a file, a report, a script, a downloaded
+  dataset) with `list_dir`/`read_file` before asserting it exists, rather
+  than asserting it from the task description alone. This closes a real
+  gap: a subagent's own system prompt fully *replaces* `BASE_SYSTEM_PROMPT`
+  rather than extending it, so none of the main loop's own "Verifying your
+  own work"/"Tracking work" discipline is otherwise inherited by a
+  subagent. Added after an observed session where a subagent made a single
+  tool call, never used `write_todos` despite having it available, and
+  reported a large multi-file assignment (dataset download, from-scratch ML
+  models, evaluation, HTML report) as fully complete — the parent then
+  relayed that fabricated summary to the user with no verification of its
+  own.
+- **`_TODO_DISCIPLINE` is appended right after it, but only conditionally**
+  — `discipline = _CORE_DISCIPLINE; if "write_todos" in sub_registry:
+  discipline += _TODO_DISCIPLINE` — i.e. only when that specific
+  subagent's own filtered tool registry actually contains `write_todos`.
+  It adds one more instruction: before starting a task with more than a
+  couple of steps, use `write_todos` to lay out a plan and keep it updated
+  as work proceeds, so a multi-step task doesn't collapse into a single
+  tool call that doesn't actually do the work. None of the seven built-in
+  `make_agent_tool` personas (`explore_codebase`, `explore_files`,
+  `explore_logs`, `write_documentation`, `verify_computation`,
+  `deep_research`, `data_analysis` — see below) include `write_todos` in
+  their fixed `allowed_tool_names` lists, so in practice this only ever
+  fires for `spawn_subagent`. And for `spawn_subagent`, `write_todos` no
+  longer depends on the calling model remembering to ask for it: `_allowed()`
+  inside `_spawn_subagent` (`src/pcli/tools/builtin/subagent_tool.py`) lets
+  `write_todos` (`WRITE_TODOS.name`) through even when the model's own
+  `allowed_tools` argument was passed and doesn't list it — the same kind of
+  structural guarantee as the "subagents can never spawn further subagents"
+  rule above, rather than something a small/unreliable model can be counted
+  on to remember every time. It's still conditional on `write_todos` being
+  registered in the parent's `tool_registry` in the first place (always true
+  via `build_default_registry()`, so true in practice), just no longer
+  conditional on the model's `allowed_tools` argument including it. Covered
+  by `tests/test_subagent_tool.py::test_spawn_subagent_always_includes_write_todos_even_if_the_model_omits_it`.
+  Telling a subagent to use a tool it doesn't have would be actively wrong
+  guidance, so `_TODO_DISCIPLINE` itself still can't be unconditional the
+  way `_CORE_DISCIPLINE` is — it's just that "doesn't have it" now only
+  happens for the fixed-toolset personas, not for an `allowed_tools`
+  omission on `spawn_subagent`.
+- **The parent side of that same gap is closed separately, in
+  `BASE_SYSTEM_PROMPT`'s own `# Verifying your own work` section**
+  (`src/pcli/agent/prompt.py`) — this is the main loop's prompt, not the
+  subagent's, so it has to live there rather than in `_nested_agent.py`. A
+  second paragraph now tells the main agent that a subagent's final report
+  is a claim, not a verified fact, and that the same standard applied to
+  its own work applies here: for a delegated task that claims concrete
+  deliverables (files, a dataset, a report), spend one or two tool calls
+  confirming they actually exist and roughly match what was claimed
+  (`list_dir`/`read_file`, not just re-reading the subagent's own summary)
+  before telling the user it's done. It also calls out the subagent's
+  tool-call count as a useful sanity check in itself — a handful of calls
+  claiming to have completed a large multi-file task is a red flag, not
+  confirmation, and worth investigating rather than relaying as-is.
 
 ## explore_codebase, explore_files, explore_logs
 
@@ -692,6 +755,11 @@ tools themselves.
   ran high (`fraction >= HIGH_CONTEXT_USAGE_FRACTION`, 0.85) — purely
   informational, doesn't set `is_error=True` — see the `spawn_subagent` entry
   above for the exact wording.
+- Same `_CORE_DISCIPLINE` paragraph appended to the persona's system prompt as
+  `spawn_subagent` above, since all three run through the same
+  `run_nested_agent` — see that entry for the exact wording. `_TODO_DISCIPLINE`
+  never applies to these three: none of `explore_codebase`/`explore_files`/
+  `explore_logs`'s fixed `allowed_tool_names` lists include `write_todos`.
 
 **`explore_codebase`** — delegates a focused code-exploration question (e.g.
 "how is auth implemented", "where is X defined") to a subagent restricted to
@@ -724,8 +792,11 @@ Four more ready-made agent tools registered by default in
 `query` argument, `needs_permission=True`, the same live-progress reporting
 to `ActivityTracker`, and the same `ctx.subagent_max_iterations` cap plus
 "DID NOT FINISH" failure treatment and `context_usage_note()` high-context
-note if either is hit (see the `explore_codebase` entry above). Unlike the
-three `explore_*` tools, these are *not* uniformly
+note if either is hit (see the `explore_codebase` entry above), plus the same
+`_CORE_DISCIPLINE` system-prompt paragraph from `run_nested_agent` (see the
+`spawn_subagent` entry above) — again with `_TODO_DISCIPLINE` never applying,
+since none of these four personas' `allowed_tool_names` include `write_todos`
+either. Unlike the three `explore_*` tools, these are *not* uniformly
 read-only — the `plan_mode_safe` value is chosen per tool based on whether
 its allowed-tool list is itself entirely read-only.
 

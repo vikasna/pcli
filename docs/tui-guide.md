@@ -272,8 +272,28 @@ point-in-time snapshot into the chat transcript.
   slot) specifically so this modal's subscription can coexist with
   `ChatScreen`'s own subscription that keeps the [status bar](#status-bar)'s
   subagent line updated — opening the panel doesn't interrupt that.
+- **Full-screen, not a centered floating box.** Unlike the permission prompt,
+  model picker, and ask-question modals — which share `align: center middle`
+  plus a `width: 70%; height: auto; max-height: 80%` rule on `#permission-modal,
+  #import-modal, #model-list-modal, #ask-question-modal` — `#subagent-activity-modal`
+  is `width: 100%; height: 100%` (`src/pcli/tui/styles/pcli.tcss`), taking over
+  the whole window the same way the main chat screen does. This is a
+  dedicated view for watching a subagent work, not a quick prompt.
+- **A separate title bar sits above the scrollable body.** `compose()` yields
+  a `Static` with id `subagent-activity-title` reading "Subagent activity —
+  press Esc to return to the main agent's window", styled with
+  `text-style: bold` and a `border-bottom: solid $primary` rule
+  (`#subagent-activity-title` in `pcli.tcss`), above the `VerticalScroll`
+  (`#subagent-activity-scroll`, `height: 1fr`) holding the actual activity
+  body.
 - **Escape** closes the modal (`SubagentActivityModal.action_close`), same as
-  everywhere else Escape closes an overlay.
+  everywhere else Escape closes an overlay — and there's now also a real,
+  clickable **Close** button (`Button("Close", id="subagent-activity-close-button")`,
+  full-width via `width: 100%` in `pcli.tcss`) at the bottom of the modal,
+  wired through `on_button_pressed` to the same `self.dismiss(None)` Escape
+  uses. This replaces an earlier version of the modal that only baked a
+  plain-text "[Esc] Close" hint into the body — text that looked clickable
+  but wasn't; the button now gives Escape a real on-screen equivalent.
 - **If the subagent finishes while the modal is still open**, it doesn't get
   yanked shut from under you — the body switches to "Subagent finished —
   nothing more to show." instead, and stays open until you dismiss it

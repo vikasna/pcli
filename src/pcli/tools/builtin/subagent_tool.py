@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from pcli.tools._nested_agent import context_usage_note, run_nested_agent
 from pcli.tools.base import ToolContext, ToolResult, ToolSpec
+from pcli.tools.builtin.todo_tool import WRITE_TODOS
 
 SPAWN_SUBAGENT_TOOL_NAME = "spawn_subagent"
 
@@ -53,10 +54,21 @@ async def _spawn_subagent(arguments: dict, ctx: ToolContext) -> ToolResult:
     def _allowed(tool: ToolSpec) -> bool:
         if tool.name == SPAWN_SUBAGENT_TOOL_NAME:
             return False  # subagents can never spawn further subagents
-        if allowed_tool_names is not None and tool.name not in allowed_tool_names:
+        if (
+            allowed_tool_names is not None
+            and tool.name not in allowed_tool_names
+            and tool.name != WRITE_TODOS.name
+        ):
+            # write_todos is always let through regardless of what the calling
+            # model's allowed_tools argument specifies (same kind of
+            # structural guarantee as the spawn_subagent exclusion above) -
+            # the "use write_todos for multi-step work" instruction
+            # (_TODO_DISCIPLINE, tools/_nested_agent.py) would otherwise only
+            # ever apply when the calling model happens to remember to
+            # include it, which a small/unreliable model can't be counted on
+            # to do consistently. Harmless even when the model never touches
+            # it. Always plan_mode_safe, so this never bypasses plan mode.
             return False
-        # A subagent spawned while the parent is in plan mode can't be used
-        # as a bypass — it inherits the same restriction.
         return not (ctx.plan_mode and not tool.plan_mode_safe)
 
     try:
