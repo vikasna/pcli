@@ -98,7 +98,7 @@ Screen {
     margin: 0 1 1 1;
 }
 
-PermissionPromptModal, ImportPathModal, ModelListScreen, AskQuestionModal {
+PermissionPromptModal, ImportPathModal, ModelListScreen, AskQuestionModal, SubagentActivityModal {
     align: center middle;
 }
 
@@ -106,6 +106,15 @@ PermissionPromptModal, ImportPathModal, ModelListScreen, AskQuestionModal {
     width: 70%;
     height: auto;
     max-height: 80%;
+    background: $panel;
+    border: thick $primary;
+    padding: 1 2;
+}
+
+#subagent-activity-modal {
+    width: 80%;
+    height: auto;
+    max-height: 90%;
     background: $panel;
     border: thick $primary;
     padding: 1 2;

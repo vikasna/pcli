@@ -246,6 +246,45 @@ background, orphaned.
 - No new keybinding conflicts: plain Escape had no prior binding on the chat
   screen (`ChatScreen.BINDINGS`, `src/pcli/tui/screens/chat.py:72`).
 
+## Ctrl+G: subagent activity panel
+
+Pressing **Ctrl+G** at any time opens a live-updating view of the
+currently-running subagent's task and full tool-call history
+(`ChatScreen.action_show_subagent_activity`, `src/pcli/tui/screens/chat.py:915`,
+bound in `ChatScreen.BINDINGS` at line 175) — a live companion to
+[`/subagent`](#slash-commands) below, which only ever prints a one-off,
+point-in-time snapshot into the chat transcript.
+
+- **If no subagent is running**, Ctrl+G shows the same message `/subagent`
+  shows — "No subagent is currently running." — and opens nothing.
+  Both code paths read this text from the same module-level constant,
+  `_NO_SUBAGENT_RUNNING_MESSAGE` (`src/pcli/tui/screens/chat.py:72`), so they
+  can't drift out of sync with each other.
+- **If a subagent is running**, Ctrl+G pushes `SubagentActivityModal`
+  (`src/pcli/tui/screens/subagent_activity_modal.py`), a read-only
+  `ModalScreen`. On mount it subscribes to the same shared `ActivityTracker`
+  instance `/subagent` reads from (`ActivityTracker.subscribe`,
+  `src/pcli/agent/activity.py`) and re-renders on every subsequent tool call,
+  using the same `format_subagent_activity` helper `/subagent` uses for its
+  static snapshot — so the two commands show identical content, just at
+  different moments, and never disagree with each other. `ActivityTracker`
+  supports multiple simultaneous subscribers (a list, not a single callback
+  slot) specifically so this modal's subscription can coexist with
+  `ChatScreen`'s own subscription that keeps the [status bar](#status-bar)'s
+  subagent line updated — opening the panel doesn't interrupt that.
+- **Escape** closes the modal (`SubagentActivityModal.action_close`), same as
+  everywhere else Escape closes an overlay.
+- **If the subagent finishes while the modal is still open**, it doesn't get
+  yanked shut from under you — the body switches to "Subagent finished —
+  nothing more to show." instead, and stays open until you dismiss it
+  yourself.
+- **Strictly read-only.** If the subagent is currently blocked inside
+  `ask_user_question`, the pending question is shown here too, for context —
+  but answering it still happens only through the separate
+  [ask-question modal](#ask-question-modal), which pops up automatically on
+  top when that happens. Textual's modal stack lets both be open at once
+  without conflict.
+
 ## Gateway errors
 
 When a turn fails against the gateway (`GatewayError`), pcli shows a system
@@ -463,7 +502,9 @@ as a normal system message instead.
   either none has run yet this session, or the last one already finished
   (only its final text and tool-call count ever reach the main conversation
   — see [`tools.md#spawn_subagent`](tools.md#spawn_subagent)). Takes no
-  argument.
+  argument. For the same information kept live instead of retyping
+  `/subagent` for a fresh snapshot, press
+  [Ctrl+G](#ctrlg-subagent-activity-panel) instead.
 - **`/max-response-tokens [off|on|<margin>]`** — view/toggle/set the dynamic
   per-request `max_tokens` cap (`compute_max_response_tokens`,
   `src/pcli/cost/context.py`, recomputed fresh before every turn by
@@ -998,8 +1039,14 @@ non-`None`) and shows its task (truncated to 60 chars), tool-call count, and
 the last tool it called; it disappears and the bar shrinks back to one line
 once the subagent finishes. For the full tool-call history (name +
 arguments, not just the last tool name) and any question the subagent is
-currently blocked on, use [`/subagent`](#slash-commands) instead — this
-line is deliberately just a glanceable summary.
+currently blocked on, use [`/subagent`](#slash-commands) for a one-off
+snapshot or [Ctrl+G](#ctrlg-subagent-activity-panel) for the same detail kept
+live — this line is deliberately just a glanceable summary. Both read from
+the same `ActivityTracker` instance that drives this line
+(`ChatScreen._on_activity_changed`, subscribed via `ActivityTracker.subscribe`
+in `on_mount`); the tracker supports multiple simultaneous subscribers, so
+the status bar's own subscription and Ctrl+G's modal subscription don't
+interfere with each other.
 
 ## Status pane (top)
 

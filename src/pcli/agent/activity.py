@@ -11,6 +11,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from pcli.util.text import truncate
+
 
 @dataclass
 class SubagentToolCall:
@@ -40,10 +42,17 @@ class ActivityTracker:
 
     def __init__(self) -> None:
         self._subagent: SubagentActivity | None = None
-        self._on_change: Callable[[], None] | None = None
+        self._subscribers: list[Callable[[], None]] = []
 
     def subscribe(self, callback: Callable[[], None]) -> None:
-        self._on_change = callback
+        self._subscribers.append(callback)
+
+    def unsubscribe(self, callback: Callable[[], None]) -> None:
+        """No-op if callback isn't currently subscribed (e.g. a modal that
+        never mounted, or an already-cleaned-up double dismiss) - cleanup
+        code should never have to guard this call itself."""
+        if callback in self._subscribers:
+            self._subscribers.remove(callback)
 
     @property
     def subagent(self) -> SubagentActivity | None:
@@ -78,5 +87,23 @@ class ActivityTracker:
         self._notify()
 
     def _notify(self) -> None:
-        if self._on_change is not None:
-            self._on_change()
+        for callback in self._subscribers:
+            callback()
+
+
+def format_subagent_activity(sub: SubagentActivity) -> str:
+    """Shared rendering of a SubagentActivity snapshot - used by both the
+    /subagent command (a one-off system message) and SubagentActivityModal
+    (a live view, re-rendered on every activity change), so the two never
+    drift out of sync with each other."""
+    lines = [f"Subagent task: {sub.task}", f"Tool calls so far: {len(sub.call_log)}"]
+    if sub.pending_question is not None:
+        question, options = sub.pending_question
+        lines.append(f"\nCurrently waiting on your answer to:\n{question}")
+        if options:
+            lines.append("Options: " + ", ".join(options))
+    if sub.call_log:
+        lines.append("")
+        for i, call in enumerate(sub.call_log, start=1):
+            lines.append(f"{i}. {call.name}({truncate(call.arguments, 200)})")
+    return "\n".join(lines)

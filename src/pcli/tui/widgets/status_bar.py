@@ -7,6 +7,8 @@ from __future__ import annotations
 from textual.reactive import reactive
 from textual.widgets import Static
 
+from pcli.util.text import truncate
+
 # Classic braille "circling" spinner frames.
 _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 # Ticked only while busy, and well under the ~20fps ceiling that keeps
@@ -20,11 +22,6 @@ def format_token_count(n: int) -> str:
     if n >= 1_000:
         return f"{n / 1_000:.1f}k"
     return str(n)
-
-
-def truncate(text: str, limit: int) -> str:
-    text = text.replace("\n", " ").strip()
-    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 class StatusBar(Static):

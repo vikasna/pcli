@@ -17,7 +17,7 @@ from textual.binding import BindingType
 from textual.containers import Vertical
 from textual.screen import Screen
 
-from pcli.agent.activity import ActivityTracker
+from pcli.agent.activity import ActivityTracker, format_subagent_activity
 from pcli.agent.compaction import maybe_compact
 from pcli.agent.context_pruning import extract_purpose, prune_old_tool_results
 from pcli.agent.loop import AgentLoop, ToolResultEvent
@@ -50,10 +50,11 @@ from pcli.tools.registry import ToolRegistry, build_default_registry
 from pcli.tools.toolbox.manager import ToolboxDiscoveryError, ToolboxManager
 from pcli.tui.screens.ask_question_modal import ask_question_via_modal
 from pcli.tui.screens.permission_modal import ask_via_modal
+from pcli.tui.screens.subagent_activity_modal import SubagentActivityModal
 from pcli.tui.shell_passthrough import run_passthrough_command
 from pcli.tui.widgets.chat_input import ChatInput
 from pcli.tui.widgets.message_view import MessageView
-from pcli.tui.widgets.status_bar import StatusBar, truncate
+from pcli.tui.widgets.status_bar import StatusBar
 from pcli.tui.widgets.status_pane import StatusPane
 
 # Used for local-api-mode sessions: always $0, regardless of pricing.toml or
@@ -64,6 +65,11 @@ _FREE_PRICING_TABLE = PricingTable(entries={}, default=ModelPricing())
 # How long a second Escape press has to land after the first to count as a
 # "confirm cancel" double-press (see ChatScreen.action_cancel_turn).
 _ESCAPE_DOUBLE_PRESS_WINDOW_S = 0.6
+
+# Shared between /subagent and the Ctrl+G live-activity panel (action_
+# show_subagent_activity) - both need to say the same thing when there's
+# nothing to show.
+_NO_SUBAGENT_RUNNING_MESSAGE = "No subagent is currently running."
 
 # Ephemeral, per-turn reinforcement injected only while plan mode is active
 # (see _run_one_turn) — never persisted to session.messages, so it can't be
@@ -166,6 +172,7 @@ class ChatScreen(Screen):
     # always wins over a Screen-level one) and just misled anyone reading it.
     BINDINGS: ClassVar[list[BindingType]] = [
         ("escape", "cancel_turn", "Cancel turn (press twice)"),
+        ("ctrl+g", "show_subagent_activity", "Subagent activity"),
     ]
 
     def __init__(
@@ -890,30 +897,29 @@ class ChatScreen(Screen):
         message_view.add_message("system", f"{config_key} set to {value}.{note}")
 
     def _handle_subagent_command(self) -> None:
-        """`/subagent` — shows the currently-running subagent's task and its
-        full tool-call history so far (name + arguments), plus any question
-        it's currently blocked on. The status bar's second line only has
-        room for a one-line summary (last tool name); this is the detailed
-        view — mirrors what ask_tool.py already folds into an in-flight
-        ask_user_question's own prompt text, available on demand for anyone
-        just watching progress rather than actively being asked something."""
+        """`/subagent` — a one-off snapshot of the currently-running
+        subagent's task and its full tool-call history so far (name +
+        arguments), plus any question it's currently blocked on, logged as a
+        system message in the chat transcript. The status bar's second line
+        only has room for a one-line summary (last tool name); Ctrl+G
+        (action_show_subagent_activity) opens the same detail as a
+        live-updating panel instead of a static snapshot, for anyone
+        actively watching rather than checking in once."""
         message_view = self.query_one(MessageView)
         sub = self._activity.subagent
         if sub is None:
-            message_view.add_message("system", "No subagent is currently running.")
+            message_view.add_message("system", _NO_SUBAGENT_RUNNING_MESSAGE)
             return
+        message_view.add_message("system", format_subagent_activity(sub))
 
-        lines = [f"Subagent task: {sub.task}", f"Tool calls so far: {len(sub.call_log)}"]
-        if sub.pending_question is not None:
-            question, options = sub.pending_question
-            lines.append(f"\nCurrently waiting on your answer to:\n{question}")
-            if options:
-                lines.append("Options: " + ", ".join(options))
-        if sub.call_log:
-            lines.append("")
-            for i, call in enumerate(sub.call_log, start=1):
-                lines.append(f"{i}. {call.name}({truncate(call.arguments, 200)})")
-        message_view.add_message("system", "\n".join(lines))
+    def action_show_subagent_activity(self) -> None:
+        """Ctrl+G — opens a live-updating view of the current subagent's
+        task/tool-call history (SubagentActivityModal), or just reports
+        there's nothing running yet, same message /subagent gives."""
+        if self._activity.subagent is None:
+            self.query_one(MessageView).add_message("system", _NO_SUBAGENT_RUNNING_MESSAGE)
+            return
+        self.app.push_screen(SubagentActivityModal(self._activity))
 
     def _handle_prune_tool_results_command(self, arg: str | None) -> None:
         """`/prune-tool-results [off|on|<n>]` — view/toggle/set the
