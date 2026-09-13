@@ -24,6 +24,26 @@ def format_token_count(n: int) -> str:
     return str(n)
 
 
+_MODEL_NAME_MAX_LEN = 40
+
+
+def format_model_name(model: str) -> str:
+    """Shortens an overly long model identifier for the status bar -
+    notably a full local file path, which a raw llama-server instance with
+    no --alias configured reports as its own "model" id (unlike LM Studio's
+    short, friendly names) - e.g. "E:\\...\\Mistral-Nemo-Instruct-2407-
+    Q4_K_M.gguf" down to "Mistral-Nemo-Instruct-2407-Q4_K_M". Only the
+    display is shortened; the underlying model string used for actual
+    requests is untouched. Falls back to plain truncation for anything
+    else still too long to fit the line."""
+    name = model
+    if "/" in name or "\\" in name:
+        name = name.replace("\\", "/").rsplit("/", 1)[-1]
+        if name.lower().endswith(".gguf"):
+            name = name[: -len(".gguf")]
+    return truncate(name, _MODEL_NAME_MAX_LEN)
+
+
 class StatusBar(Static):
     model: reactive[str] = reactive("")
     session_cost_usd: reactive[float] = reactive(0.0)
@@ -75,7 +95,7 @@ class StatusBar(Static):
         return (
             f"{plan_part}"
             f"{spinner_part}"
-            f"model: {self.model or '-'}   "
+            f"model: {format_model_name(self.model) if self.model else '-'}   "
             f"cost: ${self.session_cost_usd:.4f}   "
             f"{context_part}"
             f"tokens: {format_token_count(self.total_tokens)}   "

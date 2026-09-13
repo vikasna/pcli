@@ -1045,7 +1045,24 @@ Line 1:
 - Spinner (braille frames, ticks at 10fps) — shown only while `busy` (set for
   the whole duration of a turn: waiting on the LLM, streaming, running tool
   calls — cleared once the response is fully printed).
-- `model` — the active model id.
+- `model` — the active model id, shortened for display by
+  `format_model_name()` (`src/pcli/tui/widgets/status_bar.py`) when it would
+  otherwise be too long. This matters most for a raw `llama-server` instance
+  (llama.cpp's own server, no LM Studio in front of it) with no `--alias`
+  configured: it reports its "model" id as the full local path to the loaded
+  GGUF file (e.g.
+  `E:\.lmstudio\models\...\Mistral-Nemo-Instruct-2407-Q4_K_M.gguf`), unlike
+  LM Studio's short ids (e.g. `qwen2.5-coder-7b-instruct`), and a raw path
+  would flood the line and push `cost`/`ctx`/`tokens`/`sandbox` out of view.
+  `format_model_name()` detects a path (contains `/` or `\`) and shows just
+  the filename with a trailing `.gguf` stripped (the example above becomes
+  `Mistral-Nemo-Instruct-2407-Q4_K_M`), rather than blindly truncating the
+  path from the right, which would keep the least useful part (the
+  drive/folder prefix) and cut off the identifying filename at the end.
+  Anything still too long — a shortened path included — falls back to plain
+  truncation via `truncate()`, capped at `_MODEL_NAME_MAX_LEN` (40 chars).
+  Only this display string is shortened; the underlying model string used
+  for actual API requests is untouched.
 - `cost` — cumulative USD for the session (`Session.cost.session_total_usd`).
 - `ctx` — tokens used / context-window limit and percentage, from the most
   recent LLM call's reported usage (only shown once a limit is known).
