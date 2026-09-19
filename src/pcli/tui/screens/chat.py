@@ -218,6 +218,7 @@ class ChatScreen(Screen):
             self._session = self._store.new_session(
                 model=self._settings.default_model,
                 gateway_base_url=self._settings.gateway_base_url,
+                working_dir=str(self._cwd),
             )
             self._session.messages.append(
                 Message(role="system", content=build_system_prompt())

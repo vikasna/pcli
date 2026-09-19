@@ -78,3 +78,20 @@ def test_prune_empty_sessions_is_a_noop_with_nothing_to_prune(tmp_path: Path):
 
     assert store.prune_empty_sessions() == 0
     assert store.session_dir(session.id).exists()
+
+
+def test_new_session_persists_working_dir(tmp_path: Path):
+    store = _make_store(tmp_path)
+    session = store.new_session(model="fake-model", working_dir="/some/project")
+
+    reloaded = store.load(session.id)
+
+    assert reloaded.working_dir == "/some/project"
+
+
+def test_new_session_working_dir_defaults_to_none(tmp_path: Path):
+    store = _make_store(tmp_path)
+    session = store.new_session(model="fake-model")
+
+    assert session.working_dir is None
+    assert store.load(session.id).working_dir is None

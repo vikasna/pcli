@@ -1,12 +1,17 @@
 """Imports a session exported by session/export.py.
 
-Two deliberate safety choices, both documented in the plan:
+Three deliberate safety choices:
 - `permission_grants` is dropped unless `restore_grants=True` is passed
   explicitly, so an imported session can't silently carry "always allow
   shell" grants onto a new machine.
 - The session always gets a *new* id on import (the original id is kept in
   metadata for traceability) so importing never collides with / overwrites
   an existing local session.
+- `working_dir` is always cleared: it names a directory on whatever machine
+  originally created the session, essentially never the importing one, so
+  keeping it would just make every resume trip the directory-mismatch
+  warning (session/directory_check.py) for no reason - export/import is a
+  deliberate move to a new place, not an accidental one.
 """
 
 from __future__ import annotations
@@ -70,6 +75,7 @@ def import_session(
     original_id = session_data.pop("id", None)
     if not restore_grants:
         session_data["permission_grants"] = []
+    session_data["working_dir"] = None
 
     session = Session.model_validate(session_data)
     session.metadata["imported_from_id"] = original_id

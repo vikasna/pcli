@@ -131,6 +131,14 @@ class Session(BaseModel):
     todos: list[TodoItem] = Field(default_factory=list)
     decisions: list[Decision] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    working_dir: str | None = None
+    """Where this session was created (Path.cwd() at the time) - resuming it
+    from a different directory means every relative path in its tool-call
+    history refers to a different set of files, so callers check this
+    against the current cwd before resuming (see session/directory_check.py)
+    and warn rather than silently proceeding. None for a session persisted
+    before this field existed, or one that was never tied to a real cwd
+    (e.g. some test fixtures) - never treated as a mismatch."""
 
     def touch(self) -> None:
         self.updated_at = _utcnow()

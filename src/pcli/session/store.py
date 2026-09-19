@@ -37,8 +37,10 @@ class SessionStore:
     def _session_file(self, session_id: str) -> Path:
         return self.session_dir(session_id) / "session.json"
 
-    def new_session(self, *, model: str = "", gateway_base_url: str = "") -> Session:
-        session = Session(model=model, gateway_base_url=gateway_base_url)
+    def new_session(
+        self, *, model: str = "", gateway_base_url: str = "", working_dir: str | None = None
+    ) -> Session:
+        session = Session(model=model, gateway_base_url=gateway_base_url, working_dir=working_dir)
         self.save(session)
         return session
 

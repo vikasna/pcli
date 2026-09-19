@@ -13,10 +13,12 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, Input, ListItem, ListView, Static
 
 from pcli.config.paths import data_dir
+from pcli.session.directory_check import directory_mismatch
 from pcli.session.export import export_session
 from pcli.session.importer import import_session
 from pcli.session.models import SessionIndexEntry
 from pcli.session.store import SessionStore
+from pcli.tui.screens.confirm_modal import confirm_via_modal
 from pcli.tui.widgets.paste_input import PasteInput
 
 _ID_COL_WIDTH = 4
@@ -110,9 +112,16 @@ class SessionListScreen(Screen):
         session_id = getattr(event.item, "data", None)
         if not session_id:
             return
+        self._resume(session_id)
+
+    @work(exclusive=True)
+    async def _resume(self, session_id: str) -> None:
         from pcli.tui.screens.chat import ChatScreen
 
         session = self._store.load(session_id)
+        warning = directory_mismatch(session, Path.cwd())
+        if warning and not await confirm_via_modal(self.app, f"{warning}\n\nContinue anyway?"):
+            return
         self.app.pop_screen()
         self.app.push_screen(ChatScreen(session=session, store=self._store))
 

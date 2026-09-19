@@ -7,10 +7,12 @@ from pathlib import Path
 
 import pytest
 from textual.app import App
+from textual.screen import Screen
 from textual.widgets import ListView, Static
 
 from pcli.session.models import Message
 from pcli.session.store import SessionStore
+from pcli.tui.screens.confirm_modal import ConfirmModal
 from pcli.tui.screens.sessions import SessionListScreen, _sessions_header_row, _truncate
 
 
@@ -119,3 +121,142 @@ def test_truncate_shortens_long_text_with_an_ascii_ellipsis():
     result = _truncate("a very long piece of text indeed", 10)
     assert len(result) == 10
     assert result.endswith("...")
+
+
+class _FakeChatScreen(Screen):
+    """Stands in for the real ChatScreen in resume-gating tests - what's
+    under test here is the directory-mismatch confirm gate in
+    SessionListScreen._resume, not ChatScreen's own gateway/sandbox/toolbox
+    startup sequence, which is irrelevant to it and heavy to stand up."""
+
+    def __init__(self, *, session, store) -> None:
+        super().__init__()
+        self.session = session
+        self.store = store
+
+
+def _patch_chat_screen(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("pcli.tui.screens.chat.ChatScreen", _FakeChatScreen)
+
+
+@pytest.mark.asyncio
+async def test_resuming_a_session_with_matching_working_dir_switches_without_prompting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.chdir(tmp_path)
+    _patch_chat_screen(monkeypatch)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    session = store.new_session(model="fake-model", working_dir=str(tmp_path))
+    session.messages.append(Message(role="system", content="system prompt"))
+    store.save(session)
+
+    screen = SessionListScreen(store)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        list_view = screen.query_one(ListView)
+        list_view.index = 0
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert isinstance(app.screen, _FakeChatScreen)
+
+
+@pytest.mark.asyncio
+async def test_resuming_a_session_with_a_different_working_dir_prompts_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    original_dir = tmp_path / "original"
+    original_dir.mkdir()
+    monkeypatch.chdir(cwd)
+    _patch_chat_screen(monkeypatch)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    session = store.new_session(model="fake-model", working_dir=str(original_dir))
+    session.messages.append(Message(role="system", content="system prompt"))
+    store.save(session)
+
+    screen = SessionListScreen(store)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        list_view = screen.query_one(ListView)
+        list_view.index = 0
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert isinstance(app.screen, ConfirmModal)
+
+
+@pytest.mark.asyncio
+async def test_declining_the_mismatch_prompt_stays_on_the_session_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    original_dir = tmp_path / "original"
+    original_dir.mkdir()
+    monkeypatch.chdir(cwd)
+    _patch_chat_screen(monkeypatch)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    session = store.new_session(model="fake-model", working_dir=str(original_dir))
+    session.messages.append(Message(role="system", content="system prompt"))
+    store.save(session)
+
+    screen = SessionListScreen(store)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        list_view = screen.query_one(ListView)
+        list_view.index = 0
+        await pilot.press("enter")
+        await pilot.pause()
+
+        confirm_modal = app.screen
+        assert isinstance(confirm_modal, ConfirmModal)
+        from textual.widgets import Button
+
+        confirm_modal.on_button_pressed(Button.Pressed(confirm_modal.query_one("#confirm-no", Button)))
+        await pilot.pause()
+
+        assert app.screen is screen
+
+
+@pytest.mark.asyncio
+async def test_confirming_the_mismatch_prompt_switches_to_the_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    original_dir = tmp_path / "original"
+    original_dir.mkdir()
+    monkeypatch.chdir(cwd)
+    _patch_chat_screen(monkeypatch)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    session = store.new_session(model="fake-model", working_dir=str(original_dir))
+    session.messages.append(Message(role="system", content="system prompt"))
+    store.save(session)
+
+    screen = SessionListScreen(store)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        list_view = screen.query_one(ListView)
+        list_view.index = 0
+        await pilot.press("enter")
+        await pilot.pause()
+
+        confirm_modal = app.screen
+        assert isinstance(confirm_modal, ConfirmModal)
+        from textual.widgets import Button
+
+        confirm_modal.on_button_pressed(Button.Pressed(confirm_modal.query_one("#confirm-yes", Button)))
+        await pilot.pause()
+
+        assert isinstance(app.screen, _FakeChatScreen)
+        assert app.screen.session.id == session.id

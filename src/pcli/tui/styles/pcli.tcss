@@ -102,11 +102,11 @@ Screen {
    underneath through ModalScreen's translucent background - a question or
    permission prompt is much easier to act on with its own surrounding
    context still in view than centered over the middle of it. */
-PermissionPromptModal, ImportPathModal, ModelListScreen, AskQuestionModal {
+PermissionPromptModal, ImportPathModal, ModelListScreen, AskQuestionModal, ConfirmModal {
     align: center top;
 }
 
-#permission-modal, #import-modal, #model-list-modal, #ask-question-modal {
+#permission-modal, #import-modal, #model-list-modal, #ask-question-modal, #confirm-modal {
     width: 70%;
     height: auto;
     max-height: 80%;
@@ -114,6 +114,13 @@ PermissionPromptModal, ImportPathModal, ModelListScreen, AskQuestionModal {
     background: $panel;
     border: thick $primary;
     padding: 1 2;
+}
+
+#confirm-modal Button {
+    width: 100%;
+    height: 1;
+    border: none;
+    margin-top: 1;
 }
 
 /* Full-screen, unlike the other (centered, floating-box) modals above -

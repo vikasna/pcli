@@ -10,7 +10,11 @@ from pcli.session.store import SessionStore
 
 
 def _build_session(store: SessionStore) -> Session:
-    session = store.new_session(model="fake-model", gateway_base_url="http://gateway.test/v1")
+    session = store.new_session(
+        model="fake-model",
+        gateway_base_url="http://gateway.test/v1",
+        working_dir="/tmp/original-project",
+    )
     session.messages.append(Message(role="system", content="system prompt"))
     session.messages.append(Message(role="user", content="hello"))
     session.messages.append(Message(role="assistant", content="hi there"))
@@ -54,6 +58,11 @@ def test_export_import_roundtrip(tmp_path: Path):
     # A new id is always assigned on import; original id is kept for traceability.
     assert imported.id != original.id
     assert imported.metadata["imported_from_id"] == original.id
+
+    # working_dir names a directory on the exporting machine - never carried
+    # over, so importing never trips the directory-mismatch warning.
+    assert original.working_dir == "/tmp/original-project"
+    assert imported.working_dir is None
 
     assert [m.role for m in imported.messages] == [m.role for m in original.messages]
     assert [m.content for m in imported.messages] == [m.content for m in original.messages]

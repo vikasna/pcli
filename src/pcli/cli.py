@@ -11,9 +11,10 @@ import typer
 from pcli.config.paths import data_dir
 from pcli.config.settings import add_local_api_gateway, get_settings, update_config_file
 from pcli.cost.tracker import global_cost_report
+from pcli.session.directory_check import directory_mismatch
 from pcli.session.export import export_session
 from pcli.session.importer import import_session
-from pcli.session.store import SessionStore
+from pcli.session.store import SessionNotFoundError, SessionStore
 from pcli.util.logging import configure_logging
 
 app = typer.Typer(add_completion=False, no_args_is_help=False)
@@ -47,6 +48,13 @@ def _root(
         "guardrails' max_tool_calls_per_turn/per_minute, and forces cost to $0 instead of "
         "looking it up in the pricing table. Paired to (and persisted with) whichever "
         "gateway is active for this invocation.",
+    ),
+    resume: str = typer.Option(
+        None,
+        "--resume",
+        "-r",
+        help="Resume a past session by id (see 'pcli sessions list'; the printed hint on quit "
+        "gives the exact command).",
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging."),
 ) -> None:
@@ -88,7 +96,37 @@ def _root(
     if ctx.invoked_subcommand is None:
         from pcli.tui.app import PcliApp
 
-        PcliApp(settings).run()
+        store = SessionStore()
+        resumed_session = None
+        if resume:
+            try:
+                resumed_session = store.load(resume)
+            except SessionNotFoundError:
+                typer.echo(
+                    f"No session found with id '{resume}'. Run 'pcli sessions list' to see "
+                    "available sessions.",
+                    err=True,
+                )
+                raise typer.Exit(code=1) from None
+            warning = directory_mismatch(resumed_session, Path.cwd())
+            if warning and not typer.confirm(f"{warning}\nContinue anyway?", default=False):
+                raise typer.Exit(code=0)
+
+        PcliApp(settings, session=resumed_session).run()
+        _print_resume_hint(store)
+
+
+def _print_resume_hint(store: SessionStore) -> None:
+    """The session most recently touched by the run that just ended - not
+    necessarily `resumed_session` above, since /sessions can switch to a
+    different one mid-run. Skips a session with zero messages: it gets
+    silently pruned on the next launch (SessionStore.prune_empty_sessions),
+    so a resume hint for it would go stale immediately."""
+    entries = store.list_index()
+    if not entries or entries[0].message_count == 0:
+        return
+    latest = entries[0]
+    typer.echo(f"\nResume this session anytime with: pcli --resume {latest.id}")
 
 
 @sessions_app.command("list")
