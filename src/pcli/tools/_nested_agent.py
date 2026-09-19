@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
-from pcli.agent.loop import AgentLoop, ToolStartEvent, TurnCompleteEvent
+from pcli.agent.loop import AgentLoop, ToolResultEvent, ToolStartEvent, TurnCompleteEvent
 from pcli.agent.prompt import environment_section
 from pcli.cost.context import ContextLimitTable, ContextUsage
 from pcli.llm.models import ChatMessage, Usage, UsageEvent
@@ -144,6 +144,13 @@ async def run_nested_agent(
                     ctx.activity.record_subagent_tool_call(
                         event.tool_call.function.name, event.tool_call.function.arguments
                     )
+            elif isinstance(event, ToolResultEvent):
+                # A tool this subagent called (e.g. ask_artifact) can incur
+                # its own real LLM spend beyond the subagent's own turns -
+                # previously dropped here entirely, since nothing consumed
+                # ToolResultEvent at all, so it never reached usages below
+                # and the parent's cost tracking never saw it.
+                usages.extend(event.extra_usage)
             elif isinstance(event, TurnCompleteEvent):
                 terminated_early = event.terminated_early
                 for message in event.new_messages:

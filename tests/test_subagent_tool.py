@@ -401,6 +401,78 @@ async def test_spawn_subagent_can_actually_call_a_tool(tmp_path: Path):
     assert route.call_count == 2
 
 
+@pytest.mark.asyncio
+@respx.mock
+async def test_spawn_subagent_folds_a_called_tools_extra_usage_into_its_own(tmp_path: Path):
+    """Regression coverage for a real gap found while adding ask_artifact
+    (an LLM-answered tool a subagent can also call, same as the main
+    agent): run_nested_agent's own event loop previously never consumed
+    ToolResultEvent at all, so a tool's extra_usage - real spend beyond the
+    subagent's own turns - was silently dropped instead of reaching the
+    parent's cost tracking. spawn_subagent already folds NestedAgentResult.
+    usages into its own ToolResult.extra_usage; this proves a called tool's
+    extra_usage actually gets into that list in the first place."""
+    from pcli.llm.models import Usage
+    from pcli.tools.base import ToolResult, ToolSpec
+
+    async def _pricey_tool_handler(arguments: dict, ctx: ToolContext) -> ToolResult:
+        return ToolResult(
+            output="did the pricey thing",
+            extra_usage=[Usage(prompt_tokens=500, completion_tokens=20, total_tokens=520)],
+        )
+
+    pricey_tool = ToolSpec(
+        name="pricey_tool",
+        description="A tool whose own handler makes a real LLM call and reports it via "
+        "extra_usage - stands in for ask_artifact without needing a second gateway mock.",
+        parameters={"type": "object", "properties": {}},
+        handler=_pricey_tool_handler,
+        needs_permission=False,
+    )
+
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(
+            200,
+            content=_sse(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_1",
+                                        "function": {"name": "pricey_tool", "arguments": "{}"},
+                                    }
+                                ]
+                            },
+                            "finish_reason": None,
+                        }
+                    ]
+                },
+                {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+            ),
+        ),
+        _text_response("Done."),
+    ]
+
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    registry = ToolRegistry()
+    registry.register(pricey_tool)
+    registry.register(SPAWN_SUBAGENT)
+
+    async with GatewayClient(_settings()) as client:
+        ctx = _make_ctx(tmp_path, registry, client, permission_manager)
+        result = await SPAWN_SUBAGENT.handler({"task": "use the pricey tool"}, ctx)
+
+    assert result.is_error is False
+    assert len(result.extra_usage) == 1
+    assert result.extra_usage[0].total_tokens == 520
+
+
 def _tool_call_round(call_id: str) -> list[dict]:
     return [
         {

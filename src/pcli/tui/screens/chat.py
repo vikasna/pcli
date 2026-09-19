@@ -49,6 +49,7 @@ from pcli.session.store import SessionStore
 from pcli.tools.agent_tools_store import load_persisted_agent_tools
 from pcli.tools.artifacts import SessionArtifactStore
 from pcli.tools.base import AskQuestionCallback, ToolContext
+from pcli.tools.builtin.artifact_tool import ASK_ARTIFACT
 from pcli.tools.registry import ToolRegistry, build_default_registry
 from pcli.tools.toolbox.manager import ToolboxDiscoveryError, ToolboxManager
 from pcli.tui.screens.ask_question_modal import ask_question_via_modal
@@ -414,6 +415,15 @@ class ChatScreen(Screen):
         status_bar.sandbox_backend = self._sandbox.name
 
         self._tool_registry = build_default_registry()
+        if not self._settings.is_local_api():
+            # ask_artifact spends an extra LLM call answering a question
+            # about a large artifact instead of returning raw content - free
+            # on a local gateway (the whole point), a real if usually small
+            # cost on a paid one, so it's simply not offered there rather
+            # than left to the model's judgment to avoid using it.
+            self._tool_registry = self._tool_registry.filtered(
+                lambda t: t.name != ASK_ARTIFACT.name
+            )
         self._toolbox_manager = ToolboxManager(cwd=self._cwd)
         toolbox_tools = await self._toolbox_manager.load_all()
         self._tool_registry.merge(toolbox_tools)

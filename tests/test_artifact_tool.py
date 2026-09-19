@@ -1,13 +1,23 @@
+import json
 from pathlib import Path
 
+import httpx
 import pytest
+import respx
 
+from pcli.config.settings import Settings
+from pcli.llm.client import GatewayClient
 from pcli.permissions.guardrails import GuardrailsConfig
 from pcli.sandbox.base import ExecRequest, ExecResult, Sandbox, SandboxCapabilities
 from pcli.session.store import SessionStore
 from pcli.tools.artifacts import SessionArtifactStore
 from pcli.tools.base import ToolContext
-from pcli.tools.builtin.artifact_tool import _MAX_PATTERN_MATCHES, FETCH_ARTIFACT
+from pcli.tools.builtin.artifact_tool import (
+    _DEFAULT_FETCH_CHARS,
+    _MAX_PATTERN_MATCHES,
+    ASK_ARTIFACT,
+    FETCH_ARTIFACT,
+)
 
 
 class _NullSandbox(Sandbox):
@@ -236,3 +246,148 @@ async def test_fetch_artifact_pattern_ignores_offset(tmp_path: Path):
     )
     assert result.is_error is False
     assert "1 matching line(s)" in result.output
+
+
+# --- ask_artifact ---
+#
+# Answers a specific question about an archived artifact via a side LLM
+# call instead of returning raw content - local-api-only in the real app
+# (tui/screens/chat.py excludes it from the tool registry otherwise; that
+# gating is tested separately in test_chat_screen_ask_artifact.py), but the
+# tool handler itself doesn't know or care about local-api mode.
+
+
+def _settings() -> Settings:
+    return Settings(
+        gateway_base_url="http://fake-gateway.test/v1",
+        gateway_api_key="test-key",
+        default_model="fake-model",
+        max_retries=1,
+    )
+
+
+def _sse(*chunks: dict) -> bytes:
+    body = "".join(f"data: {json.dumps(c)}\n\n" for c in chunks)
+    return (body + "data: [DONE]\n\n").encode()
+
+
+def _answer_response(text: str) -> httpx.Response:
+    chunks = [
+        {"choices": [{"delta": {"content": text}, "finish_reason": "stop"}]},
+        {"choices": [], "usage": {"prompt_tokens": 500, "completion_tokens": 8, "total_tokens": 508}},
+    ]
+    return httpx.Response(200, content=_sse(*chunks))
+
+
+def _ctx_with_gateway(tmp_path: Path, artifact_store, gateway_client) -> ToolContext:
+    return ToolContext(
+        sandbox=_NullSandbox(),
+        guardrails=GuardrailsConfig(),
+        cwd=tmp_path,
+        artifact_store=artifact_store,
+        gateway_client=gateway_client,
+        model="fake-model",
+    )
+
+
+@pytest.mark.asyncio
+async def test_ask_artifact_without_store_reports_error(tmp_path: Path):
+    ctx = ToolContext(sandbox=_NullSandbox(), guardrails=GuardrailsConfig(), cwd=tmp_path)
+    result = await ASK_ARTIFACT.handler({"artifact_id": "art_x", "question": "q"}, ctx)
+    assert result.is_error is True
+    assert "No artifact store" in result.output
+
+
+@pytest.mark.asyncio
+async def test_ask_artifact_without_gateway_reports_error(tmp_path: Path):
+    artifacts = _make_artifacts(tmp_path)
+    ctx = ToolContext(
+        sandbox=_NullSandbox(), guardrails=GuardrailsConfig(), cwd=tmp_path, artifact_store=artifacts
+    )
+    result = await ASK_ARTIFACT.handler({"artifact_id": "art_x", "question": "q"}, ctx)
+    assert result.is_error is True
+    assert "No gateway" in result.output
+
+
+@pytest.mark.asyncio
+async def test_ask_artifact_unknown_id_reports_error(tmp_path: Path):
+    artifacts = _make_artifacts(tmp_path)
+    ctx = _ctx_with_gateway(tmp_path, artifacts, object())
+    result = await ASK_ARTIFACT.handler({"artifact_id": "art_missing", "question": "q"}, ctx)
+    assert result.is_error is True
+    assert "No artifact found" in result.output
+    assert "[pcli] Suggestion:" in result.output
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_ask_artifact_small_artifact_returns_directly_without_a_gateway_call(
+    tmp_path: Path,
+):
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    artifacts = _make_artifacts(tmp_path)
+    artifact_id = artifacts.put("short content")
+
+    async with GatewayClient(_settings()) as client:
+        result = await ASK_ARTIFACT.handler(
+            {"artifact_id": artifact_id, "question": "what is this?"},
+            _ctx_with_gateway(tmp_path, artifacts, client),
+        )
+
+    assert result.is_error is False
+    assert "short content" in result.output
+    assert "no extra LLM call needed" in result.output
+    assert route.call_count == 0
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_ask_artifact_large_artifact_calls_the_gateway_and_returns_the_answer(
+    tmp_path: Path,
+):
+    route = respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=_answer_response("The answer is 42.")
+    )
+    artifacts = _make_artifacts(tmp_path)
+    content = "x" * (_DEFAULT_FETCH_CHARS + 1)
+    artifact_id = artifacts.put(content)
+
+    async with GatewayClient(_settings()) as client:
+        result = await ASK_ARTIFACT.handler(
+            {"artifact_id": artifact_id, "question": "what is the answer?"},
+            _ctx_with_gateway(tmp_path, artifacts, client),
+        )
+
+    assert result.is_error is False
+    assert result.output == "The answer is 42."
+    assert route.call_count == 1
+
+    sent = json.loads(route.calls.last.request.content)
+    sent_messages = sent["messages"]
+    assert sent_messages[0]["role"] == "system"
+    assert "what is the answer?" in sent_messages[1]["content"]
+    assert content in sent_messages[1]["content"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_ask_artifact_folds_gateway_usage_into_extra_usage(tmp_path: Path):
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=_answer_response("answer")
+    )
+    artifacts = _make_artifacts(tmp_path)
+    artifact_id = artifacts.put("x" * (_DEFAULT_FETCH_CHARS + 1))
+
+    async with GatewayClient(_settings()) as client:
+        result = await ASK_ARTIFACT.handler(
+            {"artifact_id": artifact_id, "question": "q"},
+            _ctx_with_gateway(tmp_path, artifacts, client),
+        )
+
+    assert len(result.extra_usage) == 1
+    assert result.extra_usage[0].total_tokens == 508
+
+
+def test_ask_artifact_tool_metadata():
+    assert ASK_ARTIFACT.needs_permission is False
+    assert ASK_ARTIFACT.plan_mode_safe is True

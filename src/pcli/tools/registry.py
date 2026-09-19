@@ -56,7 +56,7 @@ def build_default_registry() -> ToolRegistry:
         WRITE_DOCUMENTATION,
     )
     from pcli.tools.builtin.agent_tool_register_tool import REGISTER_AGENT_TOOL
-    from pcli.tools.builtin.artifact_tool import FETCH_ARTIFACT
+    from pcli.tools.builtin.artifact_tool import ASK_ARTIFACT, FETCH_ARTIFACT
     from pcli.tools.builtin.ask_tool import ASK_USER_QUESTION
     from pcli.tools.builtin.decision_tool import RECORD_DECISION
     from pcli.tools.builtin.diff_tools import APPLY_PATCH, DIFF_FILES
@@ -105,6 +105,7 @@ def build_default_registry() -> ToolRegistry:
         RECORD_DECISION,
         REMEMBER,
         FETCH_ARTIFACT,
+        ASK_ARTIFACT,
         REGISTER_TOOLBOX_TOOL,
         EXPLORE_CODEBASE,
         EXPLORE_FILES,

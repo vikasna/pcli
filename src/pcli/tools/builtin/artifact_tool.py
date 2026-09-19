@@ -1,16 +1,40 @@
 """fetch_artifact: retrieves the full (or a windowed slice of the) content of
 a large tool result that AgentLoop truncated out of the live conversation
-and archived — see pcli.tools.artifacts and agent/loop.py's dispatch logic."""
+and archived — see pcli.tools.artifacts and agent/loop.py's dispatch logic.
+
+ask_artifact (this module too - same domain, one small addition) answers a
+specific question about an archived artifact via a side LLM call instead of
+returning raw content, so a small-context model doesn't have to pull the
+whole thing into its own conversation just to do its own reading
+comprehension over it. Local-api-only (see tui/screens/chat.py, which
+excludes it from the tool registry otherwise): the extra call is free on a
+local gateway, real (if usually small) cost on a paid one."""
 
 from __future__ import annotations
 
 import re
 
+from pcli.llm.models import ChatMessage
 from pcli.tools.base import ToolContext, ToolResult, ToolSpec
 
 _DEFAULT_FETCH_CHARS = 4000
 _MAX_PATTERN_MATCHES = 50
 _DEFAULT_CONTEXT_LINES = 2
+
+_ASK_ARTIFACT_SYSTEM_PROMPT = (
+    "Answer the question using only the reference material below. Be concise and direct. If "
+    "the material doesn't contain the answer, say so plainly rather than guessing."
+)
+
+
+def _artifact_not_found(artifact_id: str) -> ToolResult:
+    return ToolResult(
+        output=f"No artifact found with id '{artifact_id}'.\n"
+        "[pcli] Suggestion: re-check the \"archived as artifact_id='art_...'\" note in the "
+        "original tool result rather than guessing an id — artifact ids aren't derivable "
+        "any other way.",
+        is_error=True,
+    )
 
 
 def _grep_with_context(
@@ -54,13 +78,7 @@ async def _fetch_artifact(arguments: dict, ctx: ToolContext) -> ToolResult:
     artifact_id = arguments["artifact_id"]
     content = ctx.artifact_store.get(artifact_id)
     if content is None:
-        return ToolResult(
-            output=f"No artifact found with id '{artifact_id}'.\n"
-            "[pcli] Suggestion: re-check the \"archived as artifact_id='art_...'\" note in the "
-            "original tool result rather than guessing an id — artifact ids aren't derivable "
-            "any other way.",
-            is_error=True,
-        )
+        return _artifact_not_found(artifact_id)
 
     limit = int(arguments.get("limit") or _DEFAULT_FETCH_CHARS)
     pattern = arguments.get("pattern")
@@ -131,6 +149,62 @@ FETCH_ARTIFACT = ToolSpec(
         "required": ["artifact_id"],
     },
     handler=_fetch_artifact,
+    needs_permission=False,
+    plan_mode_safe=True,
+)
+
+
+async def _ask_artifact(arguments: dict, ctx: ToolContext) -> ToolResult:
+    if ctx.artifact_store is None:
+        return ToolResult(output="No artifact store available in this context.", is_error=True)
+    if ctx.gateway_client is None:
+        return ToolResult(output="No gateway available in this context.", is_error=True)
+
+    artifact_id = arguments["artifact_id"]
+    question = arguments["question"]
+    content = ctx.artifact_store.get(artifact_id)
+    if content is None:
+        return _artifact_not_found(artifact_id)
+
+    if len(content) <= _DEFAULT_FETCH_CHARS:
+        # Already small enough that fetch_artifact would return it whole -
+        # spending an extra LLM call on it would just add latency (the
+        # money's free, the round trip isn't) for no benefit over reading
+        # it directly.
+        return ToolResult(
+            output=f"Artifact is small enough to return directly (no extra LLM call needed):"
+            f"\n\n{content}"
+        )
+
+    messages = [
+        ChatMessage(role="system", content=_ASK_ARTIFACT_SYSTEM_PROMPT),
+        ChatMessage(role="user", content=f"Question: {question}\n\nReference material:\n{content}"),
+    ]
+    assistant_message, usage = await ctx.gateway_client.collect(messages, model=ctx.model)
+    answer = assistant_message.content or "(no answer produced)"
+    return ToolResult(output=answer, extra_usage=[usage])
+
+
+ASK_ARTIFACT = ToolSpec(
+    name="ask_artifact",
+    description="Answer a specific question about a large archived artifact via a side LLM "
+    "call, instead of pulling its raw content into this conversation - only available with a "
+    "local gateway (the extra call is free there). Prefer this over fetch_artifact when you "
+    "want a targeted answer from a large artifact rather than the raw text itself (small "
+    "artifacts are returned directly with no extra call, same as fetch_artifact would).",
+    parameters={
+        "type": "object",
+        "properties": {
+            "artifact_id": {"type": "string"},
+            "question": {
+                "type": "string",
+                "description": "What you want to know from this artifact, stated as a "
+                "specific question.",
+            },
+        },
+        "required": ["artifact_id", "question"],
+    },
+    handler=_ask_artifact,
     needs_permission=False,
     plan_mode_safe=True,
 )
