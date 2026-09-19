@@ -112,6 +112,15 @@ never pruned while it's excluded.
   [`tools.md`](tools.md#record_decision).
 - `metadata: dict` — free-form; used by the importer to stash
   `imported_from_id` / `imported_from_file`.
+- `working_dir: str | None` — `Path.cwd()` at session creation
+  (`ChatScreen.__init__`, for a brand-new session only). Resuming a session
+  — via `/sessions` or `pcli --resume <id>` — compares this against the
+  current directory (`session/directory_check.py`'s `directory_mismatch()`)
+  and warns, but doesn't block, if they differ: relative paths in the
+  session's history, and any new tool calls, would otherwise resolve against
+  the wrong directory. `None` for sessions predating this field, or ones
+  never tied to a real cwd (test fixtures, imported sessions — see
+  "Export / import" below) — never treated as a mismatch.
 
 ### Blob storage
 
@@ -172,6 +181,10 @@ magic bytes regardless of extension). The gateway API key is never part of
   re-apply those grants into the importing machine's own
   `PermissionPolicy`/`permissions.json`, to avoid double-recording an
   "always" grant that's already persisted separately there.
+- **Always clears `working_dir`** — it names a directory on the exporting
+  machine, essentially never the importing one, so keeping it would just
+  trip the directory-mismatch warning (see "What's stored on `Session`"
+  above) on every resume of the imported session for no reason.
 - Restores each referenced blob under its original blob name before saving
   the session.
 

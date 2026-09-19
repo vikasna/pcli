@@ -31,6 +31,20 @@ is `[]`; it used to declare its own `("ctrl+c", "quit", "Quit")` entry, but
 that never actually fired (a same-key system-level binding on `App` always
 wins over a same-key `Screen`-level one) and was removed.
 
+Whenever pcli exits — Ctrl+Q or otherwise — `pcli.cli._root` prints a hint
+afterward naming whichever session was most recently active during that run
+(not necessarily the one it started with, since `/sessions` can switch to a
+different one mid-run):
+
+```
+Resume this session anytime with: pcli --resume <id>
+```
+
+Skipped if that session never had a single message sent in it — those are
+silently pruned on the next launch anyway (see
+[`sessions-and-cost.md`](sessions-and-cost.md#pruning-empty-sessions)), so a
+resume hint for one would point at a session that's about to vanish.
+
 ## Chat input
 
 Type a message and press Enter to send it to the agent. It's appended to the
@@ -350,6 +364,15 @@ as a normal system message instead.
   screen and normal pcli startup silently prune any never-used (zero
   message) sessions first — see
   [`sessions-and-cost.md`](sessions-and-cost.md#pruning-empty-sessions).
+  If the session being resumed (`Enter`) was last run in a different
+  directory than the current one (`Session.working_dir`, compared via
+  `session/directory_check.py`'s `directory_mismatch()`), a confirmation
+  modal warns that relative paths in its history — and any new tool calls —
+  will resolve against the current directory instead; `Cancel` returns to
+  the list without resuming, `Continue` proceeds as normal. A session with
+  no recorded `working_dir` (older sessions, or one imported from another
+  machine — see [`sessions-and-cost.md`](sessions-and-cost.md#export--import))
+  never triggers this warning.
 - **`/export [path]`** — exports the *current* session via `export_session`
   to `path` if given, else `<data_dir>/exports/<session_id>.pcli-session.json`.
 - **`/toolbox discover <name>`**, **`/toolbox list`**, **`/toolbox remove

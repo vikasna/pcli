@@ -91,6 +91,17 @@ at all); `ChatScreen._stream_response` now also logs a full traceback there
 that doesn't set a scalar override, it *appends* the active gateway to a
 persisted list (see [Local-API mode](#local-api-mode) below).
 
+`--resume` / `-r <session_id>` loads a specific past session directly
+instead of starting a fresh one (find ids via `pcli sessions list`, or from
+the "Resume this session anytime with: pcli --resume <id>" hint printed on
+quit — see [`tui-guide.md`](tui-guide.md#quitting)). It isn't a `Settings`
+field either — it resolves via `SessionStore.load()` before the TUI starts,
+and exits with an error if the id doesn't exist. If the session's recorded
+`working_dir` doesn't match the current directory, it prompts for
+confirmation (`typer.confirm`) before proceeding, same warning and reasoning
+as the in-TUI `/sessions` resume — see
+[`sessions-and-cost.md`](sessions-and-cost.md#whats-stored-on-session).
+
 ## Auto-persisted settings
 
 Passing `--gateway-url`, `--model`, and/or `--artifact-threshold` on the
