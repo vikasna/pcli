@@ -41,10 +41,66 @@ def turn_boundaries(messages: list[Message]) -> list[int]:
     assistant(tool_calls=...) from its matching tool-role response, which
     breaks the chat-completions wire format.
 
-    Shared with agent/context_pruning.py — the same turn-boundary-safety
-    reasoning applies to pruning old tool results, not just full-turn
-    compaction."""
+    Used (via compaction_cutoff) by both this module and
+    agent/context_pruning.py — the same turn-boundary-safety reasoning
+    applies to pruning old tool results, not just full-turn compaction."""
     return [i for i, m in enumerate(messages) if m.role == "user"]
+
+
+def _round_boundaries(messages: list[Message]) -> list[int]:
+    """Finer-grained fallback for turn_boundaries: every index safe to cut
+    at (message.role != "tool", so a tool result is never separated from the
+    assistant tool_calls message that requested it) - not just role=='user'.
+
+    A single long-running task (one user message, then dozens of internal
+    assistant/tool round trips as the model works through it) has exactly
+    one 'user' boundary for its entire life. Gating on turn_boundaries alone
+    means that session's eligibility check (len(boundaries) <= keep_recent_
+    turns) never becomes false, no matter how much context that one turn's
+    own history has accumulated - real debugged case: a session hit its
+    model's context limit and stalled with no visible error (see
+    cost/context.py's looks_like_context_ceiling), and /compact reported
+    "nothing to compact" even though the conversation was enormous, because
+    it had only ever received a single user message. Used only as a
+    fallback, when turn_boundaries alone doesn't yield enough boundaries to
+    safely keep keep_recent_turns of them - a normal multi-turn conversation
+    is unaffected and keeps using turn_boundaries exactly as before."""
+    return [i for i, m in enumerate(messages) if m.role != "tool"]
+
+
+_MIN_ROUNDS_FOR_FALLBACK = 20
+"""How many round trips a single (or few) user turn must accumulate before
+the _round_boundaries fallback below kicks in at all. Deliberately much
+bigger than any ordinary keep_recent_turns value (2 by default): an
+ordinary short turn - a handful of tool calls, still the single most recent
+thing the user is looking at - has nowhere near this many round-boundary
+entries, so it's left completely alone, exactly as if the fallback didn't
+exist. Only once a single turn has genuinely ballooned well past that (a
+long autonomous task making dozens of tool calls) does the fallback treat
+it as something worth compacting/pruning into."""
+
+
+def compaction_cutoff(messages: list[Message], *, keep_recent_turns: int) -> int | None:
+    """The index up to which messages are eligible to be summarized/pruned,
+    keeping the most recent turns' worth of exchanges verbatim - None if
+    there isn't enough history yet to safely do anything.
+
+    Prefers turn_boundaries (real user-typed turns): if there are more of
+    those than keep_recent_turns, behavior is exactly what it always was.
+    Otherwise falls back to the finer _round_boundaries - but only once the
+    single (or few) turn(s) have grown past _MIN_ROUNDS_FOR_FALLBACK, and
+    even then keeping at least that many of the most recent rounds verbatim
+    (not the much smaller keep_recent_turns itself, which is calibrated for
+    whole turns, not individual round trips) - see both docstrings for why."""
+    boundaries = turn_boundaries(messages)
+    if len(boundaries) > keep_recent_turns:
+        return boundaries[-keep_recent_turns] if keep_recent_turns > 0 else len(messages)
+
+    round_boundaries = _round_boundaries(messages)
+    fallback_keep = max(keep_recent_turns, _MIN_ROUNDS_FOR_FALLBACK)
+    if len(round_boundaries) <= fallback_keep:
+        return None
+    return round_boundaries[-fallback_keep]
 
 
 def _system_prompt_prefix_len(messages: list[Message]) -> int:
@@ -82,13 +138,14 @@ async def maybe_compact(
 ) -> CompactionResult | None:
     """Compacts the oldest turns of session.messages in place, returning
     None if there isn't enough history to safely compact yet (fewer than
-    keep_recent_turns+1 user turns)."""
-    boundaries = turn_boundaries(session.messages)
-    if len(boundaries) <= keep_recent_turns:
+    keep_recent_turns+1 user turns, or - the fallback compaction_cutoff
+    applies for a session dominated by one long, tool-call-heavy turn -
+    round trips)."""
+    cut_index = compaction_cutoff(session.messages, keep_recent_turns=keep_recent_turns)
+    if cut_index is None:
         return None
 
     prefix_len = _system_prompt_prefix_len(session.messages)
-    cut_index = boundaries[-keep_recent_turns]
     to_compact = session.messages[prefix_len:cut_index]
     if not to_compact:
         return None

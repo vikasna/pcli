@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 
-from pcli.agent.compaction import turn_boundaries
+from pcli.agent.compaction import compaction_cutoff
 from pcli.session.models import Message, Session
 from pcli.tools.artifacts import ArtifactStore
 
@@ -62,11 +62,9 @@ def prune_old_tool_results(
     (pruned_artifact_id set) is skipped, so this is safe to call every turn
     without re-archiving or duplicating artifacts. Returns how many messages
     were pruned this call (0 if nothing was old enough yet)."""
-    boundaries = turn_boundaries(session.messages)
-    if len(boundaries) <= keep_recent_turns:
+    cutoff_index = compaction_cutoff(session.messages, keep_recent_turns=keep_recent_turns)
+    if cutoff_index is None:
         return 0  # nothing old enough to prune yet
-
-    cutoff_index = boundaries[-keep_recent_turns] if keep_recent_turns > 0 else len(session.messages)
 
     pruned_count = 0
     for i in range(cutoff_index):

@@ -6,13 +6,17 @@ import pytest
 import respx
 
 from pcli.agent.compaction import (
+    _MIN_ROUNDS_FOR_FALLBACK,
     _render_transcript,
+    _round_boundaries,
     _system_prompt_prefix_len,
+    compaction_cutoff,
     maybe_compact,
     turn_boundaries,
 )
 from pcli.config.settings import Settings
 from pcli.llm.client import GatewayClient
+from pcli.llm.models import ToolCall, ToolCallFunction
 from pcli.session.models import Message
 from pcli.session.store import SessionStore
 from pcli.tools.artifacts import SessionArtifactStore
@@ -191,3 +195,127 @@ async def test_maybe_compact_recompaction_folds_prior_summary_without_special_ca
     archived_second = artifact_store.get(second.artifact_id)
     assert "First summary." in archived_second
     assert "turn 2 user" in archived_second
+
+
+def _make_mega_turn_messages(num_rounds: int) -> list[Message]:
+    """A single real user turn ('build the thing') followed by num_rounds
+    tool-calling round trips and no further user input - the shape of a
+    long-running autonomous task, and the exact scenario turn_boundaries
+    alone (only counting role=='user' messages) can't see any structure in
+    at all: real debugged bug, see _round_boundaries' docstring."""
+    messages = [
+        Message(role="system", content="system prompt"),
+        Message(role="user", content="build the thing"),
+    ]
+    for i in range(num_rounds):
+        messages.append(
+            Message(
+                role="assistant",
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id=f"call_{i}",
+                        function=ToolCallFunction(name="run_shell", arguments=f'{{"command": "step {i}"}}'),
+                    )
+                ],
+            )
+        )
+        messages.append(
+            Message(role="tool", tool_call_id=f"call_{i}", name="run_shell", content=f"output of step {i}")
+        )
+    return messages
+
+
+def test_round_boundaries_includes_every_non_tool_message():
+    messages = _make_mega_turn_messages(3)
+    # system(0), user(1), then assistant at 2, 4, 6 - tool messages (3, 5, 7) excluded.
+    assert _round_boundaries(messages) == [0, 1, 2, 4, 6]
+
+
+def test_compaction_cutoff_uses_turn_boundaries_when_there_are_enough():
+    messages = _make_messages()  # 3 real user turns
+    assert compaction_cutoff(messages, keep_recent_turns=2) == turn_boundaries(messages)[-2]
+
+
+def test_compaction_cutoff_returns_none_for_an_ordinary_short_single_turn():
+    """The fallback must not reach into a still-current, ordinary-sized
+    turn just because it has more than keep_recent_turns individual
+    messages - only once a single turn has genuinely ballooned past
+    _MIN_ROUNDS_FOR_FALLBACK should anything become eligible."""
+    messages = _make_mega_turn_messages(3)
+    assert compaction_cutoff(messages, keep_recent_turns=1) is None
+    assert compaction_cutoff(messages, keep_recent_turns=2) is None
+
+
+def test_compaction_cutoff_falls_back_for_a_single_mega_turn():
+    messages = _make_mega_turn_messages(_MIN_ROUNDS_FOR_FALLBACK + 10)
+    cutoff = compaction_cutoff(messages, keep_recent_turns=2)
+    assert cutoff is not None
+    # Keeps at least _MIN_ROUNDS_FOR_FALLBACK round-boundaries' worth verbatim,
+    # not the much smaller keep_recent_turns.
+    kept = messages[cutoff:]
+    assert len(_round_boundaries(kept)) >= _MIN_ROUNDS_FOR_FALLBACK
+    # And something real is actually eligible to be cut - the whole point.
+    assert cutoff > 2
+
+
+@pytest.mark.asyncio
+async def test_maybe_compact_returns_none_for_an_ordinary_short_single_turn(tmp_path: Path):
+    """Regression guard for the fix below: an ordinary turn (a handful of
+    tool calls) must stay fully untouched while it's still the single most
+    recent thing the user is looking at, exactly as before this fix."""
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    session = store.new_session(model="fake-model", gateway_base_url="http://fake-gateway.test/v1")
+    session.messages = _make_mega_turn_messages(3)
+    artifact_store = SessionArtifactStore(store, session.id)
+
+    async with GatewayClient(_settings()) as client:
+        result = await maybe_compact(
+            session,
+            gateway_client=client,
+            model="fake-model",
+            artifact_store=artifact_store,
+            keep_recent_turns=2,
+        )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_maybe_compact_falls_back_for_a_single_long_running_turn(tmp_path: Path):
+    """Regression coverage for a real reported bug: a session driven by one
+    user instruction that then ran dozens of tool-calling rounds (a
+    long-running autonomous task) hit its model's context limit and
+    stalled - and /compact reported "nothing to compact", because
+    turn_boundaries only ever saw a single 'user' message for the entire
+    life of the session, no matter how large that one turn's own history
+    grew. maybe_compact must find something to compact here."""
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=_summary_response("Summary of the early steps.")
+    )
+
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    session = store.new_session(model="fake-model", gateway_base_url="http://fake-gateway.test/v1")
+    num_rounds = _MIN_ROUNDS_FOR_FALLBACK + 10
+    session.messages = _make_mega_turn_messages(num_rounds)
+    original_message_count = len(session.messages)
+    artifact_store = SessionArtifactStore(store, session.id)
+
+    async with GatewayClient(_settings()) as client:
+        result = await maybe_compact(
+            session,
+            gateway_client=client,
+            model="fake-model",
+            artifact_store=artifact_store,
+            keep_recent_turns=2,
+        )
+
+    assert result is not None
+    assert result.messages_compacted > 0
+    assert len(session.messages) < original_message_count
+    assert session.messages[0].content == "system prompt"
+    assert session.messages[1].role == "system"
+    assert "Summary of the early steps." in session.messages[1].content
+    # The most recent rounds are still there, verbatim.
+    assert session.messages[-1].content == f"output of step {num_rounds - 1}"

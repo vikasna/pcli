@@ -186,3 +186,56 @@ def test_prune_old_tool_results_skips_tool_messages_with_empty_content(tmp_path:
     assert pruned_count == 1  # only turn 2's tool result
     assert session.messages[3].content is None
     assert session.messages[3].pruned_artifact_id is None
+
+
+def _make_mega_turn_messages(num_rounds: int) -> list[Message]:
+    """A single real user turn followed by num_rounds tool-calling round
+    trips and no further user input - see test_compaction.py's identically
+    named helper and _round_boundaries' docstring for the bug this covers:
+    turn_boundaries alone sees only one 'user' message here, no matter how
+    large the turn's own history grows."""
+    messages = [
+        Message(role="system", content="system prompt"),
+        Message(role="user", content="build the thing"),
+    ]
+    for i in range(num_rounds):
+        messages.append(
+            Message(role="assistant", tool_calls=[_tool_call(f"c{i}", "run_shell", f'{{"command":"step {i}"}}')])
+        )
+        messages.append(Message(role="tool", content=f"output of step {i}", tool_call_id=f"c{i}", name="run_shell"))
+    return messages
+
+
+def test_prune_old_tool_results_no_op_for_an_ordinary_short_single_turn(tmp_path: Path):
+    """Regression guard: the fallback must not reach into a still-current,
+    ordinary-sized turn (a handful of tool calls) just because it has more
+    than keep_recent_turns individual messages."""
+    session, artifact_store = _session_and_artifacts(tmp_path)
+    session.messages = _make_mega_turn_messages(3)
+
+    pruned_count = prune_old_tool_results(session, keep_recent_turns=1, artifact_store=artifact_store)
+
+    assert pruned_count == 0
+    assert all(m.pruned_artifact_id is None for m in session.messages)
+
+
+def test_prune_old_tool_results_falls_back_for_a_single_long_running_turn(tmp_path: Path):
+    """Regression coverage for a real reported bug: a session driven by a
+    single user instruction that then ran dozens of tool-calling rounds
+    never accumulated more than one turn_boundaries entry, so this cheap,
+    supposedly-runs-every-turn pass silently never did anything, no matter
+    how much context those tool results used."""
+    from pcli.agent.compaction import _MIN_ROUNDS_FOR_FALLBACK
+
+    session, artifact_store = _session_and_artifacts(tmp_path)
+    num_rounds = _MIN_ROUNDS_FOR_FALLBACK + 10
+    session.messages = _make_mega_turn_messages(num_rounds)
+
+    pruned_count = prune_old_tool_results(session, keep_recent_turns=1, artifact_store=artifact_store)
+
+    assert pruned_count > 0
+    # Oldest tool result got pruned...
+    assert session.messages[3].pruned_artifact_id is not None
+    # ...but the most recent rounds are still verbatim.
+    assert session.messages[-1].content == f"output of step {num_rounds - 1}"
+    assert session.messages[-1].pruned_artifact_id is None
