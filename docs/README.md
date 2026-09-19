@@ -41,6 +41,9 @@ TUI (ChatScreen) -> AgentLoop -> GatewayClient (LLM gateway)
   backends and the guardrail/permission system that gates tool execution.
 - [`sessions-and-cost.md`](sessions-and-cost.md) — session persistence,
   export/import, and cost/context tracking.
+- [`memory.md`](memory.md) — pcli's global, cross-session user memory: the
+  data model, the `remember` tool, autonomous extraction piggybacked on
+  auto-compaction, system-prompt injection, and the `/memory` command.
 - [`toolbox-plugins.md`](toolbox-plugins.md) — discovering OS/software tools
   (kubectl, SGE, Kafka, httpd, ...) for the agent to use.
 - [`agent-tools-guide.md`](agent-tools-guide.md) — how to create and register

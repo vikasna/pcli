@@ -246,11 +246,11 @@ though the subagent's individual tool calls aren't otherwise recorded.
 #### `TurnCost.source`
 
 Every `TurnCost` (`src/pcli/session/models.py`) carries a `source: Literal["main",
-"subagent", "compaction"]` field, defaulting to `"main"` (so a session
-persisted before this field existed still validates and behaves exactly as
-it did before — every entry back then was implicitly a main-turn entry).
-`ChatScreen` (`src/pcli/tui/screens/chat.py`) tags each of its three real
-`record_turn(...)` call sites explicitly:
+"subagent", "compaction", "memory"]` field, defaulting to `"main"` (so a
+session persisted before this field existed still validates and behaves
+exactly as it did before — every entry back then was implicitly a main-turn
+entry). `ChatScreen` (`src/pcli/tui/screens/chat.py`) tags each of its four
+real `record_turn(...)` call sites explicitly:
 
 - **`"main"`** (the default, passed implicitly) — the plain per-turn `usage`
   chunk handler, i.e. an actual LLM call that's part of the main
@@ -261,6 +261,12 @@ it did before — every entry back then was implicitly a main-turn entry).
 - **`"subagent"`** — a tool result's `extra_usage` (a `spawn_subagent` or
   `make_agent_tool`-based tool's nested `AgentLoop` spend), recorded right
   after the tool-call chunk that produced it.
+- **`"memory"`** — `_extract_memory_from`'s own usage, from the small
+  tool-only `AgentLoop` that reviews a just-archived compaction transcript
+  for anything worth remembering about the user (`memory/extraction.py`) —
+  see [`memory.md`](memory.md#autonomous-extraction-derived). Recorded once
+  per LLM call that sub-loop makes, right after the compaction pass that
+  triggered it finishes.
 
 **This only changes which entry represents "the main conversation" — it does
 not change cost totals.** `session_total_usd` and `total_tokens` still

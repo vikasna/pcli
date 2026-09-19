@@ -1007,6 +1007,41 @@ does for `write_todos`.
   generic collapsed tool-result — see
   [`tui-guide.md`](tui-guide.md#decision-log).
 
+## remember
+
+Persists a fact about the user to pcli's **global, cross-session** memory
+store — available in every future session (and to subagents), not just this
+one. Same shape as `record_decision` above (one call adds one entry, nothing
+mutated in place), but **global rather than session-scoped**: `record_decision`
+logs to the current `Session.decisions` only, while `remember` writes to
+`data_dir()/memory.json`, shared across every session and project. See
+[`memory.md`](memory.md) for the full data model, deduplication/eviction
+behavior, and how this feeds both the system prompt and the autonomous
+extraction pass.
+
+- **Parameters:** `content` (string, required — the fact, stated plainly in
+  one or two sentences), `category` (string, required — one of `profile`
+  (nature of work/role), `preference` (a recurring technical/workflow
+  choice), `style` (how they like responses/conversation), `common_ask` (a
+  recurring task pattern)), `source` (string, optional — `"explicit"` if the
+  user directly asked to be remembered, protecting the entry from automatic
+  eviction later; omitted or `"derived"` otherwise).
+- **Permission:** not required (`needs_permission=False`). `plan_mode_safe=True`
+  — remembering a fact isn't a mutation of the working directory or the
+  session, so it stays available while [plan mode](tui-guide.md#plan-mode) is
+  active.
+- Errors cleanly (not a crash) if `content` is empty or `category` isn't one
+  of the four valid values, naming the valid set in the error.
+- The tool's description instructs the main agent to call this **immediately**
+  whenever the user explicitly asks to be remembered ("remember that I use
+  tabs", "don't suggest X again") — never for anything specific to only the
+  current task.
+- Two callers in practice: the main agent (explicit user requests, any
+  session length) and `memory/extraction.py`'s own small tool-only subagent,
+  which reviews the transcript a successful compaction pass just archived and
+  calls this 0+ times for anything durable and cross-session-worthy it finds
+  — see [`memory.md#autonomous-extraction-derived`](memory.md#autonomous-extraction-derived).
+
 ## fetch_artifact
 
 Retrieves (a windowed slice of) content previously archived by the automatic

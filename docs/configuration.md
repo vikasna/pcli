@@ -52,6 +52,8 @@ to `table_key` when reading back, so both shapes round-trip.
 | `auto_compact_enabled` | `PCLI_AUTO_COMPACT_ENABLED` | *(none)* | `auto_compact_enabled` | `true` | Whether old conversation history is automatically summarized/archived once context usage crosses `auto_compact_threshold`; see [Auto-compaction](#auto-compaction) below. |
 | `auto_compact_threshold` | `PCLI_AUTO_COMPACT_THRESHOLD` | *(none)* | `auto_compact_threshold` | `0.8` | Fraction of the model's context limit (`current_context_usage` in `cost/context.py`) at which auto-compaction triggers after a turn completes. |
 | `auto_compact_keep_recent_turns` | `PCLI_AUTO_COMPACT_KEEP_RECENT_TURNS` | *(none)* | `auto_compact_keep_recent_turns` | `2` | Number of most-recent user turns left untouched (verbatim) by compaction; only older turns get summarized and archived. |
+| `memory_enabled` | `PCLI_MEMORY_ENABLED` | *(none)* | `memory_enabled` | `true` | Whether pcli maintains a global, cross-session user-memory profile (nature of work, preferences, conversation style, recurring task patterns) — injected into every session's system prompt and extended by the `remember` tool (explicit requests) and an automatic extraction pass piggybacked on auto-compaction; see [`memory.md`](memory.md). |
+| `memory_max_entries` | `PCLI_MEMORY_MAX_ENTRIES` | *(none)* | `memory_max_entries` | `40` | Hard cap on the number of stored memory entries — the oldest `source="derived"` entry is evicted first once adding a new one would exceed this; `source="explicit"` entries (the user directly asked to be remembered) are never auto-evicted. See [`memory.md#deduplication-and-eviction`](memory.md#deduplication-and-eviction). |
 | `prune_tool_results_enabled` | `PCLI_PRUNE_TOOL_RESULTS_ENABLED` | *(none)* | `prune_tool_results_enabled` | `true` | Whether old tool-call results are automatically shrunk to a compact placeholder to save context, well before auto-compaction's own threshold would trigger; see [Tool-result pruning](#tool-result-pruning) below. |
 | `prune_tool_results_keep_recent_turns` | `PCLI_PRUNE_TOOL_RESULTS_KEEP_RECENT_TURNS` | *(none)* | `prune_tool_results_keep_recent_turns` | `1` | Number of most-recent turns whose tool results are left untouched (verbatim); older ones are archived and replaced with a short placeholder. Deliberately tighter than `auto_compact_keep_recent_turns`'s default of `2`. |
 | `context_limit_auto_detect_enabled` | `PCLI_CONTEXT_LIMIT_AUTO_DETECT_ENABLED` | *(none)* | `context_limit_auto_detect_enabled` | `true` | Whether pcli tries to query the gateway directly for a model's real context window (see [Automatic context-limit detection](#automatic-context-limit-detection) below) when it has no built-in or user-configured entry for it yet. A handful of extra, short-timeout requests on startup for an unrecognized model; set to `false` to skip this and always fall back to the assumed default (still correctable either way via `/context-limit`). |
@@ -150,6 +152,24 @@ below) falls back to a finer per-round boundary once a single turn has grown
 past 20 round trips, keeping at least that many of the most recent rounds
 verbatim — so such a turn does eventually become eligible instead of staying
 permanently un-compactable. An ordinary short turn is unaffected.
+
+## Memory
+
+`memory_enabled` and `memory_max_entries` (table above) control pcli's
+global, cross-session user-memory profile — a small store of what pcli has
+learned about the user (nature of work, preferences, conversation style,
+recurring task patterns) that's injected into every new session's system
+prompt (and every subagent's), independent of any single `Session`. See
+[`memory.md`](memory.md) for the full picture: the data model, the explicit
+`remember` tool, the autonomous extraction pass piggybacked on
+[auto-compaction](#auto-compaction) above (a successful compaction — automatic
+or `/compact` — also triggers a review of the just-archived transcript for
+anything worth remembering), deduplication/eviction behavior, and the
+[`/memory`](tui-guide.md#slash-commands) command.
+
+Like the three auto-compaction settings above, neither has a CLI flag or is
+auto-persisted from one; both are env-var/`config.toml`-only, with no slash
+command either.
 
 ## Tool-result pruning
 

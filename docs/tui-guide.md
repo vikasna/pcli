@@ -554,6 +554,19 @@ as a normal system message instead.
   argument. For the same information kept live instead of retyping
   `/subagent` for a fresh snapshot, press
   [Ctrl+G](#ctrlg-subagent-activity-panel) instead.
+- **`/memory [forget <id>|clear]`** — view pcli's global, cross-session
+  memory of you (nature of work, preferences, conversation style, common
+  asks — injected into every session's system prompt), remove one entry, or
+  clear it all. With no argument, lists every entry grouped by category with
+  its short (last-4-char) id, same abbreviation style `/sessions` uses for
+  session ids, and an `(explicit)` marker on entries the user asked directly
+  to be remembered. `/memory forget <id>` resolves the id by suffix match —
+  reporting no-match or ambiguous-match instead of guessing — and removes
+  that one entry; `/memory clear` wipes everything. Grows automatically from
+  what's explicitly asked to be remembered (any session, any length) and,
+  once a session gets long enough to auto-compact, from what pcli notices
+  worth keeping on its own — see [Auto-compaction](#auto-compaction) below
+  and [`memory.md`](memory.md) for the full mechanism.
 - **`/max-response-tokens [off|on|<margin>]`** — view/toggle/set the dynamic
   per-request `max_tokens` cap (`compute_max_response_tokens`,
   `src/pcli/cost/context.py`, recomputed fresh before every turn by
@@ -666,6 +679,16 @@ rounds verbatim. This previously meant a large single-turn conversation could
 never be compacted at all — `/compact` would report "Nothing to compact yet."
 no matter how full the context got — and now can be, once it's grown large
 enough. An ordinary short turn is unaffected either way.
+
+A successful compaction — automatic or `/compact` — also triggers a
+**memory-extraction** pass: pcli reviews the transcript that was just
+archived for anything durable and worth remembering about the user across
+future sessions, and persists it via the same `remember` tool an explicit
+"remember this" uses. This is silent and best-effort (a failure here never
+shows up as a turn failure) and never fires without a compaction to
+piggyback on. See [`memory.md`](memory.md#autonomous-extraction-derived) for
+the full mechanism, and [`/memory`](#slash-commands) above for viewing or
+clearing what's been remembered.
 
 ## Tool-result pruning
 
