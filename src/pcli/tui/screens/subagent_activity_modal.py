@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import ClassVar
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import BindingType
 from textual.containers import Vertical, VerticalScroll
@@ -52,7 +53,14 @@ class SubagentActivityModal(ModalScreen[None]):
     def _refresh(self) -> None:
         sub = self._activity.subagent
         body = "Subagent finished — nothing more to show." if sub is None else format_subagent_activity(sub)
-        self.query_one("#subagent-activity-body", Static).update(body)
+        # Wrapped in Text (not passed as a raw string) so it's never parsed as
+        # Rich console markup - format_subagent_activity embeds arbitrary,
+        # untrusted tool-call arguments (file content, code snippets, ...),
+        # and any stray "[...]" in there would otherwise raise MarkupError
+        # and crash the modal. message_view.py already follows this same
+        # pattern everywhere it renders tool/model content for the same
+        # reason; this widget just hadn't been brought in line with it.
+        self.query_one("#subagent-activity-body", Static).update(Text(body))
         self.query_one("#subagent-activity-scroll", VerticalScroll).scroll_end(animate=False)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:

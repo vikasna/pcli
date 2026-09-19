@@ -196,3 +196,34 @@ async def test_modal_shows_finished_note_if_subagent_finishes_while_open(tmp_pat
         assert isinstance(modal, SubagentActivityModal)
         text = str(modal.query_one("#subagent-activity-body").render())
         assert "finished" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_modal_renders_bracket_like_tool_arguments_literally_not_as_markup(tmp_path: Path):
+    """Regression coverage for a real crash: format_subagent_activity embeds
+    arbitrary, untrusted tool-call arguments (file content, code snippets,
+    ...) into the body text. Static.update() parses a raw string as markup
+    by default, so a "[...]" sequence that happens to look like a style tag
+    - e.g. Python code/docs read back via read_file/fetch_artifact - could
+    be silently swallowed (or, on some Textual versions, raise MarkupError
+    and crash the modal outright). Confirmed directly: an un-wrapped
+    Static.update("[bold]xyz[/bold]") renders as bare "xyz" (tags
+    consumed as markup); wrapping in Text (what the fix does) must instead
+    keep it verbatim."""
+    screen, _session = _make_screen(tmp_path)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        screen._activity.start_subagent("explore the project")
+        screen._activity.record_subagent_tool_call(
+            "read_file",
+            '{"path": "find_notes.py", "content": "docstring example: [bold]not markup[/bold]"}',
+        )
+
+        await pilot.press("ctrl+g")
+        await pilot.pause()
+
+        assert isinstance(app.screen, SubagentActivityModal)
+        body_text = str(app.screen.query_one("#subagent-activity-body").render())
+        assert "[bold]not markup[/bold]" in body_text
