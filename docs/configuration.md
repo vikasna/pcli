@@ -528,8 +528,21 @@ verified in-code rather than toggled via `Settings` fields:
    instead of the real `PricingTable.load()` — see
    [`sessions-and-cost.md`](sessions-and-cost.md#cost-tracking). Token/context
    tracking is unaffected; only the `$` figure is zeroed.
+4. **The `ask_artifact` tool is offered at all.** `on_mount`, right after
+   `self._tool_registry = build_default_registry()` registers every builtin
+   tool (including `ask_artifact`) the same as always, filters it back out
+   whenever `not self._settings.is_local_api()`
+   (`self._tool_registry.filtered(lambda t: t.name != ASK_ARTIFACT.name)`)
+   — see [`ask_artifact`](tools.md#ask_artifact). This is a different kind
+   of effect from points 1-3 above: those all change *behavior* for a tool
+   that's available either way (looser limits, zeroed cost), while this is
+   the first and so far only case in pcli of local-api mode changing which
+   tools are *available* at all. The reasoning is the same free-call
+   tradeoff as point 3: the extra LLM call `ask_artifact` spends is free on
+   a local gateway but a real cost on a paid one, so it's withheld there
+   entirely rather than left to the model's judgment.
 
-A fourth effect applies below the `ChatScreen` layer, in `GatewayClient`
+A fifth effect applies below the `ChatScreen` layer, in `GatewayClient`
 itself, so it isn't limited to the TUI: **the effective request timeout is
 floored to 600 seconds (10 minutes) for a local-api gateway.**
 `Settings.effective_request_timeout_s` — what `GatewayClient` passes as

@@ -241,7 +241,11 @@ session's file.
 A subagent's own LLM usage is folded into the *parent* session's cost the
 same way, via `ToolResult.extra_usage` (see `spawn_subagent` in
 [`tools.md`](tools.md)) — real spend the session total must reflect, even
-though the subagent's individual tool calls aren't otherwise recorded.
+though the subagent's individual tool calls aren't otherwise recorded. The
+same field also covers a tool that makes its own side LLM call directly,
+with no nested `AgentLoop` involved at all — `ask_artifact`
+([`tools.md`](tools.md#ask_artifact)) is the current example, reporting the
+`Usage` from its single `ctx.gateway_client.collect()` call the same way.
 
 #### `TurnCost.source`
 
@@ -258,9 +262,13 @@ real `record_turn(...)` call sites explicitly:
 - **`"compaction"`** — `_run_compaction`'s own summarization call, whether
   triggered automatically (crossing `auto_compact_threshold`) or via
   `/compact`.
-- **`"subagent"`** — a tool result's `extra_usage` (a `spawn_subagent` or
-  `make_agent_tool`-based tool's nested `AgentLoop` spend), recorded right
-  after the tool-call chunk that produced it.
+- **`"subagent"`** — a tool result's `extra_usage`, recorded right after the
+  tool-call chunk that produced it. Two cases feed this: a `spawn_subagent`
+  or `make_agent_tool`-based tool's nested `AgentLoop` spend, or a tool like
+  `ask_artifact` ([`tools.md`](tools.md#ask_artifact)) that makes a single
+  side LLM call directly from its own handler, no nested `AgentLoop`
+  involved. Both are tagged the same way — real spend beyond the main
+  conversation's own turns, whichever shape it came in.
 - **`"memory"`** — `_extract_memory_from`'s own usage, from the small
   tool-only `AgentLoop` that reviews a just-archived compaction transcript
   for anything worth remembering about the user (`memory/extraction.py`) —

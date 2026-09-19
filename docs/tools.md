@@ -1085,6 +1085,60 @@ character-slice mode (`offset`/`limit`) and a grep-style search mode
   output narrow so a broad, truncated result is less likely in the first
   place (`src/pcli/agent/prompt.py`).
 
+## ask_artifact
+
+Answers a specific question about a large archived artifact via a side,
+non-tool-calling LLM call — `ctx.gateway_client.collect()`, the same
+primitive `agent/compaction.py`'s `maybe_compact` already uses for its own
+single-shot summarization — instead of returning the artifact's raw content
+the way `fetch_artifact` does. The point is to keep a small-context model
+from having to pull a large (or even filtered) slice of raw text into its
+own conversation just to do its own reading comprehension over it there;
+only the answer re-enters the conversation.
+
+- **Parameters:** `artifact_id` (string, required), `question` (string,
+  required — what you want to know from this artifact, stated as a specific
+  question). Deliberately just these two, rather than folding them onto
+  `fetch_artifact`'s own schema as extra optional parameters: a small/weak
+  local model — this tool's intended audience — is more likely to use a
+  focused, single-purpose tool correctly than one with several
+  conditionally-interacting parameters.
+- **Permission:** not required (`needs_permission=False`). `plan_mode_safe=True`
+  — same as `fetch_artifact`.
+- **Local-api only.** `ask_artifact` is registered into
+  `build_default_registry()` like every other builtin tool, then excluded
+  from `ChatScreen._tool_registry` in `on_mount` whenever
+  `not self._settings.is_local_api()` — see [Local-API
+  mode](configuration.md#local-api-mode). The extra LLM call this tool
+  spends is free on a local gateway (the whole point of the tool) but a
+  real, if usually small, cost on a paid one, so rather than leave the
+  tradeoff to the model's judgment, the tool simply isn't offered outside
+  local-api mode — the first tool in pcli whose *availability*, not just
+  behavior, depends on local-api mode.
+- **Small-artifact short-circuit:** if the archived content is already
+  `len(content) <= _DEFAULT_FETCH_CHARS` (4000 — the same constant
+  `fetch_artifact` defines/uses as its own default `limit`), `ask_artifact`
+  skips the LLM call entirely and returns the raw content directly, labeled
+  "Artifact is small enough to return directly (no extra LLM call needed):"
+  — `fetch_artifact` would already have returned it whole, so spending a
+  round-trip on it would only add latency (the call itself is free) for no
+  benefit.
+- **Unknown `artifact_id`** gets the same error/suggestion as
+  `fetch_artifact` — both tools share `_artifact_not_found`
+  (`src/pcli/tools/builtin/artifact_tool.py`).
+- **Cost tracking:** reuses the existing `ToolResult.extra_usage` mechanism
+  — the same one `spawn_subagent`/`make_agent_tool`-based tools already use
+  (see [`spawn_subagent`](#spawn_subagent) above) — so no new cost-tracking
+  code was needed for this tool specifically. `ChatScreen`'s
+  turn-completion handling folds the gateway call's `Usage` into session
+  cost under `source="subagent"` the same way; see
+  [`sessions-and-cost.md`](sessions-and-cost.md#turncostsource) for the
+  slightly different case this is — a direct call from the main agent's own
+  turn, not a nested subagent's `AgentLoop` spend. (`ask_artifact` is also
+  reachable from *inside* a subagent like any other tool; `run_nested_agent`
+  now folds a called tool's `extra_usage` into the subagent's own usage too,
+  closing a gap where that would previously have been silently dropped.)
+
 ## Artifact archiving
 
 This is automatic infrastructure inside `AgentLoop`, **not** something the
