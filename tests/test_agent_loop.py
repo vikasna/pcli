@@ -595,6 +595,100 @@ async def test_agent_loop_turn_complete_not_terminated_early_when_model_stops_on
 
     turn_complete = next(e for e in events if isinstance(e, TurnCompleteEvent))
     assert turn_complete.terminated_early is False
+    assert turn_complete.response_truncated is False
+
+
+async def _run_turn_events(tmp_path: Path, tool_registry: ToolRegistry | None = None) -> list:
+    async with GatewayClient(_settings()) as client:
+        loop = AgentLoop(
+            client,
+            tool_registry=tool_registry or ToolRegistry(),
+            permission_manager=PermissionManager(
+                guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+            ),
+            tool_context_factory=lambda: ToolContext(
+                sandbox=FakeSandbox(), guardrails=GuardrailsConfig(), cwd=tmp_path
+            ),
+        )
+        return [event async for event in loop.run_turn([ChatMessage(role="user", content="hi")])]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_agent_loop_response_truncated_true_when_finish_reason_is_length(tmp_path: Path):
+    """Real debugged case: the model's response got cut off by the token
+    limit mid-task (e.g. "Let me implement X:" with no tool call following,
+    because there was no room left to make one) - previously
+    indistinguishable from a deliberate, complete stop."""
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            content=_sse(
+                {"choices": [{"delta": {"content": "Let me implement X:"}, "finish_reason": None}]},
+                {"choices": [{"delta": {}, "finish_reason": "length"}]},
+            ),
+        )
+    )
+
+    events = await _run_turn_events(tmp_path)
+
+    turn_complete = next(e for e in events if isinstance(e, TurnCompleteEvent))
+    assert turn_complete.response_truncated is True
+    assert turn_complete.terminated_early is False  # a different cause - not conflated
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_agent_loop_response_truncated_true_for_max_tokens_finish_reason_variant(
+    tmp_path: Path,
+):
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            content=_sse(
+                {"choices": [{"delta": {"content": "partial"}, "finish_reason": None}]},
+                {"choices": [{"delta": {}, "finish_reason": "max_tokens"}]},
+            ),
+        )
+    )
+
+    events = await _run_turn_events(tmp_path)
+
+    turn_complete = next(e for e in events if isinstance(e, TurnCompleteEvent))
+    assert turn_complete.response_truncated is True
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_agent_loop_response_truncated_false_for_an_ordinary_stop(tmp_path: Path):
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=httpx.Response(200, content=_sse(*_final_text_chunks("done")))
+    )
+
+    events = await _run_turn_events(tmp_path)
+
+    turn_complete = next(e for e in events if isinstance(e, TurnCompleteEvent))
+    assert turn_complete.response_truncated is False
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_agent_loop_response_truncated_false_when_a_tool_call_is_made(tmp_path: Path):
+    """A "length" finish_reason attached to a tool-call-bearing response
+    (not the final, no-tool-call one) must not be mistaken for a truncated
+    final answer."""
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(200, content=_sse(*_single_tool_call_round("call_1"))),
+        httpx.Response(200, content=_sse(*_final_text_chunks("done"))),
+    ]
+    registry = ToolRegistry()
+    registry.register(ECHO_TOOL)
+
+    events = await _run_turn_events(tmp_path, tool_registry=registry)
+
+    turn_complete = next(e for e in events if isinstance(e, TurnCompleteEvent))
+    assert turn_complete.response_truncated is False
 
 
 @pytest.mark.asyncio

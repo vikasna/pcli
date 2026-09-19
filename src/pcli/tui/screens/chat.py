@@ -75,6 +75,17 @@ _ESCAPE_DOUBLE_PRESS_WINDOW_S = 0.6
 # nothing to show.
 _NO_SUBAGENT_RUNNING_MESSAGE = "No subagent is currently running."
 
+# A real debugged case: the model's response got cut off by the token limit
+# mid-task (e.g. "Let me implement X:" with no tool call following, because
+# there was no room left to make one) - previously indistinguishable from a
+# deliberate, complete stop, so the turn just silently ended with genuinely
+# unfinished work and the user had to notice and type "continue" themselves.
+# _run_one_turn now does that automatically (see TurnCompleteEvent.
+# response_truncated), capped at this many consecutive attempts so a model
+# that's stuck hitting the limit every single time doesn't loop forever.
+_MAX_CONSECUTIVE_AUTO_CONTINUES = 3
+_AUTO_CONTINUE_MESSAGE = "Continue."
+
 # Ephemeral, per-turn reinforcement injected only while plan mode is active
 # (see _run_one_turn) — never persisted to session.messages, so it can't be
 # "forgotten" via compaction drift and never pollutes exports/resumption.
@@ -254,6 +265,12 @@ class ChatScreen(Screen):
         self._has_queued_followup = False
         self._last_escape_at = 0.0
         self._plan_mode = False
+        self._consecutive_truncations = 0
+        """How many turns in a row ended because the response was cut off by
+        the token limit (TurnCompleteEvent.response_truncated), not a
+        deliberate stop - see _run_one_turn's own handling. Reset whenever a
+        turn completes without truncation, or the user sends a real message
+        of their own (see on_chat_input_submitted)."""
 
         if session is not None:
             self._session = session
@@ -585,6 +602,7 @@ class ChatScreen(Screen):
         message_view = self.query_one(MessageView)
         self._session.messages.append(Message(role="user", content=text))
         message_view.add_message("user", text)
+        self._consecutive_truncations = 0  # a real message means a fresh direction
         if self._turn_in_progress:
             # Queue it rather than starting a second _stream_response worker
             # (which, on the same exclusive group, would cancel the one
@@ -1543,6 +1561,7 @@ class ChatScreen(Screen):
         reasoning_parts: list[str] = []
         had_any_content = False
         had_any_reasoning = False
+        response_truncated = False
 
         def flush_reasoning() -> None:
             nonlocal had_any_reasoning
@@ -1625,6 +1644,7 @@ class ChatScreen(Screen):
                     self._session.messages.extend(
                         Message.from_chat_message(m) for m in chunk.new_messages
                     )
+                    response_truncated = chunk.response_truncated
         except GatewayError as exc:
             # Previously the only trace of this was a message that vanished
             # the moment the TUI closed — nothing was logged, and nothing
@@ -1687,3 +1707,31 @@ class ChatScreen(Screen):
             usage = current_context_usage(self._session, limit_table=self._context_limit_table)
             if usage.fraction >= self._settings.auto_compact_threshold:
                 await self._run_compaction("auto")
+
+        if response_truncated:
+            # Deliberately after pruning/auto-compact above, not before: if
+            # context was tight enough to truncate this response in the
+            # first place, freeing some up first gives the retry an actual
+            # chance of finishing instead of just hitting the same wall.
+            self._consecutive_truncations += 1
+            if self._consecutive_truncations <= _MAX_CONSECUTIVE_AUTO_CONTINUES:
+                message_view.add_message(
+                    "system",
+                    "Response was cut off by the token limit before finishing — continuing "
+                    f"automatically ({self._consecutive_truncations}/{_MAX_CONSECUTIVE_AUTO_CONTINUES}).",
+                )
+                self._session.messages.append(Message(role="user", content=_AUTO_CONTINUE_MESSAGE))
+                message_view.add_message("user", _AUTO_CONTINUE_MESSAGE)
+                self._store.save(self._session)
+                self._has_queued_followup = True
+            else:
+                message_view.add_message(
+                    "system",
+                    f"Response was cut off by the token limit {_MAX_CONSECUTIVE_AUTO_CONTINUES} "
+                    "times in a row — stopping automatic continuation rather than risk a runaway "
+                    "loop. Try /max-response-tokens to raise the response-length cap, or just say "
+                    '"continue" to keep going manually.',
+                )
+                self._consecutive_truncations = 0
+        else:
+            self._consecutive_truncations = 0

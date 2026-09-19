@@ -24,12 +24,21 @@ from pydantic import BaseModel, Field
 from pcli.llm.client import GatewayClient
 from pcli.llm.models import (
     ChatMessage,
+    FinishEvent,
     StreamEvent,
     TextDelta,
     ToolCall,
     ToolCallCompleteEvent,
     Usage,
 )
+
+_TRUNCATION_FINISH_REASONS = frozenset({"length", "max_tokens"})
+"""What different OpenAI-compatible gateways send as finish_reason when a
+response was cut off by hitting the token cap mid-generation, rather than
+the model choosing to stop - "length" is the official OpenAI value; "max_
+tokens" covers at least one observed local-gateway variant. Checked
+case-sensitively against the raw value, same as every other finish_reason
+comparison in this codebase (llm/streaming.py's own "tool_calls" check)."""
 from pcli.permissions.manager import AskCallback, PermissionManager
 from pcli.tools.base import ToolContext
 from pcli.tools.registry import ToolRegistry
@@ -74,6 +83,17 @@ class TurnCompleteEvent(BaseModel):
     just finished. Consumers that treat a turn's outcome as a result (namely
     spawn_subagent/make_agent_tool reporting back to a parent loop) use this
     to mark that result as an error instead of a normal completion."""
+    response_truncated: bool = False
+    """True if the turn's final (no-tool-call) response was cut off by
+    hitting the token/length cap mid-generation (finish_reason in
+    _TRUNCATION_FINISH_REASONS) rather than the model actually finishing -
+    distinct from terminated_early above (a different cause: a guardrail
+    stopping an otherwise-healthy turn, not the model getting cut off
+    mid-sentence). A real observed failure this exists to let a caller
+    detect: the model says "Let me implement X:" and stops there with no
+    tool call, because it ran out of room to actually make one - previously
+    indistinguishable from a deliberate, complete stop, so the turn just
+    silently ended with genuinely unfinished work and no explanation."""
 
 
 AgentEvent = StreamEvent | ToolStartEvent | ToolResultEvent | TurnCompleteEvent
@@ -179,6 +199,7 @@ class AgentLoop:
             else None
         )
         terminated_early = False
+        response_truncated = False
 
         while True:
             iterations += 1
@@ -197,6 +218,7 @@ class AgentLoop:
 
             text_parts: list[str] = []
             tool_calls_collected: list[ToolCall] = []
+            finish_reason: str | None = None
             async for event in self._client.chat_stream(
                 working_messages, model=self._model, tools=tools,
                 max_tokens=self._max_response_tokens, temperature=self._temperature,
@@ -205,12 +227,15 @@ class AgentLoop:
                     text_parts.append(event.text)
                 if isinstance(event, ToolCallCompleteEvent):
                     tool_calls_collected = event.tool_calls
+                if isinstance(event, FinishEvent):
+                    finish_reason = event.reason
                 yield event
 
             assistant_text = "".join(text_parts) or None
 
             if not tool_calls_collected:
                 working_messages.append(ChatMessage(role="assistant", content=assistant_text))
+                response_truncated = finish_reason in _TRUNCATION_FINISH_REASONS
                 break
 
             working_messages.append(
@@ -264,7 +289,9 @@ class AgentLoop:
                 break
 
         yield TurnCompleteEvent(
-            new_messages=working_messages[original_len:], terminated_early=terminated_early
+            new_messages=working_messages[original_len:],
+            terminated_early=terminated_early,
+            response_truncated=response_truncated,
         )
 
     def _archive_if_large(self, output: str, ctx: ToolContext) -> tuple[str, str | None]:
