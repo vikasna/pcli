@@ -141,6 +141,16 @@ Recompaction needs no special-casing: a later compaction naturally includes
 a prior compaction's own summary message among the older messages it folds
 into a fresh combined summary.
 
+Counting user turns this way is normally the whole story, but a session
+driven by a single instruction that then runs many internal tool-calling
+rounds (a long-running autonomous task) has only one user turn for its
+entire life no matter how large its own history grows. For that case,
+`compaction_cutoff` (`agent/compaction.py`, shared with tool-result pruning
+below) falls back to a finer per-round boundary once a single turn has grown
+past 20 round trips, keeping at least that many of the most recent rounds
+verbatim — so such a turn does eventually become eligible instead of staying
+permanently un-compactable. An ordinary short turn is unaffected.
+
 ## Tool-result pruning
 
 `prune_tool_results_enabled` and `prune_tool_results_keep_recent_turns`
@@ -161,7 +171,10 @@ default `1`) with a short placeholder, after archiving the original content
 via the same `ArtifactStore` mechanism. The default `keep_recent_turns` of
 `1` is deliberately tighter than `auto_compact_keep_recent_turns`'s default
 of `2`, so pruning routinely has something to do well before compaction's own
-threshold would ever be reached. `Message.pruned_artifact_id`
+threshold would ever be reached. Eligibility is computed by the same
+`compaction_cutoff` helper (and the same single-long-running-turn fallback)
+described under [Auto-compaction](#auto-compaction) above.
+`Message.pruned_artifact_id`
 (`src/pcli/session/models.py`) marks an already-pruned message so a later
 turn's pass doesn't re-archive (and duplicate) it.
 

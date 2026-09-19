@@ -391,9 +391,13 @@ as a normal system message instead.
   the `auto_compact_threshold` check entirely. Still subject to
   `maybe_compact`'s own "not enough history yet" guard, reporting "Nothing to
   compact yet." if there isn't more history than
-  `auto_compact_keep_recent_turns` turns. Refuses to run while a turn is still
-  in progress, showing "Still working on the current turn — try /compact
-  again once it's done." instead — just try again once it finishes. This
+  `auto_compact_keep_recent_turns` turns — or, for a session made up of a
+  single long-running turn (one user message followed by many internal
+  tool-calling rounds), if that turn hasn't yet grown past the fallback
+  threshold described in [Auto-compaction](#auto-compaction) below. Refuses
+  to run while a turn is still in progress, showing "Still working on the
+  current turn — try /compact again once it's done." instead — just try
+  again once it finishes. This
   doesn't affect auto-compaction (below), which always runs sequentially
   after a turn ends anyway.
 - **`/timeout [seconds]`** — with no argument, reports the current
@@ -650,6 +654,19 @@ and, like the leading system prompt, is never rendered into the message
 view. See [`configuration.md`](configuration.md#auto-compaction) for the
 three settings involved.
 
+Eligibility is normally based on counting real user-typed turns (`/compact`
+above and `auto_compact_keep_recent_turns`), but that alone can't see any
+structure inside a single long-running turn — one user instruction followed
+by many internal tool-calling rounds, the shape of an autonomous task. Such a
+turn has only one user-turn boundary for its entire life no matter how large
+it grows, so `agent/compaction.py`'s `compaction_cutoff` helper falls back to
+a finer per-round boundary (every non-`tool`-role message) once a single turn
+has grown past 20 round trips, keeping at least that many of the most recent
+rounds verbatim. This previously meant a large single-turn conversation could
+never be compacted at all — `/compact` would report "Nothing to compact yet."
+no matter how full the context got — and now can be, once it's grown large
+enough. An ordinary short turn is unaffected either way.
+
 ## Tool-result pruning
 
 Distinct from auto-compaction above, and much lighter weight: at the end of
@@ -682,10 +699,10 @@ shrinks old tool-role message content:
 - Idempotent: once a tool-role message is pruned, `Message.pruned_artifact_id`
   is set on it, so a later turn's pruning pass skips it rather than
   re-archiving (and duplicating) the same content.
-- Turn-boundary-safe: it reuses the same `turn_boundaries()` helper
-  auto-compaction uses, so it only ever operates on complete turns and never
-  separates an assistant `tool_calls` message from its matching tool-result
-  message.
+- Turn-boundary-safe: it reuses the same `compaction_cutoff()` helper
+  auto-compaction uses (see [Auto-compaction](#auto-compaction) below), so it
+  only ever operates on complete turns/rounds and never separates an
+  assistant `tool_calls` message from its matching tool-result message.
 - The archived content is retrievable exactly like any other artifact: call
   `fetch_artifact(artifact_id='...')` with the id from the placeholder.
 

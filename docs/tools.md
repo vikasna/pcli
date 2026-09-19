@@ -1118,16 +1118,26 @@ for the settings) rather than from `AgentLoop` — it needs a dedicated LLM
 call and session-level access to cut turn boundaries, which per-tool-result
 archiving doesn't.
 
-- **What gets compacted:** the oldest messages, cut only at `role=="user"`
+- **What gets compacted:** the oldest messages, cut only at a safe boundary
+  via the shared `compaction_cutoff` helper. It prefers `role=="user"`
   boundaries (`turn_boundaries`) so an assistant `tool_calls` message is
-  never separated from its matching tool-result message. The
-  `keep_recent_turns` most-recent user turns (default 2, from
-  `auto_compact_keep_recent_turns`) are always left verbatim, and the leading
-  system prompt at `messages[0]` is never touched. A *previous* compaction's
-  own summary message is also `role=="system"` but doesn't sit at index 0, so
-  it stays eligible to be folded into a later compaction — see the docstring
-  on `_system_prompt_prefix_len` for why only `messages[0]` is special-cased,
-  not a run of leading system messages.
+  never separated from its matching tool-result message, and normally that's
+  the whole story: the `keep_recent_turns` most-recent user turns (default 2,
+  from `auto_compact_keep_recent_turns`) are always left verbatim. But
+  `turn_boundaries` only counts `role=="user"` messages, so a session driven
+  by a single instruction that then runs many internal tool-calling rounds (a
+  long-running autonomous task) has just one such boundary for its entire
+  life, no matter how large its own history grows — under the old logic that
+  meant compaction could never trigger for it at all. Once a single turn has
+  grown past `_MIN_ROUNDS_FOR_FALLBACK` (20) round trips, `compaction_cutoff`
+  falls back to a finer `_round_boundaries` (every non-`tool`-role message,
+  still a safe cut point for the same reason), keeping at least that many of
+  the most recent rounds verbatim. An ordinary short turn is unaffected
+  either way. The leading system prompt at `messages[0]` is never touched. A
+  *previous* compaction's own summary message is also `role=="system"` but
+  doesn't sit at index 0, so it stays eligible to be folded into a later
+  compaction — see the docstring on `_system_prompt_prefix_len` for why only
+  `messages[0]` is special-cased, not a run of leading system messages.
 - **How:** the messages being compacted are rendered to plain text
   (`_render_transcript`) and archived via `ArtifactStore.put()` — the exact
   same store/mechanism as the artifact archiving above — then summarized with
@@ -1139,8 +1149,10 @@ archiving doesn't.
 - **Retrieval:** `fetch_artifact` (above) works unchanged against a
   compaction's `artifact_id` — it's just another entry in the same
   `ArtifactStore`; no new tool was added for this.
-- **No-op guard:** `maybe_compact` returns `None` (nothing to do) once there
-  are `keep_recent_turns` or fewer user turns in the session; `/compact`
+- **No-op guard:** `maybe_compact` returns `None` (nothing to do) when
+  `compaction_cutoff` finds nothing eligible — ordinarily, `keep_recent_turns`
+  or fewer user turns in the session, or (for a single long-running turn) the
+  fallback above hasn't crossed `_MIN_ROUNDS_FOR_FALLBACK` yet; `/compact`
   surfaces this as "Nothing to compact yet."
 
 ## Grounding conclusions in evidence
