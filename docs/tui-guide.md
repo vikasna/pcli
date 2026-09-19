@@ -70,10 +70,10 @@ you may know from opencode or Claude Code.
 The input box is a `ChatInput` (`src/pcli/tui/widgets/chat_input.py`), a
 `TextArea` subclass — Textual's `Input` is fundamentally single-line (there's
 no incremental path to multi-line from it), so an auto-growing, multi-line-
-capable box needed a different base widget. `ChatInput` layers three things
+capable box needed a different base widget. `ChatInput` layers several things
 on top of plain `TextArea`: Enter-to-submit with an explicit newline key,
 auto-grow, and paste collapsing (all below), plus Up/Down history recall (see
-"Command history" below).
+"Command history" below) and slash-command autocomplete (see below).
 
 ### Enter to send, Ctrl+J/Alt+Enter for a newline
 
@@ -174,6 +174,24 @@ older `PasteInput` (`Input`-based) with the default
 than a message box, a multi-line clipboard is truncated to its first line
 instead, matching Textual's own `Input._on_paste` behavior, and there's no
 auto-grow or history recall since it's a single-line field.
+
+### Slash-command autocomplete
+
+Typing **/** (optionally followed by a partial command name, before any
+space) shows a dropdown of matching commands with a one-line description
+each, rendered by `CommandSuggestions`
+(`src/pcli/tui/widgets/command_suggestions.py`) directly above the input box;
+further characters filter it by prefix match on the command name (e.g.
+`/comp` matches `compact`), and typing a space once the command name is
+complete closes it. **Up**/**Down** move the highlighted suggestion —
+taking priority over the Up/Down history recall above whenever the dropdown
+is showing, since both key off the same bindings — **Tab** or **Enter**
+accepts it, filling the input with `/<command> ` (trailing space, cursor at
+the end) *without* sending it, so you can keep typing arguments, and
+**Escape** dismisses the dropdown without changing what's typed. The list
+driving it (`_SLASH_COMMANDS`, `src/pcli/tui/screens/chat.py`) is a separate,
+terser set of one-liners from `/help`'s fuller descriptions — see
+[Slash commands](#slash-commands) below for what's available.
 
 ## Mouse and clipboard
 
@@ -351,9 +369,10 @@ as a normal system message instead.
 
 - **`/help`** — prints a static Markdown reference (`_HELP_TEXT`,
   `src/pcli/tui/screens/chat.py`) covering every slash command below, the
-  `!`/`!!`/`!!!` shell passthrough tiers, and the Enter/Ctrl+J and Up/Down
-  input-box behavior — the same information as this section and the two below
-  it, condensed for in-app lookup. The input box's placeholder text points
+  `!`/`!!`/`!!!` shell passthrough tiers, and the Enter/Ctrl+J, Up/Down, and
+  slash-command autocomplete input-box behavior — the same information as
+  this section and the two below it, condensed for in-app lookup. The input
+  box's placeholder text points
   here (`"Ask pcli... (/help for all commands — Enter to send, Ctrl+J for a
   newline)"`) rather than spelling out every command inline.
 - **`/sessions`** — opens the session list screen (`SessionListScreen`):
