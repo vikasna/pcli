@@ -760,6 +760,58 @@ async def test_spawn_subagent_system_prompt_includes_environment_section(tmp_pat
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_spawn_subagent_system_prompt_includes_memory_when_present(tmp_path: Path):
+    """A subagent's system prompt fully replaces the main loop's (same gap
+    environment_section() above exists to close) - global user memory must
+    be threaded through the same way, so e.g. "prefers concise commit
+    messages" applies to a subagent writing a commit just as much as to the
+    main agent."""
+    from pcli.memory.store import add_entry
+
+    add_entry("Works as a backend Python developer", category="profile", source="derived", max_entries=40)
+
+    route = respx.post("http://fake-gateway.test/v1/chat/completions").mock(return_value=_text_response("done"))
+
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    registry = _make_registry_with_echo_and_subagent()
+
+    async with GatewayClient(_settings()) as client:
+        ctx = _make_ctx(tmp_path, registry, client, permission_manager)
+        await SPAWN_SUBAGENT.handler({"task": "do something"}, ctx)
+
+    sent = json.loads(route.calls.last.request.content)
+    system_message = sent["messages"][0]["content"]
+    assert "Works as a backend Python developer" in system_message
+    assert "# What you know about this user" in system_message
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_spawn_subagent_omits_memory_when_disabled(tmp_path: Path):
+    from pcli.memory.store import add_entry
+
+    add_entry("Works as a backend Python developer", category="profile", source="derived", max_entries=40)
+
+    route = respx.post("http://fake-gateway.test/v1/chat/completions").mock(return_value=_text_response("done"))
+
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    registry = _make_registry_with_echo_and_subagent()
+
+    async with GatewayClient(_settings()) as client:
+        ctx = replace(_make_ctx(tmp_path, registry, client, permission_manager), memory_enabled=False)
+        await SPAWN_SUBAGENT.handler({"task": "do something"}, ctx)
+
+    sent = json.loads(route.calls.last.request.content)
+    system_message = sent["messages"][0]["content"]
+    assert "Works as a backend Python developer" not in system_message
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_spawn_subagent_omits_todo_discipline_when_write_todos_not_available(tmp_path: Path):
     """write_todos isn't in this test registry's tool set at all - telling
     the subagent to use it would be actively wrong guidance."""

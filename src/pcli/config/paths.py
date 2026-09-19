@@ -41,6 +41,12 @@ def agent_tools_file() -> Path:
     return data_dir() / "agent_tools.json"
 
 
+def memory_file() -> Path:
+    # JSON, not TOML: written to at runtime (new entries appended, old ones
+    # evicted), same reasoning as permissions_file().
+    return data_dir() / "memory.json"
+
+
 def config_file() -> Path:
     return config_dir() / "config.toml"
 

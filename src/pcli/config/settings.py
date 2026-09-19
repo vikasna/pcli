@@ -148,6 +148,23 @@ class Settings(BaseSettings):
         description="Number of most-recent user turns left untouched (verbatim) by "
         "compaction; only older turns get summarized and archived.",
     )
+    memory_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("PCLI_MEMORY_ENABLED", "memory_enabled"),
+        description="Whether pcli maintains a global, cross-session user-memory profile "
+        "(nature of work, preferences, conversation style, recurring task patterns) - "
+        "injected into every session's system prompt and extended by the remember tool "
+        "(explicit requests) and an automatic extraction pass piggybacked on auto-compaction "
+        "(see agent/compaction.py).",
+    )
+    memory_max_entries: int = Field(
+        default=40,
+        validation_alias=AliasChoices("PCLI_MEMORY_MAX_ENTRIES", "memory_max_entries"),
+        description="Hard cap on the number of stored memory entries - the oldest "
+        "source='derived' entry is evicted first once adding a new one would exceed this; "
+        "source='explicit' entries (the user directly asked to be remembered) are never "
+        "auto-evicted.",
+    )
     prune_tool_results_enabled: bool = Field(
         default=True,
         validation_alias=AliasChoices(

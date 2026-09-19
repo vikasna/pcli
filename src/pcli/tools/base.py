@@ -82,6 +82,13 @@ class ToolContext:
     """web_search (tools/builtin/web_tools.py) uses this real, supported API
     when configured (non-empty); otherwise it falls back to a best-effort,
     no-API-key scrape of DuckDuckGo's HTML results page."""
+    memory_enabled: bool = True
+    """Settings.memory_enabled, threaded through so remember
+    (tools/builtin/memory_tool.py) and _nested_agent.py's subagent-prompt
+    memory injection don't need to reach for get_settings() themselves."""
+    memory_max_entries: int = 40
+    """Settings.memory_max_entries - the cap remember's add_entry() enforces
+    (memory/store.py)."""
 
 
 @dataclass

@@ -69,6 +69,13 @@ def _make_screen(tmp_path: Path, *, keep_recent_turns: int = 1) -> tuple[ChatScr
         default_model="fake-model",
         sandbox_backend="subprocess",  # skip the real docker probe in on_mount
         auto_compact_keep_recent_turns=keep_recent_turns,
+        # This file is about compaction's own bookkeeping specifically - the
+        # memory-extraction pass _run_compaction also triggers on success
+        # (memory/extraction.py) is covered separately in
+        # test_chat_screen_memory.py, with its own precise cost/call
+        # assertions; on here it'd just be an extra, untested gateway call
+        # muddying this file's own token/call-count assertions.
+        memory_enabled=False,
     )
     screen = ChatScreen(settings, session=session, store=store)
     return screen, store, session

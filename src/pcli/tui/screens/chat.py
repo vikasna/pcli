@@ -35,6 +35,9 @@ from pcli.cost.tracker import CostTracker
 from pcli.llm.client import GatewayClient
 from pcli.llm.errors import GatewayError
 from pcli.llm.models import ChatMessage, Usage
+from pcli.memory.extraction import extract_memory
+from pcli.memory.models import render_memory_list, render_memory_section
+from pcli.memory.store import clear_memory, read_memory, remove_entry
 from pcli.permissions.guardrails import GuardrailsConfig, update_guardrails_limits
 from pcli.permissions.manager import AskCallback, PermissionManager
 from pcli.sandbox.base import Sandbox, SandboxSecurityError
@@ -140,6 +143,12 @@ scripts wrapped as callable tools): `/toolbox discover NAME [path]`, \
 tool-call history so far, plus any question it's currently waiting on an \
 answer to. Nothing to show once it finishes (only its final text and \
 tool-call count come back to the main conversation).
+- **/memory [forget <id>|clear]** — view pcli's global, cross-session \
+memory of you (nature of work, preferences, conversation style, common \
+asks — injected into every session's system prompt), remove one entry, or \
+clear it all. Grows automatically from what you explicitly ask to be \
+remembered and, when a session gets long enough to auto-compact, from \
+what pcli notices worth keeping.
 
 # Shell passthrough
 
@@ -220,8 +229,16 @@ class ChatScreen(Screen):
                 gateway_base_url=self._settings.gateway_base_url,
                 working_dir=str(self._cwd),
             )
+            extra_sections = []
+            if self._settings.memory_enabled:
+                memory_section = render_memory_section(read_memory().entries)
+                if memory_section:
+                    extra_sections.append(memory_section)
             self._session.messages.append(
-                Message(role="system", content=build_system_prompt())
+                Message(
+                    role="system",
+                    content=build_system_prompt(extra_sections=extra_sections or None),
+                )
             )
 
         pricing_table = _FREE_PRICING_TABLE if self._settings.is_local_api() else None
@@ -452,6 +469,8 @@ class ChatScreen(Screen):
             ask=self._current_ask,
             ask_question=self._current_ask_question,
             brave_search_api_key=self._settings.brave_search_api_key,
+            memory_enabled=self._settings.memory_enabled,
+            memory_max_entries=self._settings.memory_max_entries,
             max_tool_iterations=self._effective_max_tool_iterations(),
             subagent_max_iterations=self._settings.subagent_max_iterations,
             max_response_tokens=self._agent_loop.max_response_tokens if self._agent_loop else None,
@@ -647,6 +666,8 @@ class ChatScreen(Screen):
             self._handle_prune_tool_results_command(rest or None)
         elif command == "subagent":
             self._handle_subagent_command()
+        elif command == "memory":
+            self._handle_memory_command(rest)
         elif command == "max-response-tokens":
             self._handle_max_response_tokens_command(rest or None)
         elif command == "rename":
@@ -912,6 +933,52 @@ class ChatScreen(Screen):
             message_view.add_message("system", _NO_SUBAGENT_RUNNING_MESSAGE)
             return
         message_view.add_message("system", format_subagent_activity(sub))
+
+    def _handle_memory_command(self, rest: str) -> None:
+        """`/memory` — lists pcli's global, cross-session memory of this
+        user (nature of work, preferences, conversation style, common asks -
+        see memory/models.py); `/memory forget <id>` removes one entry by
+        its short id (last 4 chars, as shown in the listing, same
+        abbreviation SessionListScreen uses for session ids); `/memory
+        clear` wipes it. This is the transparency/control surface for
+        memory/extraction.py's autonomous derivation - what got remembered
+        should always be visible and correctable, never a silent background
+        process."""
+        message_view = self.query_one(MessageView)
+        sub_command, _, arg = rest.partition(" ")
+        sub_command = sub_command.strip().lower()
+        arg = arg.strip()
+
+        if not sub_command:
+            message_view.add_message("system", render_memory_list(read_memory().entries))
+            return
+
+        if sub_command == "clear":
+            clear_memory()
+            message_view.add_message("system", "Cleared all memory entries.")
+            return
+
+        if sub_command == "forget":
+            if not arg:
+                message_view.add_message("system", "Usage: /memory forget <id>")
+                return
+            matches = [e for e in read_memory().entries if e.id.endswith(arg)]
+            if not matches:
+                message_view.add_message("system", f"No memory entry found matching '{arg}'.")
+                return
+            if len(matches) > 1:
+                message_view.add_message(
+                    "system", f"'{arg}' matches more than one entry — use a longer id."
+                )
+                return
+            remove_entry(matches[0].id)
+            message_view.add_message("system", f"Forgot: {matches[0].content}")
+            return
+
+        message_view.add_message(
+            "system", f"Unknown /memory subcommand: '{sub_command}'. Use /memory, /memory forget "
+            "<id>, or /memory clear."
+        )
 
     def action_show_subagent_activity(self) -> None:
         """Ctrl+G — opens a live-updating view of the current subagent's
@@ -1350,6 +1417,35 @@ class ChatScreen(Screen):
             f"Compacted {result.messages_compacted} earlier message(s) to reduce context "
             f"usage (archived as artifact_id='{result.artifact_id}').",
         )
+        self._store.save(self._session)
+
+        if self._settings.memory_enabled:
+            await self._extract_memory_from(result.artifact_id, status_bar)
+
+    async def _extract_memory_from(self, artifact_id: str, status_bar: StatusBar) -> None:
+        """Reviews the exact transcript maybe_compact just archived for
+        anything durable/cross-session-worthy (memory/extraction.py) -
+        piggybacked on compaction rather than a separate trigger, since a
+        session substantial enough to need compacting is also substantial
+        enough to be worth learning from, and this reuses the transcript
+        already sitting in the artifact store instead of re-deriving it.
+        Best-effort: a failure here is logged and otherwise invisible - it
+        never touched the turn that triggered compaction, and losing one
+        extraction pass isn't worth interrupting the user over."""
+        transcript = self._artifact_store.get(artifact_id)
+        if not transcript:
+            return
+        try:
+            usages = await extract_memory(transcript, self._make_tool_context())
+        except GatewayError as exc:
+            logger.exception("Gateway error during memory extraction: %s", exc.message)
+            return
+        if not usages:
+            return
+        model = self._settings.default_model or self._session.model
+        for usage in usages:
+            self._cost_tracker.record_turn(model, usage, source="memory")
+        self._refresh_cost_display(status_bar)
         self._store.save(self._session)
 
     @work(exclusive=True)

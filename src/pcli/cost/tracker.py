@@ -27,7 +27,11 @@ class CostTracker:
         self._ledger_path = ledger_path or cost_ledger_file()
 
     def record_turn(
-        self, model: str, usage: Usage, *, source: Literal["main", "subagent", "compaction"] = "main"
+        self,
+        model: str,
+        usage: Usage,
+        *,
+        source: Literal["main", "subagent", "compaction", "memory"] = "main",
     ) -> TurnCost:
         cost_usd = self._pricing.cost_usd(
             model,

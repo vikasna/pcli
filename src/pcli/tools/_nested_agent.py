@@ -15,6 +15,8 @@ from pcli.agent.loop import AgentLoop, ToolStartEvent, TurnCompleteEvent
 from pcli.agent.prompt import environment_section
 from pcli.cost.context import ContextLimitTable, ContextUsage
 from pcli.llm.models import ChatMessage, Usage, UsageEvent
+from pcli.memory.models import render_memory_section
+from pcli.memory.store import read_memory
 from pcli.tools.base import ToolContext, ToolSpec
 
 # A subagent's own conversation has no compaction of its own (unlike the
@@ -110,10 +112,20 @@ async def run_nested_agent(
     discipline = _CORE_DISCIPLINE
     if "write_todos" in sub_registry:
         discipline += _TODO_DISCIPLINE
+    prompt_sections = [environment_section()]
+    if ctx.memory_enabled:
+        # Same reasoning as environment_section() above: a subagent's system
+        # prompt fully replaces the main loop's rather than extending it, so
+        # without this it would have no idea who it's working for either -
+        # e.g. "prefers concise commit messages" should apply just as much
+        # to a subagent writing a commit as to the main agent.
+        memory_section = render_memory_section(read_memory().entries)
+        if memory_section:
+            prompt_sections.append(memory_section)
+    prompt_sections.append(system_prompt)
+    prompt_sections.append(discipline)
     messages = [
-        ChatMessage(
-            role="system", content=f"{environment_section()}\n\n{system_prompt}\n\n{discipline}"
-        ),
+        ChatMessage(role="system", content="\n\n".join(prompt_sections)),
         ChatMessage(role="user", content=task),
     ]
 

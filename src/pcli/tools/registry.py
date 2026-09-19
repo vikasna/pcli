@@ -62,6 +62,7 @@ def build_default_registry() -> ToolRegistry:
     from pcli.tools.builtin.diff_tools import APPLY_PATCH, DIFF_FILES
     from pcli.tools.builtin.fs_tools import EDIT_FILE, GLOB_SEARCH, LIST_DIR, READ_FILE, WRITE_FILE
     from pcli.tools.builtin.grep_tool import GREP
+    from pcli.tools.builtin.memory_tool import REMEMBER
     from pcli.tools.builtin.network_tools import DOWNLOAD_FILE
     from pcli.tools.builtin.pip_tool import PIP_INSTALL
     from pcli.tools.builtin.shell_tool import (
@@ -102,6 +103,7 @@ def build_default_registry() -> ToolRegistry:
         ASK_USER_QUESTION,
         WRITE_TODOS,
         RECORD_DECISION,
+        REMEMBER,
         FETCH_ARTIFACT,
         REGISTER_TOOLBOX_TOOL,
         EXPLORE_CODEBASE,
