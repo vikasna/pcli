@@ -275,6 +275,20 @@ always defaulted this to `None`, so a subagent ran with no response-length
 cap at all regardless of what `/max-response-tokens` had configured on the
 parent session — it now tracks the same live, per-turn value the parent uses.
 
+**Even with this cap in place, a response can still get cut off by hitting
+it** — the cap bounds a request, it doesn't guarantee the model will finish
+within that bound. `AgentLoop.run_turn` reports this via
+`TurnCompleteEvent.response_truncated` (true when the gateway's
+`finish_reason` was `"length"`/`"max_tokens"` rather than `"stop"`), and
+`ChatScreen._run_one_turn` reacts by automatically appending a synthetic
+`"Continue."` message and retrying, capped at 3 consecutive attempts (a
+hardcoded constant, not a `Settings` field — there's nothing to configure
+here beyond raising `max_response_tokens_safety_margin`/turning off the cap
+above, or lengthening `context_limits.toml` entries). This is TUI-only
+behavior, not a `Settings` field itself, so it's documented in full in
+[`tui-guide.md`](tui-guide.md#auto-continue-on-truncated-responses) rather
+than here.
+
 ## Sampling temperature
 
 `default_temperature` (table above) is passed as `temperature` on every

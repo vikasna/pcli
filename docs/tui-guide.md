@@ -755,6 +755,70 @@ settings, which are env-var/config.toml-only with no slash command) — see
 [`configuration.md`](configuration.md#tool-result-pruning) for the full
 settings reference.
 
+## Auto-continue on truncated responses
+
+A real reported bug: a turn's final response — the one with no tool call,
+which normally means the model is done — can instead be a response that got
+cut off by the token/response-length cap mid-generation. The model's last
+message looked like "Let me implement. Starting with embedding_store.py:"
+with no tool call following, and pcli previously had no way to tell that
+apart from a deliberate, complete stop, so the turn just silently ended
+there with genuinely unfinished work — the user had to notice and type
+"continue" themselves to get it moving again.
+
+`AgentLoop.run_turn` (`src/pcli/agent/loop.py`) now tracks the `finish_reason`
+of the response that ends a turn's tool-calling loop (from the `FinishEvent`
+`llm/streaming.py` already parsed but nothing previously consulted) and sets
+`TurnCompleteEvent.response_truncated` when it's `"length"` or `"max_tokens"`
+(`_TRUNCATION_FINISH_REASONS` — the two finish-reason spellings observed
+across OpenAI-compatible gateways for "cut off by the token cap," as opposed
+to `"stop"`, a deliberate finish). This is a separate concept from
+`terminated_early` (see [`configuration.md`](configuration.md#local-api-mode)
+for that field's own subagent-facing documentation): `terminated_early`
+means a guardrail like `max_tool_iterations` cut off an
+otherwise-healthy turn, while `response_truncated` means the model's own
+response got cut off mid-sentence by the token cap. The two are independent
+and either can be true regardless of the other.
+
+`ChatScreen._run_one_turn` checks `response_truncated` **after** the
+tool-result pruning and auto-compaction logic above have already run for
+the turn — deliberately, so that if context was tight enough to cause the
+truncation in the first place, the retry gets a genuine chance at more
+headroom instead of immediately hitting the same wall again. When it fires:
+
+- A system notice appears in the transcript: "Response was cut off by the
+  token limit before finishing — continuing automatically (N/3)."
+- A synthetic `"Continue."` user-role message is appended to the session —
+  the exact same fix a user would type manually — and the existing
+  queued-followup mechanism (`_has_queued_followup`, the same one that lets
+  a user's own follow-up message queue up while a turn is still running) is
+  reused to trigger another turn automatically. No new turn-loop mechanism
+  was added.
+
+This is capped at `_MAX_CONSECUTIVE_AUTO_CONTINUES = 3` consecutive
+attempts — a hardcoded constant in `chat.py`, not a `Settings` field
+(deliberately, the same way `_MAX_IDENTICAL_TOOL_CALL_REPEATS` in the same
+module is a hardcoded safety backstop rather than user-configurable) — so a
+model that keeps hitting the limit no matter what can't loop forever.
+`ChatScreen._consecutive_truncations` tracks the current streak and resets
+to `0` whenever a turn completes without truncation, or the user sends a
+real message of their own (`on_chat_input_submitted`). Hitting the cap shows
+a different notice instead of continuing again: "Response was cut off by the
+token limit 3 times in a row — stopping automatic continuation rather than
+risk a runaway loop. Try /max-response-tokens to raise the response-length
+cap, or just say "continue" to keep going manually." — pointing at
+[`/max-response-tokens`](#slash-commands) (see [Dynamic response
+cap](#dynamic-response-cap) below) as one way out.
+
+Both notices are message-view-only, like compaction's own "Compacted N
+message(s)..." notice above — never persisted to `session.messages`. This
+behavior is specific to the interactive `ChatScreen` turn loop; a subagent's
+`TurnCompleteEvent.response_truncated` isn't consulted by `spawn_subagent`
+or the `make_agent_tool` family (`_nested_agent.py` only reads
+`terminated_early`), so a subagent whose final response gets cut off this
+way is not auto-continued — it's simply reported back as whatever partial
+text it produced.
+
 ## Dynamic response cap
 
 Auto-compaction and tool-result pruning above both react to context that's
@@ -1071,6 +1135,13 @@ backstop for exactly the case
 [automatic context-limit detection](configuration.md#automatic-context-limit-detection)
 is meant to prevent proactively at startup — you'll typically only see this
 notice for a gateway/model that detection couldn't reach in the first place.
+
+This subsection covers a turn that produced *no* text at all. A related but
+different case — some text was produced, just cut off mid-sentence by the
+token cap before a tool call could follow — is handled separately (and
+proactively retried rather than just flagged with a notice); see
+[Auto-continue on truncated responses](#auto-continue-on-truncated-responses)
+above.
 
 ## Decision log
 
