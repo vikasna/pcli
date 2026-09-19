@@ -434,6 +434,28 @@ requesting a larger `max_chars`.
 - **Unknown `job_id`** gets the same suggestion as `read_background_output`
   above.
 
+## pip_install
+
+Installs Python package(s) via `python -m pip install` — never a bare `pip`,
+which can silently target the wrong interpreter (see the `run_shell` failure
+suggestions above). Runs through `ctx.sandbox` like `run_shell`, but requests
+`network=True` explicitly, since every other tool defaults to no network and
+the Docker backend would otherwise run the install with `--network none`.
+Uses `sys.executable` (pcli's own host interpreter) under the subprocess
+sandbox backend; falls back to a bare `"python"` under Docker, where
+`sys.executable` is a host path that doesn't resolve inside the container.
+
+- **Parameters:** `packages` (array of strings, optional — names/specifiers
+  like `"requests"` or `"requests==2.31.0"`), `requirements_file` (string,
+  optional — path to a requirements.txt-style file, passed as pip's `-r`),
+  `timeout_s` (number, optional, default 120). At least one of `packages` or
+  `requirements_file` is required.
+- **Permission:** required. `needs_sandbox=True`. `risk_description`:
+  "Installs Python package(s) via pip."
+- **Guardrail:** `requirements_file` checked against the fs allow/deny lists
+  (`guardrail_path_arg="requirements_file"`). `timeout_s` is clamped to the
+  guardrail ceiling `limits.max_shell_timeout_s`, same as `run_shell`.
+
 ## register_toolbox_tool
 
 Lets the model itself trigger toolbox discovery/registration mid-conversation

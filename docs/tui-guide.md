@@ -272,11 +272,13 @@ point-in-time snapshot into the chat transcript.
   slot) specifically so this modal's subscription can coexist with
   `ChatScreen`'s own subscription that keeps the [status bar](#status-bar)'s
   subagent line updated — opening the panel doesn't interrupt that.
-- **Full-screen, not a centered floating box.** Unlike the permission prompt,
-  model picker, and ask-question modals — which share `align: center middle`
-  plus a `width: 70%; height: auto; max-height: 80%` rule on `#permission-modal,
-  #import-modal, #model-list-modal, #ask-question-modal` — `#subagent-activity-modal`
-  is `width: 100%; height: 100%` (`src/pcli/tui/styles/pcli.tcss`), taking over
+- **Full-screen, not a floating box pinned near the top.** Unlike the
+  permission prompt, model picker, and ask-question modals — which share
+  `align: center top` (pinned to the top of the screen so the chat transcript
+  stays visible underneath, rather than centered over it) plus a `width: 70%;
+  height: auto; max-height: 80%` rule on `#permission-modal, #import-modal,
+  #model-list-modal, #ask-question-modal` — `#subagent-activity-modal` is
+  `width: 100%; height: 100%` (`src/pcli/tui/styles/pcli.tcss`), taking over
   the whole window the same way the main chat screen does. This is a
   dedicated view for watching a subagent work, not a quick prompt.
 - **A separate title bar sits above the scrollable body.** `compose()` yields
@@ -575,7 +577,7 @@ tools (`explore_codebase`, `explore_files`, `explore_logs`, `deep_research`,
 and any `register_agent_tool`-defined ones marked `plan_mode_safe`) — see
 [`tools.md`](tools.md) for what each does. Everything else — `write_file`,
 `edit_file`, `run_shell`, `run_shell_background`, `stop_background_process`,
-`call_python`, `register_toolbox_tool`, `register_agent_tool` itself,
+`pip_install`, `call_python`, `register_toolbox_tool`, `register_agent_tool` itself,
 `write_documentation`, `verify_computation`, `data_analysis` (all three need
 write/execute tools plan mode blocks entirely, so the whole tool is
 unavailable), and any toolbox-discovered tool — is unavailable while plan
