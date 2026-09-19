@@ -63,6 +63,7 @@ def build_default_registry() -> ToolRegistry:
     from pcli.tools.builtin.fs_tools import EDIT_FILE, GLOB_SEARCH, LIST_DIR, READ_FILE, WRITE_FILE
     from pcli.tools.builtin.grep_tool import GREP
     from pcli.tools.builtin.network_tools import DOWNLOAD_FILE
+    from pcli.tools.builtin.pip_tool import PIP_INSTALL
     from pcli.tools.builtin.shell_tool import (
         READ_BACKGROUND_OUTPUT,
         RUN_SHELL,
@@ -93,6 +94,7 @@ def build_default_registry() -> ToolRegistry:
         RUN_SHELL_BACKGROUND,
         READ_BACKGROUND_OUTPUT,
         STOP_BACKGROUND_PROCESS,
+        PIP_INSTALL,
         SEARCH_PYTHON,
         INSPECT_PYTHON_MODULE,
         CALL_PYTHON,
