@@ -1,7 +1,7 @@
 """Coverage for ChatInput: the TextArea-based main chat input — submit vs.
 newline key handling, typing-only auto-grow, paste behavior identical to
 PasteInput's placeholder mechanism (verified explicitly not to grow the
-box), and shell-style Up/Down history recall."""
+box), shell-style Up/Down history recall, and slash-command autocomplete."""
 
 import pytest
 from textual import events
@@ -11,10 +11,28 @@ from pcli.tui.widgets.chat_input import ChatInput
 
 _BASE_HEIGHT = 3  # 1 content row + 2 border rows
 
+_COMMANDS = [
+    ("compact", "Summarize the conversation."),
+    ("compat-mode", "Fake command sharing a prefix with 'compact', for filter tests."),
+    ("help", "Show the full command reference."),
+]
+
 
 class _ChatInputApp(App):
     def compose(self) -> ComposeResult:
         yield ChatInput(id="chat-input")
+
+
+class _AutocompleteApp(App):
+    def __init__(self) -> None:
+        super().__init__()
+        self.suggestion_events: list[ChatInput.SuggestionsChanged] = []
+
+    def compose(self) -> ComposeResult:
+        yield ChatInput(id="chat-input", commands=_COMMANDS)
+
+    def on_chat_input_suggestions_changed(self, event: ChatInput.SuggestionsChanged) -> None:
+        self.suggestion_events.append(event)
 
 
 class _SubmitCapturingApp(App):
@@ -27,6 +45,26 @@ class _SubmitCapturingApp(App):
 
     def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         self.submitted.append(event)
+
+
+class _AutocompleteSubmitApp(App):
+    """Combines _AutocompleteApp and _SubmitCapturingApp - needed only by
+    test_enter_accepts_a_suggestion_instead_of_submitting, which has to
+    observe both."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.suggestion_events: list[ChatInput.SuggestionsChanged] = []
+        self.submitted: list[str] = []
+
+    def compose(self) -> ComposeResult:
+        yield ChatInput(id="chat-input", commands=_COMMANDS)
+
+    def on_chat_input_suggestions_changed(self, event: ChatInput.SuggestionsChanged) -> None:
+        self.suggestion_events.append(event)
+
+    def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
+        self.submitted.append(event.value)
 
 
 @pytest.mark.asyncio
@@ -276,3 +314,166 @@ async def test_add_to_history_resets_browsing_state():
         ci.add_to_history("second")  # a real submission happened
         assert ci._history_index is None
         assert ci._draft_before_history == ""
+
+
+# --- Slash-command autocomplete ---
+
+
+@pytest.mark.asyncio
+async def test_typing_bare_slash_shows_every_command():
+    app = _AutocompleteApp()
+    async with app.run_test() as pilot:
+        ci = app.query_one(ChatInput)
+        ci.focus()
+        await pilot.press("/")
+        await pilot.pause()
+
+        assert app.suggestion_events[-1].matches == _COMMANDS
+
+
+@pytest.mark.asyncio
+async def test_typing_a_prefix_filters_to_matching_commands():
+    app = _AutocompleteApp()
+    async with app.run_test() as pilot:
+        ci = app.query_one(ChatInput)
+        ci.focus()
+        await pilot.press("/", "c", "o", "m", "p")
+        await pilot.pause()
+
+        matches = app.suggestion_events[-1].matches
+        assert [name for name, _ in matches] == ["compact", "compat-mode"]
+
+
+@pytest.mark.asyncio
+async def test_no_suggestions_for_plain_text_not_starting_with_slash():
+    app = _AutocompleteApp()
+    async with app.run_test() as pilot:
+        ci = app.query_one(ChatInput)
+        ci.focus()
+        await pilot.press("h", "i")
+        await pilot.pause()
+
+        assert app.suggestion_events == [] or app.suggestion_events[-1].matches == []
+
+
+@pytest.mark.asyncio
+async def test_suggestions_clear_once_a_space_completes_the_command_name():
+    app = _AutocompleteApp()
+    async with app.run_test() as pilot:
+        ci = app.query_one(ChatInput)
+        ci.focus()
+        await pilot.press("/", "c", "o", "m", "p", "a", "c", "t")
+        await pilot.pause()
+        assert app.suggestion_events[-1].matches != []
+
+        await pilot.press(" ")
+        await pilot.pause()
+        assert app.suggestion_events[-1].matches == []
+
+
+@pytest.mark.asyncio
+async def test_no_matches_for_an_unknown_command_prefix():
+    app = _AutocompleteApp()
+    async with app.run_test() as pilot:
+        ci = app.query_one(ChatInput)
+        ci.focus()
+        await pilot.press("/", "z", "z", "z")
+        await pilot.pause()
+
+        assert app.suggestion_events[-1].matches == []
+
+
+@pytest.mark.asyncio
+async def test_down_then_up_moves_the_highlighted_index_and_clamps():
+    app = _AutocompleteApp()
+    async with app.run_test() as pilot:
+        ci = app.query_one(ChatInput)
+        ci.focus()
+        await pilot.press("/")
+        await pilot.pause()
+        assert app.suggestion_events[-1].index == 0
+
+        await pilot.press("down")
+        await pilot.pause()
+        assert app.suggestion_events[-1].index == 1
+
+        await pilot.press("down", "down", "down")  # past the end - clamps
+        await pilot.pause()
+        assert app.suggestion_events[-1].index == len(_COMMANDS) - 1
+
+        await pilot.press("up", "up", "up", "up", "up")  # past the start - clamps
+        await pilot.pause()
+        assert app.suggestion_events[-1].index == 0
+
+
+@pytest.mark.asyncio
+async def test_tab_accepts_the_highlighted_suggestion():
+    app = _AutocompleteApp()
+    async with app.run_test() as pilot:
+        ci = app.query_one(ChatInput)
+        ci.focus()
+        await pilot.press("/", "c", "o", "m", "p")
+        await pilot.press("down")  # highlight "compat-mode"
+        await pilot.pause()
+
+        await pilot.press("tab")
+        await pilot.pause()
+
+        assert ci.text == "/compat-mode "
+        assert app.suggestion_events[-1].matches == []
+
+
+@pytest.mark.asyncio
+async def test_enter_accepts_a_suggestion_instead_of_submitting():
+    app = _AutocompleteSubmitApp()
+    async with app.run_test() as pilot:
+        ci = app.query_one(ChatInput)
+        ci.focus()
+        await pilot.press("/", "h", "e", "l", "p")
+        await pilot.pause()
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert ci.text == "/help "
+        assert app.submitted == []  # accepted, not submitted
+
+        await pilot.press("enter")  # no suggestions active now - submits normally
+        await pilot.pause()
+        assert app.submitted == ["/help "]
+
+
+@pytest.mark.asyncio
+async def test_escape_dismisses_suggestions_without_changing_the_text():
+    app = _AutocompleteApp()
+    async with app.run_test() as pilot:
+        ci = app.query_one(ChatInput)
+        ci.focus()
+        await pilot.press("/", "c", "o", "m", "p")
+        await pilot.pause()
+        assert app.suggestion_events[-1].matches != []
+
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert ci.text == "/comp"  # unchanged
+        assert app.suggestion_events[-1].matches == []
+
+
+@pytest.mark.asyncio
+async def test_up_down_navigate_suggestions_instead_of_history_when_active():
+    """Regression guard: suggestion navigation must take priority over the
+    existing Up/Down history recall (action_cursor_up/down), even with a
+    non-empty history, since both features key off the same two bindings."""
+    app = _AutocompleteApp()
+    async with app.run_test() as pilot:
+        ci = app.query_one(ChatInput)
+        ci.focus()
+        ci.add_to_history("an old message")
+        await pilot.press("/", "c", "o", "m", "p")
+        await pilot.pause()
+
+        await pilot.press("up")
+        await pilot.pause()
+
+        assert ci.text == "/comp"  # history recall did NOT fire

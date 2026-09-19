@@ -19,10 +19,21 @@ incremental path to multi-line from it) that:
   editing a multi-line draft, Up/Down move the cursor within it instead,
   which is what you'd want anyway — this sidesteps having to reason about
   soft-wrapped visual rows vs. logical lines).
+- Offers slash-command autocomplete: typing "/" (optionally followed by a
+  partial command name, with no space yet) matches against the `commands`
+  list passed in at construction time, and posts SuggestionsChanged so
+  whatever screen embeds this can render them (see
+  tui/widgets/command_suggestions.py) — this widget owns all the matching/
+  navigation state itself (never the rendering widget, which never holds
+  focus), since it's the one actually receiving keystrokes. Up/Down move
+  the highlighted match (taking priority over history recall, which only
+  ever applies to plain text anyway); Tab or Enter accepts it; Escape
+  dismisses without changing the typed text.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import ClassVar
 
 import pyperclip
@@ -48,24 +59,52 @@ class ChatInput(TextArea):
 
     class Submitted(Message):
         """Posted when Enter is pressed (and not swallowed as a newline
-        request) — mirrors Input.Submitted's shape."""
+        request, or as a suggestion accept) — mirrors Input.Submitted's
+        shape."""
 
         def __init__(self, chat_input: ChatInput, value: str) -> None:
             self.chat_input = chat_input
             self.value = value
             super().__init__()
 
-    def __init__(self, *args, **kwargs) -> None:
+    class SuggestionsChanged(Message):
+        """Posted whenever the current slash-command match list or
+        highlighted index changes (including to empty, which is how the
+        embedding screen knows to hide its rendering widget)."""
+
+        def __init__(
+            self, chat_input: ChatInput, matches: list[tuple[str, str]], index: int
+        ) -> None:
+            self.chat_input = chat_input
+            self.matches = matches
+            self.index = index
+            super().__init__()
+
+    def __init__(self, *args, commands: Sequence[tuple[str, str]] = (), **kwargs) -> None:
         super().__init__(*args, soft_wrap=True, tab_behavior="focus", **kwargs)
         self._pending_paste = PendingPaste()
         self._history: list[str] = []
         self._history_index: int | None = None
         self._draft_before_history = ""
+        self._commands = list(commands)
+        self._suggestion_matches: list[tuple[str, str]] = []
+        self._suggestion_index = 0
 
     def on_mount(self) -> None:
         self.styles.height = 1 + _BORDER_ROWS
 
     async def _on_key(self, event: events.Key) -> None:
+        if self._suggestion_matches:
+            if event.key in ("enter", "tab"):
+                event.stop()
+                event.prevent_default()
+                self._accept_suggestion()
+                return
+            if event.key == "escape":
+                event.stop()
+                event.prevent_default()
+                self._set_suggestions([])
+                return
         if event.key == "enter":
             event.stop()
             event.prevent_default()
@@ -88,8 +127,38 @@ class ChatInput(TextArea):
         visual_line_count = self.wrapped_document.height
         clamped = max(1, min(visual_line_count, _MAX_VISIBLE_LINES))
         self.styles.height = clamped + _BORDER_ROWS
+        self._set_suggestions(self._matching_commands())
+
+    def _matching_commands(self) -> list[tuple[str, str]]:
+        text = self.text
+        if not self._commands or "\n" in text or not text.startswith("/"):
+            return []
+        query = text[1:]
+        if " " in query:
+            return []  # the command name itself is already complete
+        return [(name, desc) for name, desc in self._commands if name.startswith(query)]
+
+    def _set_suggestions(self, matches: list[tuple[str, str]]) -> None:
+        # Always resets to the top match on a new filter rather than trying
+        # to preserve position - simpler and more predictable than guessing
+        # whether the previously-highlighted command is still relevant.
+        self._suggestion_matches = matches
+        self._suggestion_index = 0
+        self.post_message(self.SuggestionsChanged(self, matches, self._suggestion_index))
+
+    def _accept_suggestion(self) -> None:
+        name, _description = self._suggestion_matches[self._suggestion_index]
+        self.text = f"/{name} "
+        self.move_cursor(self.document.end)
+        self._set_suggestions([])  # the trailing space would clear it anyway; explicit is clearer
 
     def action_cursor_up(self) -> None:
+        if self._suggestion_matches:
+            self._suggestion_index = max(0, self._suggestion_index - 1)
+            self.post_message(
+                self.SuggestionsChanged(self, self._suggestion_matches, self._suggestion_index)
+            )
+            return
         if "\n" in self.text or not self._history:
             super().action_cursor_up()
             return
@@ -102,6 +171,14 @@ class ChatInput(TextArea):
         self.move_cursor(self.document.end)
 
     def action_cursor_down(self) -> None:
+        if self._suggestion_matches:
+            self._suggestion_index = min(
+                len(self._suggestion_matches) - 1, self._suggestion_index + 1
+            )
+            self.post_message(
+                self.SuggestionsChanged(self, self._suggestion_matches, self._suggestion_index)
+            )
+            return
         if "\n" in self.text or self._history_index is None:
             super().action_cursor_down()
             return

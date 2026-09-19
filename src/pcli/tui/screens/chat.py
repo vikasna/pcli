@@ -56,6 +56,7 @@ from pcli.tui.screens.permission_modal import ask_via_modal
 from pcli.tui.screens.subagent_activity_modal import SubagentActivityModal
 from pcli.tui.shell_passthrough import run_passthrough_command
 from pcli.tui.widgets.chat_input import ChatInput
+from pcli.tui.widgets.command_suggestions import CommandSuggestions
 from pcli.tui.widgets.message_view import MessageView
 from pcli.tui.widgets.status_bar import StatusBar
 from pcli.tui.widgets.status_pane import StatusPane
@@ -165,7 +166,40 @@ newline for a multi-line message. The box grows to fit what you type (up \
 to 10 lines) and shrinks back down; a paste never grows it.
 - **Up** / **Down** recall previously-sent messages, while the current \
 draft has no newline in it.
+- Typing **/** shows matching slash commands with a one-line description; \
+**Up** / **Down** moves the highlight, **Tab** or **Enter** accepts it \
+(without sending), and **Escape** dismisses the list.
 """
+
+# Drives ChatInput's slash-command autocomplete (tui/widgets/command_
+# suggestions.py) - a separate, terser list from _HELP_TEXT above (one-liners
+# for a dropdown vs. full sentences for /help), so update both when adding,
+# removing, or renaming a command. Order here is purely the order suggestions
+# are listed in when several match (e.g. typing bare "/"), not otherwise
+# significant - kept roughly matching _HELP_TEXT's own order for ease of
+# cross-checking the two lists against each other.
+_SLASH_COMMANDS: list[tuple[str, str]] = [
+    ("help", "Show the full command reference."),
+    ("sessions", "Browse, switch, or import previous sessions."),
+    ("export", "Export the current session."),
+    ("models", "Switch models, or list what's available."),
+    ("compact", "Summarize the conversation so far to free up context."),
+    ("timeout", "View or set the per-request gateway timeout."),
+    ("temperature", "View or set the sampling temperature."),
+    ("context-limit", "View or set the assumed context window for this model."),
+    ("max-tool-iterations", "View or set the per-turn tool-call iteration cap."),
+    ("artifact-threshold", "View or set the tool-output archiving threshold."),
+    ("max-tool-calls-per-turn", "View or set the guardrail cap on tool calls per turn."),
+    ("max-tool-calls-per-minute", "View or set the guardrail cap on tool calls per minute."),
+    ("prune-tool-results", "View, toggle, or set old tool-result pruning."),
+    ("max-response-tokens", "View, toggle, or set the dynamic response-length cap."),
+    ("rename", "View or set the current session's title."),
+    ("plan", "Enter plan mode (read-only tools only)."),
+    ("build", "Exit plan mode, restoring full tool access."),
+    ("toolbox", "Discover, list, or remove toolbox tools."),
+    ("subagent", "Show the currently-running subagent's task and history."),
+    ("memory", "View, forget, or clear pcli's memory of you."),
+]
 
 logger = logging.getLogger(__name__)
 
@@ -260,11 +294,16 @@ class ChatScreen(Screen):
             yield StatusPane(id="status-pane")
             yield MessageView(id="message-view")
             yield StatusBar(id="status-bar")
+            yield CommandSuggestions(id="command-suggestions")
             yield ChatInput(
                 placeholder="Ask pcli... (/help for all commands — Enter to send, "
                 "Ctrl+J for a newline)",
                 id="input-box",
+                commands=_SLASH_COMMANDS,
             )
+
+    def on_chat_input_suggestions_changed(self, event: ChatInput.SuggestionsChanged) -> None:
+        self.query_one(CommandSuggestions).update_suggestions(event.matches, event.index)
 
     def _refresh_cost_display(self, status_bar: StatusBar) -> None:
         status_bar.session_cost_usd = self._session.cost.session_total_usd

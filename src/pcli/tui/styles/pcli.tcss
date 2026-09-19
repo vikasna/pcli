@@ -98,6 +98,18 @@ Screen {
     margin: 0 1 1 1;
 }
 
+/* Hidden by default (ChatInput.SuggestionsChanged toggles it - see
+   CommandSuggestions.update_suggestions) - sits directly above the input
+   box it's completing for. */
+#command-suggestions {
+    display: none;
+    height: auto;
+    max-height: 8;
+    border: round $primary;
+    margin: 0 1;
+    background: $panel;
+}
+
 /* Pinned to the top (not centered) so the chat transcript stays visible
    underneath through ModalScreen's translucent background - a question or
    permission prompt is much easier to act on with its own surrounding
