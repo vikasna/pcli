@@ -272,6 +272,62 @@ directly instead.
   configuring `brave_search_api_key` for a real, supported search API
   instead.
 
+## browser_navigate, browser_click, browser_type, browser_press_key, browser_wait_for, browser_read_page, browser_screenshot
+
+Drive a real Chromium browser via Playwright (`src/pcli/browser/session.py`,
+`src/pcli/tools/builtin/browser_tool.py`) — an optional dependency, the
+`browser` extra (`pyproject.toml`). Distinct from `web_fetch`/`web_search`
+above, which are HTTP-level and can't run JavaScript, stay logged in, or
+interact with a page — reach for these only when a site actually needs
+driving, not just reading. Full design coverage (the shared/persistent
+`BrowserSession`, the headed-vs-headless TUI/`pcli run` split, and what
+happens when the extra or Chromium isn't installed) lives in the dedicated
+[`browser-automation.md`](browser-automation.md); this section is the
+parameter/behavior reference.
+
+Every call in a session shares one `BrowserSession`
+(`ctx.browser_session`) — set up once per `AgentRuntime`
+(`agent/runtime.py`) — so navigating, then clicking, then reading all
+happen in the same tab/login state. Every tool reports a clean error
+(never a crash) both when `ctx.browser_session` is `None` (no browser
+session configured for this context) and when the browser itself is
+unavailable (Playwright/Chromium not actually installed — see
+[`browser-automation.md#when-the-extra-or-chromium-isnt-installed`](browser-automation.md#when-the-extra-or-chromium-isnt-installed)
+for the exact error text).
+
+**`browser_navigate(url)`**, **`browser_click(selector)`**,
+**`browser_type(selector, text)`**, **`browser_press_key(key)`**,
+**`browser_wait_for(selector, timeout_s=10)`** — the five action tools.
+Selectors use Playwright's own locator syntax directly (a CSS selector, or
+`text=...` to match visible text) — no custom mini-language.
+
+- **Permission:** required for all five. `risk_description` names the
+  concrete consequence per tool (e.g. `browser_click`: "can submit a form,
+  confirm a purchase, or otherwise take real action"; `browser_type`: "may
+  enter real data (credentials, search queries, form input)").
+  `plan_mode_safe=False` for all five — each is consequential on a real
+  website, so the whole group stays unavailable while [plan
+  mode](tui-guide.md#plan-mode) is active.
+- `browser_wait_for` waits for an element to appear before continuing —
+  use it after an action that loads content asynchronously instead of
+  guessing how long to sleep; `timeout_s` defaults to 10.
+
+**`browser_read_page()`** and **`browser_screenshot()`** — the two
+read-only tools.
+
+- **Permission:** not required (`needs_permission=False`).
+  `plan_mode_safe=True` — same tier as [`fetch_artifact`](#fetch_artifact),
+  so both stay available while [plan mode](tui-guide.md#plan-mode) is
+  active.
+- `browser_read_page` returns the page's visible text, prefixed with the
+  current URL (`--- <url> ---`). Large output rides the same
+  archive-on-dispatch mechanism as every other tool — see [Artifact
+  archiving](#artifact-archiving) below — with no special-casing needed.
+- `browser_screenshot` saves a PNG under `browser_screenshots_dir()`
+  (`config/paths.py`) and reports the saved path in its result text —
+  there's no way to render an image inline in a terminal UI, so this is
+  "here's where I saved it," not an inline preview.
+
 ## diff_files
 
 Compares two text files and returns a unified diff (like `diff -u`), built on

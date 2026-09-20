@@ -50,6 +50,10 @@ TUI (ChatScreen) -> AgentLoop -> GatewayClient (LLM gateway)
   shared non-interactive runtime (`agent/runtime.py`, `agent/headless.py`)
   and `pcli run`, the one-shot "run a task and exit" command meant for OS
   schedulers (cron / Task Scheduler).
+- [`browser-automation.md`](browser-automation.md) — driving a real
+  Chromium browser via Playwright: the seven `browser_*` tools, the
+  shared/persistent `BrowserSession`, and the headed-vs-headless default
+  split between the TUI and `pcli run`.
 - [`toolbox-plugins.md`](toolbox-plugins.md) — discovering OS/software tools
   (kubectl, SGE, Kafka, httpd, ...) for the agent to use.
 - [`agent-tools-guide.md`](agent-tools-guide.md) — how to create and register

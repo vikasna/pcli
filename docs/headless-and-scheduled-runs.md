@@ -8,11 +8,13 @@ turn-driving logic out of `ChatScreen` so a non-interactive front end can
 drive the same machinery without pulling in Textual at all.
 
 Today the only such front end is `pcli run` (below), a one-shot "run this
-task and exit" command meant to be invoked by an OS scheduler. Two more are
-planned to land later on this same foundation — browser automation and a
-`pcli telegram` daemon that answers incoming messages — and will likely
-extend this page when they do. Only `pcli run` exists today; nothing below
-describes those.
+task and exit" command meant to be invoked by an OS scheduler. One more is
+planned to land later on this same foundation — a `pcli telegram` daemon
+that answers incoming messages — and will likely extend this page when it
+does. [Browser automation](browser-automation.md) has already landed on
+this foundation too: `pcli run` shares the same `AgentRuntime`/
+`BrowserSession` wiring the TUI uses, just defaulting to headless (see
+`--headed` below).
 
 ## Shared runtime building blocks
 
@@ -52,6 +54,7 @@ pcli run --task "..."
 pcli run --task-file path/to/task.txt
 pcli run --task "..." --session <id>
 pcli run --task "..." --quiet
+pcli run --task "..." --headed
 ```
 
 | Flag | Behavior |
@@ -60,6 +63,7 @@ pcli run --task "..." --quiet
 | `--task-file PATH` | Path to a file containing the task. Meant for longer, reusable, step-by-step instructions — e.g. a task you've worked out once and now invoke repeatedly on a schedule. |
 | `--session ID` | Append to an existing session (`pcli sessions list` for ids) instead of starting a fresh one via `new_headless_session` — gives a scheduled job continuity across runs, the same session history and cost totals carrying forward each time it fires. |
 | `--quiet` | Print only the final answer text, not tool-call progress lines — for a clean cron-job log. |
+| `--headed` | Show the browser window if any `browser_*` tool gets used, instead of the headless default. See [`browser-automation.md`](browser-automation.md#headed-vs-headless) for why `pcli run` defaults to headless while the TUI defaults to headed. |
 
 Passing both or neither of `--task`/`--task-file` is a usage error (exit
 code 1, "Provide exactly one of --task or --task-file."). All the normal

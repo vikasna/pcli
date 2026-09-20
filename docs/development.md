@@ -3,7 +3,7 @@
 ## Setup
 
 ```
-pip install -e ".[dev,docker,win]"
+pip install -e ".[dev,docker,win,browser]"
 pcli
 ```
 
@@ -16,6 +16,11 @@ pcli
   depending on a Python `docker` SDK, so there's nothing to install. The extra
   exists purely so `pip install -e ".[dev,docker,win]"` (as documented in
   `README.md`) is valid instead of erroring on an undefined extra name.
+- `browser` pulls in `playwright>=1.40`, for the `browser_*` tools
+  (`tools/builtin/browser_tool.py`). Unlike `docker`, this one isn't
+  self-sufficient once installed: Playwright's own browser binary is a
+  separate download, fetched with a one-time `playwright install chromium`
+  after this. See [`browser-automation.md`](browser-automation.md).
 - Requires Python >= 3.11 (`requires-python` in `pyproject.toml`).
 
 `pcli` with no subcommand launches the TUI; run it from a project directory

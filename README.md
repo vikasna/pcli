@@ -1,6 +1,6 @@
 # pcli
 
-An opencode-style AI coding agent CLI/TUI for Python. Connects to any OpenAI-compatible LLM gateway, with session management, cost tracking, permission handling, guardrails, tiered sandboxed execution, a lazy-loading Python discovery tool, a global cross-session memory of the user, a toolbox for discovering and using installed OS software (kubectl, SGE, Kafka, httpd, ...), and one-shot non-interactive task execution (`pcli run`) for cron/Task Scheduler-driven runs.
+An opencode-style AI coding agent CLI/TUI for Python. Connects to any OpenAI-compatible LLM gateway, with session management, cost tracking, permission handling, guardrails, tiered sandboxed execution, a lazy-loading Python discovery tool, a global cross-session memory of the user, a toolbox for discovering and using installed OS software (kubectl, SGE, Kafka, httpd, ...), one-shot non-interactive task execution (`pcli run`) for cron/Task Scheduler-driven runs, and real browser automation (click/type/navigate a live Chromium via Playwright, watchable in the TUI or headless under `pcli run`).
 
 See `requirements.md` for the original project brief. For a full reference
 (architecture, every setting, every tool, the TUI, sandboxing/permissions,
@@ -9,9 +9,14 @@ sessions/cost, and the toolbox plugin system), see [`docs/README.md`](docs/READM
 ## Development
 
 ```
-pip install -e ".[dev,docker,win]"
+pip install -e ".[dev,docker,win,browser]"
 pcli
 ```
+
+The `browser` extra only pulls in the `playwright` Python package; the
+browser binary itself is a separate one-time download — run `playwright
+install chromium` once after installing. See
+[`docs/browser-automation.md`](docs/browser-automation.md).
 
 ## Configuring the gateway
 
