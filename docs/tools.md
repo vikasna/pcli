@@ -1241,8 +1241,14 @@ archiving doesn't.
 - **No-op guard:** `maybe_compact` returns `None` (nothing to do) when
   `compaction_cutoff` finds nothing eligible — ordinarily, `keep_recent_turns`
   or fewer user turns in the session, or (for a single long-running turn) the
-  fallback above hasn't crossed `_MIN_ROUNDS_FOR_FALLBACK` yet; `/compact`
-  surfaces this as "Nothing to compact yet."
+  fallback above hasn't crossed `_MIN_ROUNDS_FOR_FALLBACK` yet. `maybe_compact`
+  itself is unchanged here, but its caller isn't: if context usage is still at
+  or above `auto_compact_threshold` when the configured `keep_recent_turns`
+  comes back `None`, `ChatScreen._run_compaction` (`tui/screens/chat.py`)
+  retries with a progressively smaller `keep_recent_turns` (down to `0`)
+  before giving up — see [`configuration.md`](configuration.md#auto-compaction)
+  for the full behavior. Only once even `keep_recent_turns=0` comes back
+  `None` does `/compact` surface "Nothing to compact yet."
 
 ## Grounding conclusions in evidence
 

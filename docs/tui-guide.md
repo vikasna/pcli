@@ -413,7 +413,11 @@ as a normal system message instead.
   `auto_compact_keep_recent_turns` turns — or, for a session made up of a
   single long-running turn (one user message followed by many internal
   tool-calling rounds), if that turn hasn't yet grown past the fallback
-  threshold described in [Auto-compaction](#auto-compaction) below. Refuses
+  threshold described in [Auto-compaction](#auto-compaction) below. If
+  context is still at or above `auto_compact_threshold` when that first
+  attempt finds nothing, `/compact` retries with a smaller
+  `keep_recent_turns` before giving up — see
+  [Auto-compaction](#auto-compaction) below. Refuses
   to run while a turn is still in progress, showing "Still working on the
   current turn — try /compact again once it's done." instead — just try
   again once it finishes. This
@@ -699,6 +703,21 @@ never be compacted at all — `/compact` would report "Nothing to compact yet."
 no matter how full the context got — and now can be, once it's grown large
 enough. An ordinary short turn is unaffected either way.
 
+The `auto_compact_keep_recent_turns` window itself is a soft guarantee, not
+an absolute one: a real reported bug had a session auto-compact once, then
+hit three consecutive auto-continue retries (see [Auto-continue on truncated
+responses](#auto-continue-on-truncated-responses) below — each synthetic
+`"Continue."` message is its own turn boundary), leaving nothing older than
+the protected window left to summarize even though the status bar still
+showed context 100% full, so `/compact` reported "Nothing to compact yet."
+instead of freeing any room. If the initial attempt at the configured
+setting finds nothing eligible but usage is still at or above
+`auto_compact_threshold`, `ChatScreen._run_compaction` now retries with a
+progressively smaller `keep_recent_turns` (down to `0`) until one finds
+something to compact, and the notice says so explicitly. See
+[`configuration.md`](configuration.md#auto-compaction) for the full
+behavior.
+
 A successful compaction — automatic or `/compact` — also triggers a
 **memory-extraction** pass: pcli reviews the transcript that was just
 archived for anything durable and worth remembering about the user across
@@ -793,7 +812,11 @@ headroom instead of immediately hitting the same wall again. When it fires:
   queued-followup mechanism (`_has_queued_followup`, the same one that lets
   a user's own follow-up message queue up while a turn is still running) is
   reused to trigger another turn automatically. No new turn-loop mechanism
-  was added.
+  was added. Each synthetic `"Continue."` message is its own turn boundary
+  like any real user message, so several in a row can concentrate inside
+  auto-compaction's protected `auto_compact_keep_recent_turns` window — see
+  [Auto-compaction](#auto-compaction) above for what happens when that
+  window itself ends up too full to leave anything older to compact.
 
 This is capped at `_MAX_CONSECUTIVE_AUTO_CONTINUES = 3` consecutive
 attempts — a hardcoded constant in `chat.py`, not a `Settings` field

@@ -153,6 +153,23 @@ past 20 round trips, keeping at least that many of the most recent rounds
 verbatim — so such a turn does eventually become eligible instead of staying
 permanently un-compactable. An ordinary short turn is unaffected.
 
+`auto_compact_keep_recent_turns` is a soft guarantee, not an absolute one.
+The protected window itself can become what's filling context — for
+example, several auto-continue retries (see [Auto-continue on truncated
+responses](tui-guide.md#auto-continue-on-truncated-responses); each
+synthetic `"Continue."` message is its own turn boundary) piling up inside
+it after an earlier pass already compacted everything older away. If the
+first `maybe_compact` attempt at the configured setting finds nothing
+eligible but usage is still at or above `auto_compact_threshold`,
+`ChatScreen._run_compaction` (`tui/screens/chat.py` — `agent/compaction.py`
+itself is unchanged) retries with a progressively smaller
+`keep_recent_turns`, down to `0`, stopping at the first attempt that finds
+something to compact. The resulting notice says so explicitly, e.g.
+"...kept only the last 1 recent turn(s) verbatim instead of the usual 2 —
+context was still full at that setting." Only when even `keep_recent_turns=0`
+finds nothing — a genuinely empty/near-empty session — does it still fall
+back to "Nothing to compact yet."
+
 ## Memory
 
 `memory_enabled` and `memory_max_entries` (table above) control pcli's
