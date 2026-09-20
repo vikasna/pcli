@@ -22,6 +22,11 @@ from pcli.agent.compaction import maybe_compact
 from pcli.agent.context_pruning import extract_purpose, prune_old_tool_results
 from pcli.agent.loop import AgentLoop, ToolResultEvent
 from pcli.agent.prompt import build_system_prompt
+from pcli.agent.runtime import (
+    build_agent_runtime,
+    build_permission_manager,
+    effective_max_tool_iterations,
+)
 from pcli.config.settings import Settings, get_settings, remove_config_keys, update_config_file
 from pcli.cost.context import (
     ContextLimitTable,
@@ -38,19 +43,16 @@ from pcli.llm.models import ChatMessage, Usage
 from pcli.memory.extraction import extract_memory
 from pcli.memory.models import render_memory_list, render_memory_section
 from pcli.memory.store import clear_memory, read_memory, remove_entry
-from pcli.permissions.guardrails import GuardrailsConfig, update_guardrails_limits
-from pcli.permissions.manager import AskCallback, PermissionManager
+from pcli.permissions.guardrails import update_guardrails_limits
+from pcli.permissions.manager import AskCallback
 from pcli.sandbox.base import Sandbox, SandboxSecurityError
-from pcli.sandbox.selector import select_sandbox
 from pcli.sandbox.subprocess_backend import RestrictedSubprocessSandbox
 from pcli.session.export import export_session
 from pcli.session.models import Message, Session, ToolInvocation
 from pcli.session.store import SessionStore
-from pcli.tools.agent_tools_store import load_persisted_agent_tools
 from pcli.tools.artifacts import SessionArtifactStore
 from pcli.tools.base import AskQuestionCallback, ToolContext
-from pcli.tools.builtin.artifact_tool import ASK_ARTIFACT
-from pcli.tools.registry import ToolRegistry, build_default_registry
+from pcli.tools.registry import ToolRegistry
 from pcli.tools.toolbox.manager import ToolboxDiscoveryError, ToolboxManager
 from pcli.tui.screens.ask_question_modal import ask_question_via_modal
 from pcli.tui.screens.permission_modal import ask_via_modal
@@ -242,15 +244,7 @@ class ChatScreen(Screen):
         self._store = store or SessionStore()
         self._client: GatewayClient | None = None
         self._agent_loop: AgentLoop | None = None
-        guardrails = GuardrailsConfig.load()
-        if self._settings.is_local_api():
-            # Local-api mode uncaps turn/rate limiting only — the security
-            # guardrails (shell denylist, fs roots, module denylist) are
-            # untouched.
-            guardrails = guardrails.model_copy(
-                update={"max_tool_calls_per_turn": 0, "max_tool_calls_per_minute": 0}
-            )
-        self._permission_manager = PermissionManager(guardrails=guardrails)
+        self._permission_manager = build_permission_manager(self._settings)
         self._sandbox: Sandbox | None = None
         self._tool_registry: ToolRegistry | None = None
         self._toolbox_manager: ToolboxManager | None = None
@@ -340,7 +334,7 @@ class ChatScreen(Screen):
         self.query_one(StatusPane).todos = list(self._session.todos)
 
     def _effective_max_tool_iterations(self) -> int | None:
-        return None if self._settings.is_local_api() else self._settings.max_tool_iterations
+        return effective_max_tool_iterations(self._settings)
 
     def _on_activity_changed(self) -> None:
         status_bar = self.query_one(StatusBar)
@@ -406,40 +400,26 @@ class ChatScreen(Screen):
             )
 
         try:
-            self._sandbox = await select_sandbox(
-                backend_override=self._settings.sandbox_backend, allowed_roots=[self._cwd]
-            )
-        except Exception as exc:  # noqa: BLE001 - surface sandbox setup failure, don't crash
-            message_view.add_message("system", f"Sandbox setup failed: {exc}")
+            runtime = await build_agent_runtime(self._settings, self._cwd)
+        except Exception as exc:  # noqa: BLE001 - surface startup failure, don't crash
+            message_view.add_message("system", f"Startup failed: {exc}")
             return
+        self._sandbox = runtime.sandbox
         status_bar.sandbox_backend = self._sandbox.name
-
-        self._tool_registry = build_default_registry()
-        if not self._settings.is_local_api():
-            # ask_artifact spends an extra LLM call answering a question
-            # about a large artifact instead of returning raw content - free
-            # on a local gateway (the whole point), a real if usually small
-            # cost on a paid one, so it's simply not offered there rather
-            # than left to the model's judgment to avoid using it.
-            self._tool_registry = self._tool_registry.filtered(
-                lambda t: t.name != ASK_ARTIFACT.name
-            )
-        self._toolbox_manager = ToolboxManager(cwd=self._cwd)
-        toolbox_tools = await self._toolbox_manager.load_all()
-        self._tool_registry.merge(toolbox_tools)
-        if len(toolbox_tools):
+        self._tool_registry = runtime.tool_registry
+        self._toolbox_manager = runtime.toolbox_manager
+        if runtime.toolbox_tools_loaded:
             message_view.add_message(
-                "system", f"Loaded {len(toolbox_tools)} previously-discovered toolbox tool(s)."
+                "system",
+                f"Loaded {runtime.toolbox_tools_loaded} previously-discovered toolbox tool(s).",
             )
-
-        agent_tools = load_persisted_agent_tools()
-        self._tool_registry.merge(agent_tools)
-        if len(agent_tools):
+        if runtime.agent_tools_loaded:
             message_view.add_message(
-                "system", f"Loaded {len(agent_tools)} previously-registered agent tool(s)."
+                "system",
+                f"Loaded {runtime.agent_tools_loaded} previously-registered agent tool(s).",
             )
 
-        self._client = GatewayClient(self._settings)
+        self._client = runtime.client
         await self._maybe_detect_context_limit(message_view)
         self._agent_loop = AgentLoop(
             self._client,

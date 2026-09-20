@@ -8,6 +8,8 @@ from pathlib import Path
 
 import typer
 
+from pcli.agent.headless import new_headless_session, run_headless_task
+from pcli.agent.runtime import build_agent_runtime, build_permission_manager
 from pcli.config.paths import data_dir
 from pcli.config.settings import add_local_api_gateway, get_settings, update_config_file
 from pcli.cost.tracker import global_cost_report
@@ -127,6 +129,93 @@ def _print_resume_hint(store: SessionStore) -> None:
         return
     latest = entries[0]
     typer.echo(f"\nResume this session anytime with: pcli --resume {latest.id}")
+
+
+@app.command("run")
+def run_command(
+    task: str | None = typer.Option(None, "--task", help="The task to run, given inline."),
+    task_file: str | None = typer.Option(
+        None,
+        "--task-file",
+        help="Path to a file containing the task (for longer, step-by-step instructions you "
+        "want to reuse - e.g. on a schedule via cron/Task Scheduler). Exactly one of --task/"
+        "--task-file is required.",
+    ),
+    session: str | None = typer.Option(
+        None,
+        "--session",
+        help="Resume/append to an existing session by id (see 'pcli sessions list'), instead "
+        "of starting a fresh one.",
+    ),
+    quiet: bool = typer.Option(
+        False, "--quiet", help="Only print the final answer, not tool-call progress."
+    ),
+) -> None:
+    """Runs a single task non-interactively and exits - no TUI. Meant to be
+    invoked by an OS scheduler (cron / Task Scheduler) for a task you've
+    already worked out interactively once; pcli itself doesn't schedule
+    anything. Anything not already granted "Always Allow" (see the TUI's
+    permission prompt) is refused rather than prompted for, since there's
+    no one here to ask - set those up interactively first if this task
+    needs them."""
+    if bool(task) == bool(task_file):
+        typer.echo("Provide exactly one of --task or --task-file.", err=True)
+        raise typer.Exit(code=1)
+    if task_file:
+        task = Path(task_file).read_text(encoding="utf-8")
+    assert task is not None
+
+    async def _run() -> None:
+        settings = get_settings()
+        if not settings.is_configured():
+            typer.echo(
+                "Gateway not configured. Set PCLI_GATEWAY_URL (and PCLI_GATEWAY_API_KEY if "
+                "your gateway requires auth) or edit the config file first.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+
+        store = SessionStore()
+        cwd = Path.cwd()
+        if session:
+            try:
+                headless_session = store.load(session)
+            except SessionNotFoundError:
+                typer.echo(f"No session found with id '{session}'.", err=True)
+                raise typer.Exit(code=1) from None
+        else:
+            headless_session = new_headless_session(store, settings, cwd)
+
+        try:
+            runtime = await build_agent_runtime(settings, cwd)
+        except Exception as exc:
+            typer.echo(f"Startup failed: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+
+        def on_progress(line: str) -> None:
+            if not quiet:
+                typer.echo(line)
+
+        try:
+            result = await run_headless_task(
+                task,
+                session=headless_session,
+                runtime=runtime,
+                settings=settings,
+                permission_manager=build_permission_manager(settings),
+                cwd=cwd,
+                store=store,
+                on_progress=on_progress,
+            )
+        finally:
+            await runtime.client.aclose()
+
+        typer.echo(f"\n{result.final_text}" if not quiet else result.final_text)
+        typer.echo(f"\nSession: {result.session.id} (resume with: pcli --resume {result.session.id})")
+        if result.terminated_early or result.truncations_exhausted:
+            raise typer.Exit(code=1)
+
+    asyncio.run(_run())
 
 
 @sessions_app.command("list")
