@@ -7,8 +7,10 @@ against your working directory, and renders everything in a Textual TUI.
 ## Architecture at a glance
 
 `pcli.cli` (Typer) parses flags/env, builds a `Settings` object, and either
-launches a subcommand (`sessions`, `cost`, `toolbox`) or starts the TUI. The
-TUI's `ChatScreen` (`pcli.tui.screens.chat`) is the hub: it owns the `Session`,
+launches a subcommand (`sessions`, `cost`, `toolbox`, `run` — the last being
+a one-shot non-interactive task runner, see
+[`headless-and-scheduled-runs.md`](headless-and-scheduled-runs.md)) or starts
+the TUI. The TUI's `ChatScreen` (`pcli.tui.screens.chat`) is the hub: it owns the `Session`,
 a `SessionStore`, and on mount builds a `Sandbox` (via `select_sandbox`), a
 `ToolRegistry` (builtin tools + any discovered toolbox plugins), a
 `PermissionManager`, a `GatewayClient`, and an `AgentLoop` that ties them
@@ -44,6 +46,10 @@ TUI (ChatScreen) -> AgentLoop -> GatewayClient (LLM gateway)
 - [`memory.md`](memory.md) — pcli's global, cross-session user memory: the
   data model, the `remember` tool, autonomous extraction piggybacked on
   auto-compaction, system-prompt injection, and the `/memory` command.
+- [`headless-and-scheduled-runs.md`](headless-and-scheduled-runs.md) — the
+  shared non-interactive runtime (`agent/runtime.py`, `agent/headless.py`)
+  and `pcli run`, the one-shot "run a task and exit" command meant for OS
+  schedulers (cron / Task Scheduler).
 - [`toolbox-plugins.md`](toolbox-plugins.md) — discovering OS/software tools
   (kubectl, SGE, Kafka, httpd, ...) for the agent to use.
 - [`agent-tools-guide.md`](agent-tools-guide.md) — how to create and register

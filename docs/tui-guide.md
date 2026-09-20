@@ -819,6 +819,10 @@ or the `make_agent_tool` family (`_nested_agent.py` only reads
 way is not auto-continued — it's simply reported back as whatever partial
 text it produced.
 
+`pcli run` (`agent/headless.py`) replicates this same auto-continue
+mechanism outside the TUI, same 3-attempt cap — see
+[`headless-and-scheduled-runs.md`](headless-and-scheduled-runs.md#whats-different-from-the-tui).
+
 ## Dynamic response cap
 
 Auto-compaction and tool-result pruning above both react to context that's
