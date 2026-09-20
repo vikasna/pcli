@@ -583,7 +583,10 @@ as a normal system message instead.
   clear it all. With no argument, lists every entry grouped by category with
   its short (last-4-char) id, same abbreviation style `/sessions` uses for
   session ids, and an `(explicit)` marker on entries the user asked directly
-  to be remembered. `/memory forget <id>` resolves the id by suffix match —
+  to be remembered — rendered as a real Markdown list (`render_memory_list`,
+  [`memory.md`](memory.md#the-memory-command)) with each id in a backtick
+  code span, rather than the run-on wall of text it used to print.
+  `/memory forget <id>` resolves the id by suffix match —
   reporting no-match or ambiguous-match instead of guessing — and removes
   that one entry; `/memory clear` wipes everything. Grows automatically from
   what's explicitly asked to be remembered (any session, any length) and,
@@ -1170,6 +1173,41 @@ proactively retried rather than just flagged with a notice); see
 [Auto-continue on truncated responses](#auto-continue-on-truncated-responses)
 above.
 
+## Collapsible slash-command and shell output
+
+Long `system`-role messages (this covers virtually every slash-command
+output — `/help`, `/memory`, `/subagent`, `/toolbox list`, config-view
+commands like `/timeout` with no argument, etc.) and `shell`-role messages
+(`!command`/`!!command` output — see [Shell
+passthrough](#shell-passthrough-command-command-and-command) above) are
+wrapped in a Textual `Collapsible` once the text reaches
+`_COLLAPSIBLE_MESSAGE_THRESHOLD_CHARS` (300 characters) —
+`MessageView.add_message`, `src/pcli/tui/widgets/message_view.py`. Below that
+threshold a message still prints as a plain, permanent line exactly as
+before — a short confirmation like `Model set to 'gpt-4'.` never grows a
+collapse affordance.
+
+This addresses a real complaint: verbose output from `/help`, `/memory`, a
+busy `/subagent`, or a long `!command` used to just pile up permanently in
+the transcript with no way to reclaim the space. Unlike the tool-call/
+tool-result/reasoning Collapsibles described above (which default to
+*collapsed*), these default to **expanded** — you just asked to see this
+output by running the command, so it's immediately visible; the only new
+thing is the *option* to collapse it away afterward by clicking the title
+bar (or focusing it and pressing Enter/Space, the same standard Textual
+`Collapsible` interaction). The title follows the same `"{label} — {char
+count} char(s)"` convention as a tool result's title; a shell message's
+title additionally surfaces the command itself, e.g. `Shell: ls -la — 1,234
+char(s)`, mirroring how a tool-result title shows the tool name
+(`_message_title` in `message_view.py`). Styling is a muted left border for
+`system` messages and an accent-colored one for `shell` messages
+(`.message-collapsible-system`/`.message-collapsible-shell` in
+`src/pcli/tui/styles/pcli.tcss`).
+
+`user` and `assistant` messages (the primary conversation content) are never
+wrapped, regardless of length. `decision` messages are excluded too,
+deliberately — see [Decision log](#decision-log) below.
+
 ## Decision log
 
 `record_decision` calls ([`tools.md`](tools.md#record_decision)) render
@@ -1192,10 +1230,16 @@ border.
 On `ChatScreen.on_mount`, if the session being opened already has recorded
 decisions (`Session.decisions` non-empty — i.e. resuming a session that has
 some), a `system`-role summary message is added: "Resuming with N recorded
-decision(s):" followed by one `• <decision>` line per entry (`decision` text
-only, not the `rationale`), built by `render_decisions()` in
-`src/pcli/tools/builtin/decision_tool.py`. This mirrors the existing
-resume-time summary shown for `Session.todos` when it's non-empty.
+decision(s):" followed by one `- <decision>` Markdown bullet per entry
+(`decision` text only, not the `rationale`), built by `render_decisions()`
+in `src/pcli/tools/builtin/decision_tool.py` — a real `"- "` bullet rather
+than a plain `"• "` character, since this message renders through
+`rich.markdown.Markdown` like any other `system` message (see [Collapsible
+slash-command and shell output](#collapsible-slash-command-and-shell-output)
+above) and needs actual list-item syntax to render as separate lines instead
+of one run-on paragraph. This mirrors the existing resume-time summary shown
+for `Session.todos` when it's non-empty, built the same way by
+`render_todos()` in `src/pcli/tools/builtin/todo_tool.py`.
 
 Also on `on_mount`, right after the `GatewayClient` is constructed, pcli adds
 one more system message reporting the outcome of

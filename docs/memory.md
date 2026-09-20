@@ -50,9 +50,15 @@ Two render functions build the two different textual views of this data:
 - **`render_memory_list(entries)`** — the human-facing listing the `/memory`
   command prints, grouped the same way but with each entry's **short id**
   (last 4 characters — the same abbreviation convention
-  [`/sessions`](tui-guide.md#slash-commands) uses for session ids) and an
-  `(explicit)` marker on explicit entries, so `/memory forget <id>` has
-  something to target.
+  [`/sessions`](tui-guide.md#slash-commands) uses for session ids, shown in a
+  backtick code span) and an `(explicit)` marker on explicit entries, so
+  `/memory forget <id>` has something to target. Emits real Markdown — a bold
+  `**Category:**` header per category, `- ` bulleted entries, a blank line
+  between category blocks — since the TUI always renders a `system` message
+  through `rich.markdown.Markdown`
+  ([`tui-guide.md`](tui-guide.md#collapsible-slash-command-and-shell-output)),
+  which otherwise collapses plain `"\n"`-joined lines into a single run-on
+  paragraph.
 
 ## Persistence
 
