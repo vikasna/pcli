@@ -71,3 +71,18 @@ def permissions_file() -> Path:
 
 def cost_ledger_file() -> Path:
     return data_dir() / "cost_ledger.jsonl"
+
+
+def browser_profiles_dir(profile: str = "default") -> Path:
+    # A dedicated Playwright persistent-context profile directory per name
+    # (see browser/session.py) - this is what makes a login/cookies survive
+    # across separate pcli invocations, not just within one running session.
+    path = data_dir() / "browser_profiles" / profile
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def browser_screenshots_dir() -> Path:
+    path = data_dir() / "browser_screenshots"
+    path.mkdir(parents=True, exist_ok=True)
+    return path

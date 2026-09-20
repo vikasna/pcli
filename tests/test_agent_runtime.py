@@ -86,6 +86,66 @@ async def test_build_agent_runtime_sets_up_a_real_sandbox_and_client(tmp_path: P
     await runtime.client.aclose()
 
 
+@pytest.mark.asyncio
+async def test_build_agent_runtime_attaches_a_browser_session_that_is_not_started_yet(
+    tmp_path: Path,
+):
+    """Cheap to hold even when nothing ever uses it - the browser process
+    only launches on a browser_* tool's first real call (see
+    test_browser_session.py) - so build_agent_runtime always attaches one,
+    it never needs its own conditional the way ask_artifact's local-api
+    filter does."""
+    settings = _settings()
+    runtime = await build_agent_runtime(settings, tmp_path)
+
+    assert runtime.browser_session is not None
+    assert runtime.browser_session.is_started is False
+    await runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_build_agent_runtime_defaults_the_browser_to_headed(tmp_path: Path):
+    """The right default for an interactive TUI session (seeing the browser
+    work is part of what makes it trustworthy to watch) - `pcli run` passes
+    browser_headless=True explicitly instead (see test_cli_run.py)."""
+    settings = _settings()
+    runtime = await build_agent_runtime(settings, tmp_path)
+
+    assert runtime.browser_session.headless is False
+    await runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_build_agent_runtime_honors_browser_headless_override(tmp_path: Path):
+    settings = _settings()
+    runtime = await build_agent_runtime(settings, tmp_path, browser_headless=True)
+
+    assert runtime.browser_session.headless is True
+    await runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_make_tool_context_threads_the_runtimes_browser_session(tmp_path: Path):
+    from pcli.agent.runtime import make_tool_context
+    from pcli.session.store import SessionStore
+
+    settings = _settings()
+    runtime = await build_agent_runtime(settings, tmp_path)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    session = store.new_session(model="fake-model", gateway_base_url=settings.gateway_base_url)
+
+    ctx = make_tool_context(
+        runtime,
+        settings,
+        tmp_path,
+        session=session,
+        permission_manager=build_permission_manager(settings),
+    )
+
+    assert ctx.browser_session is runtime.browser_session
+    await runtime.client.aclose()
+
+
 def test_effective_max_tool_iterations_uncapped_in_local_api_mode():
     settings = _settings(
         local_api_gateways=["http://fake-gateway.test/v1"], max_tool_iterations=25

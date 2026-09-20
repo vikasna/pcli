@@ -150,6 +150,13 @@ def run_command(
     quiet: bool = typer.Option(
         False, "--quiet", help="Only print the final answer, not tool-call progress."
     ),
+    headed: bool = typer.Option(
+        False,
+        "--headed",
+        help="Show the browser window if browser_* tools are used, instead of running it "
+        "headless (the default for a scheduled/unattended run - nothing to show, and a real "
+        "window shouldn't pop up unattended).",
+    ),
 ) -> None:
     """Runs a single task non-interactively and exits - no TUI. Meant to be
     invoked by an OS scheduler (cron / Task Scheduler) for a task you've
@@ -187,7 +194,7 @@ def run_command(
             headless_session = new_headless_session(store, settings, cwd)
 
         try:
-            runtime = await build_agent_runtime(settings, cwd)
+            runtime = await build_agent_runtime(settings, cwd, browser_headless=not headed)
         except Exception as exc:
             typer.echo(f"Startup failed: {exc}", err=True)
             raise typer.Exit(code=1) from exc
@@ -209,6 +216,7 @@ def run_command(
             )
         finally:
             await runtime.client.aclose()
+            await runtime.browser_session.close()
 
         typer.echo(f"\n{result.final_text}" if not quiet else result.final_text)
         typer.echo(f"\nSession: {result.session.id} (resume with: pcli --resume {result.session.id})")

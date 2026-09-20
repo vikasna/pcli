@@ -29,6 +29,12 @@ dependencies = [
 # of erroring on an undefined extra. Requires `docker` on PATH at runtime.
 docker = []
 win = ["pywin32>=306; sys_platform == 'win32'"]
+# The browser_* tools (tools/builtin/browser_tool.py) drive a real Chromium
+# via Playwright. Installing this extra pulls in the Python package only -
+# Playwright's own browser binary is a separate ~300MB download, fetched
+# with a one-time `playwright install chromium` after this (see
+# docs/browser-automation.md).
+browser = ["playwright>=1.40"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

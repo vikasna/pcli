@@ -58,6 +58,15 @@ def build_default_registry() -> ToolRegistry:
     from pcli.tools.builtin.agent_tool_register_tool import REGISTER_AGENT_TOOL
     from pcli.tools.builtin.artifact_tool import ASK_ARTIFACT, FETCH_ARTIFACT
     from pcli.tools.builtin.ask_tool import ASK_USER_QUESTION
+    from pcli.tools.builtin.browser_tool import (
+        BROWSER_CLICK,
+        BROWSER_NAVIGATE,
+        BROWSER_PRESS_KEY,
+        BROWSER_READ_PAGE,
+        BROWSER_SCREENSHOT,
+        BROWSER_TYPE,
+        BROWSER_WAIT_FOR,
+    )
     from pcli.tools.builtin.decision_tool import RECORD_DECISION
     from pcli.tools.builtin.diff_tools import APPLY_PATCH, DIFF_FILES
     from pcli.tools.builtin.fs_tools import EDIT_FILE, GLOB_SEARCH, LIST_DIR, READ_FILE, WRITE_FILE
@@ -115,6 +124,13 @@ def build_default_registry() -> ToolRegistry:
         DEEP_RESEARCH,
         DATA_ANALYSIS,
         REGISTER_AGENT_TOOL,
+        BROWSER_NAVIGATE,
+        BROWSER_CLICK,
+        BROWSER_TYPE,
+        BROWSER_PRESS_KEY,
+        BROWSER_WAIT_FOR,
+        BROWSER_READ_PAGE,
+        BROWSER_SCREENSHOT,
     ):
         registry.register(tool)
     return registry

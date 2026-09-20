@@ -181,6 +181,7 @@ def test_run_exits_nonzero_when_the_turn_terminated_early(
         toolbox_tools_loaded=0,
         agent_tools_loaded=0,
         client=AsyncMock(),
+        browser_session=AsyncMock(),
     )
 
     async def _fake_run_headless_task(task, *, session, **kwargs):
@@ -191,6 +192,67 @@ def test_run_exits_nonzero_when_the_turn_terminated_early(
 
     result = runner.invoke(app, _root_and_run_args())
     assert result.exit_code == 1
+
+
+def test_run_defaults_the_browser_to_headless(isolated_store: SessionStore, monkeypatch: pytest.MonkeyPatch):
+    """No --headed flag - build_agent_runtime is called with
+    browser_headless=True, the right default for an unattended scheduled
+    run (nothing to show, and a window shouldn't pop up unattended)."""
+    from unittest.mock import AsyncMock
+
+    from pcli.agent.headless import HeadlessTurnResult
+    from pcli.agent.runtime import AgentRuntime
+
+    fake_runtime = AgentRuntime(
+        sandbox=None,
+        tool_registry=None,
+        toolbox_manager=None,
+        toolbox_tools_loaded=0,
+        agent_tools_loaded=0,
+        client=AsyncMock(),
+        browser_session=AsyncMock(),
+    )
+    fake_build = AsyncMock(return_value=fake_runtime)
+
+    async def _fake_run_headless_task(task, *, session, **kwargs):
+        return HeadlessTurnResult(session=session, final_text="done", terminated_early=False)
+
+    monkeypatch.setattr("pcli.cli.build_agent_runtime", fake_build)
+    monkeypatch.setattr("pcli.cli.run_headless_task", _fake_run_headless_task)
+
+    result = runner.invoke(app, _root_and_run_args())
+
+    assert result.exit_code == 0
+    assert fake_build.call_args.kwargs["browser_headless"] is True
+
+
+def test_run_headed_flag_shows_the_browser(isolated_store: SessionStore, monkeypatch: pytest.MonkeyPatch):
+    from unittest.mock import AsyncMock
+
+    from pcli.agent.headless import HeadlessTurnResult
+    from pcli.agent.runtime import AgentRuntime
+
+    fake_runtime = AgentRuntime(
+        sandbox=None,
+        tool_registry=None,
+        toolbox_manager=None,
+        toolbox_tools_loaded=0,
+        agent_tools_loaded=0,
+        client=AsyncMock(),
+        browser_session=AsyncMock(),
+    )
+    fake_build = AsyncMock(return_value=fake_runtime)
+
+    async def _fake_run_headless_task(task, *, session, **kwargs):
+        return HeadlessTurnResult(session=session, final_text="done", terminated_early=False)
+
+    monkeypatch.setattr("pcli.cli.build_agent_runtime", fake_build)
+    monkeypatch.setattr("pcli.cli.run_headless_task", _fake_run_headless_task)
+
+    result = runner.invoke(app, [*_root_and_run_args(), "--headed"])
+
+    assert result.exit_code == 0
+    assert fake_build.call_args.kwargs["browser_headless"] is False
 
 
 def _root_and_run_args() -> list[str]:

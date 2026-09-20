@@ -589,6 +589,37 @@ async def test_make_tool_context_carries_subagent_max_iterations(tmp_path: Path)
         assert ctx.subagent_max_iterations == 42
 
 
+@pytest.mark.asyncio
+async def test_make_tool_context_carries_the_browser_session(tmp_path: Path):
+    """Regression coverage: without this, browser_* tools would always see
+    ctx.browser_session is None inside a real TUI session - see
+    tools/builtin/browser_tool.py's own handling of that case."""
+    screen, _session = _make_screen(tmp_path)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert screen._browser_session is not None
+
+        ctx = screen._make_tool_context()
+        assert ctx.browser_session is screen._browser_session
+
+
+@pytest.mark.asyncio
+async def test_on_unmount_closes_the_browser_session(tmp_path: Path):
+    from unittest.mock import AsyncMock
+
+    screen, _session = _make_screen(tmp_path)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        fake_browser_session = AsyncMock()
+        screen._browser_session = fake_browser_session
+
+        await screen.on_unmount()
+
+        fake_browser_session.close.assert_awaited_once()
+
+
 # --- /subagent ---
 
 

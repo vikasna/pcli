@@ -27,6 +27,7 @@ from pcli.agent.runtime import (
     build_permission_manager,
     effective_max_tool_iterations,
 )
+from pcli.browser.session import BrowserSession
 from pcli.config.settings import Settings, get_settings, remove_config_keys, update_config_file
 from pcli.cost.context import (
     ContextLimitTable,
@@ -248,6 +249,7 @@ class ChatScreen(Screen):
         self._sandbox: Sandbox | None = None
         self._tool_registry: ToolRegistry | None = None
         self._toolbox_manager: ToolboxManager | None = None
+        self._browser_session: BrowserSession | None = None
         self._current_ask: AskCallback | None = None
         self._current_ask_question: AskQuestionCallback | None = None
         self._cwd = Path.cwd()
@@ -408,6 +410,7 @@ class ChatScreen(Screen):
         status_bar.sandbox_backend = self._sandbox.name
         self._tool_registry = runtime.tool_registry
         self._toolbox_manager = runtime.toolbox_manager
+        self._browser_session = runtime.browser_session
         if runtime.toolbox_tools_loaded:
             message_view.add_message(
                 "system",
@@ -526,6 +529,7 @@ class ChatScreen(Screen):
             activity=self._activity,
             toolbox_manager=self._toolbox_manager,
             plan_mode=self._plan_mode,
+            browser_session=self._browser_session,
         )
 
     async def on_unmount(self) -> None:
@@ -533,6 +537,8 @@ class ChatScreen(Screen):
             await self._client.aclose()
         if isinstance(self._sandbox, RestrictedSubprocessSandbox):
             await self._sandbox.kill_all_background_jobs()
+        if self._browser_session is not None:
+            await self._browser_session.close()
 
     def action_cancel_turn(self) -> None:
         """Esc+Esc: cancels the in-flight turn (the streaming reply and/or

@@ -17,6 +17,7 @@ from pcli.session.models import Session
 from pcli.tools.artifacts import ArtifactStore
 
 if TYPE_CHECKING:
+    from pcli.browser.session import BrowserSession
     from pcli.tools.registry import ToolRegistry
     from pcli.tools.toolbox.manager import ToolboxManager
 
@@ -89,6 +90,12 @@ class ToolContext:
     memory_max_entries: int = 40
     """Settings.memory_max_entries - the cap remember's add_entry() enforces
     (memory/store.py)."""
+    browser_session: BrowserSession | None = None
+    """Shared Playwright wrapper for the browser_* tools (tools/builtin/
+    browser_tool.py) - one instance per AgentRuntime (agent/runtime.py),
+    threaded through unchanged so every call in a session reuses the same
+    browser tab/login state. None only for a caller that never set up an
+    AgentRuntime at all (e.g. a bare ToolContext built directly in a test)."""
 
 
 @dataclass
