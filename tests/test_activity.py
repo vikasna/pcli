@@ -118,7 +118,7 @@ def test_format_subagent_activity_includes_task_call_log_and_pending_question():
     text = format_subagent_activity(sub)
 
     assert "build the report" in text
-    assert "Tool calls so far: 2" in text
+    assert "Tool calls so far:** 2" in text
     assert "1. read_file(" in text
     assert "2. run_shell(" in text
     assert "Overwrite report.html?" in text

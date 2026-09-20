@@ -71,16 +71,20 @@ def render_memory_list(entries: list[MemoryEntry]) -> str:
     """Human-facing listing for the /memory command - unlike
     render_memory_section (fed to the model), this includes each entry's
     short id (last 4 chars, matching sessions.py's SessionListScreen
-    convention) so /memory forget <id> has something to target."""
+    convention) so /memory forget <id> has something to target. Real
+    Markdown (blank line between category blocks, "- " bullets) - the TUI
+    always renders system messages through rich.markdown.Markdown, which
+    collapses plain "\\n"-joined lines into a single run-on paragraph."""
     if not entries:
         return "No memory entries yet."
-    lines = []
+    blocks = []
     for category in _CATEGORY_ORDER:
         matching = [e for e in entries if e.category == category]
         if not matching:
             continue
-        lines.append(f"{_CATEGORY_LABELS[category]}:")
+        lines = [f"**{_CATEGORY_LABELS[category]}:**"]
         for entry in matching:
-            marker = " (explicit)" if entry.source == "explicit" else ""
-            lines.append(f"  [{entry.id[-4:]}] {entry.content}{marker}")
-    return "\n".join(lines)
+            marker = " *(explicit)*" if entry.source == "explicit" else ""
+            lines.append(f"- `{entry.id[-4:]}` {entry.content}{marker}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)

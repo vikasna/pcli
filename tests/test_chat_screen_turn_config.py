@@ -625,7 +625,7 @@ async def test_subagent_command_shows_task_and_call_log(tmp_path: Path):
         assert "build the report" in text
         assert "read_file" in text
         assert "run_shell" in text
-        assert "Tool calls so far: 2" in text
+        assert "Tool calls so far:** 2" in text
 
 
 @pytest.mark.asyncio

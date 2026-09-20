@@ -107,6 +107,79 @@ async def test_add_tool_result_does_not_disturb_streaming_state():
         assert view._current_text == "partial reply"
 
 
+# --- add_message: collapsible system/shell output ---
+#
+# Regression coverage for a real reported complaint: verbose slash-command
+# output (/help, /memory, /subagent, ...) and shell passthrough (!command)
+# just printed permanently in the transcript with no way to reclaim the
+# space. Long "system"/"shell" messages now mount inside an expanded-by-
+# default Collapsible instead of a plain Static.
+
+
+@pytest.mark.asyncio
+async def test_add_message_short_system_stays_plain_not_collapsible():
+    app = _ViewApp()
+    async with app.run_test() as pilot:
+        view = app.query_one(MessageView)
+        view.add_message("system", "Model set to 'gpt-4'.")
+        await pilot.pause()
+
+        assert len(view.query(Collapsible)) == 0
+        assert view._current_text == "Model set to 'gpt-4'."
+
+
+@pytest.mark.asyncio
+async def test_add_message_long_system_collapses_but_stays_expanded_by_default():
+    app = _ViewApp()
+    async with app.run_test() as pilot:
+        view = app.query_one(MessageView)
+        long_text = "# Commands\n\n" + "- some line of help text\n" * 30
+        view.add_message("system", long_text)
+        await pilot.pause()
+
+        collapsible = view.query_one(Collapsible)
+        # Unlike tool calls/results/reasoning (collapsed by default), the
+        # user just asked to see this - only the *option* to hide it later
+        # is new.
+        assert collapsible.collapsed is False
+        assert "System" in collapsible.title
+        assert f"{len(long_text):,} char(s)" in collapsible.title
+        # _current_text/_current_role still reflect the actual content, same
+        # as the non-collapsible path (existing tests rely on this).
+        assert view._current_role == "system"
+        assert view._current_text == long_text
+
+
+@pytest.mark.asyncio
+async def test_add_message_long_shell_collapses_with_command_in_title():
+    app = _ViewApp()
+    async with app.run_test() as pilot:
+        view = app.query_one(MessageView)
+        output = "$ ls -la\n" + "line of output\n" * 30
+        view.add_message("shell", output)
+        await pilot.pause()
+
+        collapsible = view.query_one(Collapsible)
+        assert collapsible.collapsed is False
+        assert collapsible.title.startswith("Shell: ls -la —")
+
+
+@pytest.mark.asyncio
+async def test_add_message_long_user_and_assistant_never_collapse():
+    """Primary conversation content - never tucked behind a click, no
+    matter how long. Assistant streaming also depends on self._current
+    staying a plain, directly-mounted Static (see append_to_last/_flush)."""
+    app = _ViewApp()
+    async with app.run_test() as pilot:
+        view = app.query_one(MessageView)
+        long_text = "x" * 1000
+        view.add_message("user", long_text)
+        view.add_message("assistant", long_text)
+        await pilot.pause()
+
+        assert len(view.query(Collapsible)) == 0
+
+
 # --- add_tool_call / _format_tool_call_body ---
 
 

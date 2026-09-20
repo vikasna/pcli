@@ -93,14 +93,21 @@ class ActivityTracker:
 
 def format_subagent_activity(sub: SubagentActivity) -> str:
     """Shared rendering of a SubagentActivity snapshot - used by both the
-    /subagent command (a one-off system message) and SubagentActivityModal
-    (a live view, re-rendered on every activity change), so the two never
-    drift out of sync with each other."""
-    lines = [f"Subagent task: {sub.task}", f"Tool calls so far: {len(sub.call_log)}"]
+    /subagent command (a one-off system message, rendered as Markdown - see
+    message_view.py's _render_message) and SubagentActivityModal (a live
+    view wrapped in Text instead, precisely to sidestep Rich console markup
+    parsing of untrusted tool arguments - see that widget's own docstring).
+    Real Markdown here (blank lines between blocks) so the /subagent
+    rendering doesn't collapse into one run-on paragraph the way plain
+    "\\n"-joined lines would; "N. " tool-call entries were already valid
+    Markdown ordered-list syntax on their own, so those are unchanged."""
+    lines = [f"**Subagent task:** {sub.task}", "", f"**Tool calls so far:** {len(sub.call_log)}"]
     if sub.pending_question is not None:
         question, options = sub.pending_question
-        lines.append(f"\nCurrently waiting on your answer to:\n{question}")
+        lines.append("")
+        lines.append(f"**Currently waiting on your answer to:**\n{question}")
         if options:
+            lines.append("")
             lines.append("Options: " + ", ".join(options))
     if sub.call_log:
         lines.append("")

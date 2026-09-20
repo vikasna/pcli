@@ -22,9 +22,15 @@ _SIMILARITY_THRESHOLD = 0.45
 
 
 def render_todos(todos: list[TodoItem]) -> str:
+    """Real Markdown ("- " bullets) - one caller (the "resuming with
+    existing todos" system message in chat.py) renders this through
+    rich.markdown.Markdown, which needs actual list-item syntax or it
+    collapses multiple "\\n"-joined lines into one run-on paragraph. The
+    other caller (this tool's own ToolResult output) renders it as plain
+    text instead, where "- " reads fine as a literal bullet too."""
     if not todos:
         return "Todo list is empty."
-    lines = [f"{_STATUS_ICONS.get(t.status, '[ ]')} {t.content}" for t in todos]
+    lines = [f"- {_STATUS_ICONS.get(t.status, '[ ]')} {t.content}" for t in todos]
     return "\n".join(lines)
 
 

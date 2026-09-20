@@ -1266,7 +1266,8 @@ class ChatScreen(Screen):
             message_view.add_message("system", "No software discovered yet. Try /toolbox discover <name>.")
             return
         lines = [
-            f"{name} [{entry['source']}] {entry.get('version', '?')} - {entry.get('tool_count', 0)} tool(s)"
+            f"- **{name}** [{entry['source']}] {entry.get('version', '?')} - "
+            f"{entry.get('tool_count', 0)} tool(s)"
             for name, entry in entries.items()
         ]
         message_view.add_message("system", "\n".join(lines))

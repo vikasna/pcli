@@ -46,6 +46,25 @@ _CODE_ARG_BY_TOOL = {
 # tucked behind a click.
 _LARGE_TOOL_CALL_THRESHOLD_CHARS = 500
 
+# Roles whose output can pile up in the transcript and pollute the view -
+# real reported complaint: /help, /memory, /subagent, a long !command all
+# just print permanently with no way to reclaim the space. "user"/
+# "assistant" are never wrapped (primary conversation content — "assistant"
+# also streams into self._current via append_to_last/_flush, which needs a
+# plain Static it can .update() in place). "decision" is deliberately
+# excluded too - see test_chat_screen_decisions.py: a recorded decision is
+# meant to stay always-visible, not tucked behind a click, unlike ordinary
+# system notices/slash-command output.
+_COLLAPSIBLE_MESSAGE_ROLES = frozenset({"system", "shell"})
+
+# Below this, a message in one of the roles above still renders as a plain,
+# permanent line, same as before - short confirmations ("Model set to
+# 'x'.") don't need a collapse affordance. At or above it, it's substantial
+# enough to be worth hiding once read - still expanded by default (the user
+# just asked to see this; only the *option* to collapse it away is new),
+# unlike tool calls/results/reasoning above which default to collapsed.
+_COLLAPSIBLE_MESSAGE_THRESHOLD_CHARS = 300
+
 
 def _format_tool_output(output: str) -> RenderableType:
     """Pretty-prints/syntax-highlights JSON tool output; otherwise renders
@@ -116,6 +135,23 @@ def _format_remaining_args(remaining: dict[str, Any]) -> str:
     return ", ".join(f"{key}={value!r}" for key, value in remaining.items())
 
 
+def _message_title(role: str, text: str) -> str:
+    """Collapsible title for a long system/shell message - mirrors
+    add_tool_result's "{name} — {char count} char(s)" convention. A shell
+    message's first line is "$ <command>" (see _run_shell_command below);
+    surfacing the command itself in the title is more useful than the
+    generic role label alone, same reasoning as showing the tool name for a
+    tool result."""
+    label = _ROLE_LABELS.get(role, role)
+    first_line = text.strip().splitlines()[0] if text.strip() else ""
+    if role == "shell" and first_line.startswith("$ "):
+        preview = first_line[2:]
+        if len(preview) > 60:
+            preview = preview[:57] + "..."
+        return f"{label}: {preview} — {len(text):,} char(s)"
+    return f"{label} — {len(text):,} char(s)"
+
+
 class MessageView(VerticalScroll):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -140,11 +176,21 @@ class MessageView(VerticalScroll):
     def add_message(self, role: str, text: str = "") -> Static:
         was_at_bottom = self.is_vertical_scroll_end
         widget = Static(classes=f"message message-{role}")
-        self.mount(widget)
+        widget.update(self._render_message(role, text))
+        if role in _COLLAPSIBLE_MESSAGE_ROLES and len(text) >= _COLLAPSIBLE_MESSAGE_THRESHOLD_CHARS:
+            self.mount(
+                Collapsible(
+                    widget,
+                    title=_message_title(role, text),
+                    collapsed=False,
+                    classes=f"message-collapsible message-collapsible-{role}",
+                )
+            )
+        else:
+            self.mount(widget)
         self._current = widget
         self._current_role = role
         self._current_text = text
-        widget.update(self._render_message(role, text))
         self._scroll_end_if_at_bottom(was_at_bottom)
         self._last_refresh = time.monotonic()
         return widget

@@ -138,3 +138,34 @@ async def test_record_decision_tool_call_renders_as_decision_not_collapsible(tmp
         message_view = screen.query_one(MessageView)
         assert list(message_view.query(".message-decision"))
         assert list(message_view.query(Collapsible)) == []
+
+
+@pytest.mark.asyncio
+async def test_long_decision_still_never_collapses(tmp_path: Path):
+    """Regression guard: MessageView.add_message now wraps long "system"/
+    "shell" messages in an expanded Collapsible (see test_message_view.py),
+    but "decision" is deliberately excluded from that - a recorded decision
+    must stay always-visible no matter how long, same as the short-content
+    cases above."""
+    screen, _session = _make_screen(tmp_path)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        event = ToolResultEvent(
+            tool_call=ToolCall(
+                id="call_1",
+                function=ToolCallFunction(
+                    name="record_decision",
+                    arguments=json.dumps(
+                        {"decision": "Use httpx", "rationale": "x" * 1000}
+                    ),
+                ),
+            ),
+            output="Decision recorded: Use httpx",
+        )
+        screen._show_decision_notice(event)
+        await pilot.pause()
+
+        message_view = screen.query_one(MessageView)
+        assert list(message_view.query(Collapsible)) == []

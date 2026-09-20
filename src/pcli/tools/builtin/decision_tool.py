@@ -13,9 +13,14 @@ from pcli.tools.base import ToolContext, ToolResult, ToolSpec
 
 
 def render_decisions(decisions: list[Decision]) -> str:
+    """Real Markdown ("- " bullets, not "• ") - the one caller (the
+    "resuming with N recorded decision(s)" system message in chat.py)
+    renders this through rich.markdown.Markdown, which needs actual
+    list-item syntax or it collapses multiple "\\n"-joined lines into one
+    run-on paragraph."""
     if not decisions:
         return "No decisions recorded."
-    return "\n".join(f"• {d.decision}" for d in decisions)
+    return "\n".join(f"- {d.decision}" for d in decisions)
 
 
 async def _record_decision(arguments: dict, ctx: ToolContext) -> ToolResult:
