@@ -685,13 +685,18 @@ needed: at the end of every turn, once the session is saved, if
 `auto_compact_enabled` is on (default) and context usage has reached
 `auto_compact_threshold` (default 80% of the model's context limit),
 `ChatScreen` runs the same summarization `/compact` triggers, reusing the
-"Working..." spinner on the status bar while it does. When it fires, a short
-system notice appears in the transcript (e.g. "Compacted N earlier
-message(s)... archived as artifact_id='art_...'"); the actual summary text
-that replaces the compacted messages is stored as a `role="system"` message
-and, like the leading system prompt, is never rendered into the message
-view. See [`configuration.md`](configuration.md#auto-compaction) for the
-three settings involved.
+"Working..." spinner on the status bar for the whole of `_run_compaction` —
+not just the summarization call, but also the tool-invocation bookkeeping,
+the system notice, the session save, and the memory-extraction pass below,
+so the indicator doesn't drop and then reappear across that gap.
+
+When it fires, a short system notice appears in the transcript (e.g.
+"Compacted N earlier message(s)... archived as artifact_id='art_...'"); the
+actual summary text that replaces the compacted messages is stored as a
+`role="system"` message and, like the leading system prompt, is never
+rendered into the message view. See
+[`configuration.md`](configuration.md#auto-compaction) for the three
+settings involved.
 
 Eligibility is normally based on counting real user-typed turns (`/compact`
 above and `auto_compact_keep_recent_turns`), but that alone can't see any
