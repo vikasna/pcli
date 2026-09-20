@@ -1407,6 +1407,8 @@ class ChatScreen(Screen):
             )
             return
 
+        configured_keep_recent_turns = self._settings.auto_compact_keep_recent_turns
+        tightened_to: int | None = None
         status_bar.busy = True
         try:
             result = await maybe_compact(
@@ -1414,8 +1416,31 @@ class ChatScreen(Screen):
                 gateway_client=self._client,
                 model=self._settings.default_model or self._session.model or None,
                 artifact_store=self._artifact_store,
-                keep_recent_turns=self._settings.auto_compact_keep_recent_turns,
+                keep_recent_turns=configured_keep_recent_turns,
             )
+            if result is None:
+                # The configured recent-turns window can itself be what's
+                # filling context - e.g. several truncation/auto-continue
+                # retries (each its own turn boundary, see compaction.py's
+                # turn_boundaries) concentrated inside the protected window,
+                # with everything older already compacted away by an earlier
+                # pass. Only retry with a smaller window when there's genuine
+                # pressure to free room - a small/fresh session at low usage
+                # should still just report "nothing to compact" rather than
+                # having its only turns eaten unnecessarily.
+                usage = current_context_usage(self._session, limit_table=self._context_limit_table)
+                if usage.fraction >= self._settings.auto_compact_threshold:
+                    for smaller in range(configured_keep_recent_turns - 1, -1, -1):
+                        result = await maybe_compact(
+                            self._session,
+                            gateway_client=self._client,
+                            model=self._settings.default_model or self._session.model or None,
+                            artifact_store=self._artifact_store,
+                            keep_recent_turns=smaller,
+                        )
+                        if result is not None:
+                            tightened_to = smaller
+                            break
         except GatewayError as exc:
             # Previously uncaught here: maybe_compact's one summarization
             # call failing (e.g. a timeout) would crash straight out of this
@@ -1459,10 +1484,16 @@ class ChatScreen(Screen):
             self._settings.default_model or self._session.model, result.usage, source="compaction"
         )
         self._refresh_cost_display(status_bar)
+        tightened_note = (
+            f" (kept only the last {tightened_to} recent turn(s) verbatim instead of the "
+            f"usual {configured_keep_recent_turns} — context was still full at that setting)"
+            if tightened_to is not None
+            else ""
+        )
         message_view.add_message(
             "system",
             f"Compacted {result.messages_compacted} earlier message(s) to reduce context "
-            f"usage (archived as artifact_id='{result.artifact_id}').",
+            f"usage (archived as artifact_id='{result.artifact_id}'){tightened_note}.",
         )
         self._store.save(self._session)
 

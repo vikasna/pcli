@@ -19,7 +19,8 @@ from textual.app import App
 
 from pcli.config.settings import Settings
 from pcli.cost.context import ContextLimitTable
-from pcli.session.models import Message, Session
+from pcli.llm.models import Usage
+from pcli.session.models import Message, Session, TurnCost
 from pcli.session.store import SessionStore
 from pcli.tui.screens.chat import ChatScreen
 from pcli.tui.widgets.message_view import MessageView
@@ -134,6 +135,59 @@ async def test_run_compaction_auto_records_bookkeeping_and_isolates_context_disp
         message_view = screen.query_one(MessageView)
         assert message_view._current_role == "system"
         assert "Compacted 2 earlier message(s)" in message_view._current_text
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_run_compaction_retries_with_a_smaller_window_when_still_full(tmp_path: Path):
+    """Regression coverage for a real reported bug: after an earlier
+    compaction pass, the configured keep_recent_turns window itself can be
+    what's filling context (e.g. several truncation/auto-continue retries,
+    each its own turn boundary, concentrated in the protected recent
+    window) — compaction_cutoff then finds nothing eligible at the
+    configured setting even though the caller is still critically full, and
+    /compact previously just gave up and reported "Nothing to compact yet."
+    _run_compaction must retry with a smaller window rather than stop
+    there, since there's genuine pressure to free room."""
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=_summary_response("Summary of turn 1.")
+    )
+
+    # Exactly 2 real turns with keep_recent_turns=2: compaction_cutoff finds
+    # nothing at the configured setting (len(boundaries) == keep_recent_turns,
+    # and the round-based fallback needs far more messages than this to
+    # engage) — the scenario this fix targets.
+    screen, _store, session = _make_screen(tmp_path, keep_recent_turns=2)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert screen._client is not None
+
+        # current_context_usage (what the retry gate actually checks) reads
+        # from session.cost.turns, not the status bar's own display fields
+        # (those are cosmetic and unrelated) — force it critically full by
+        # recording a main-conversation usage entry directly.
+        screen._context_limit_table = ContextLimitTable(entries={}, default=1)
+        session.cost.turns.append(
+            TurnCost(
+                turn_index=0,
+                model="fake-model",
+                usage=Usage(total_tokens=999),
+                cost_usd=0.0,
+                source="main",
+            )
+        )
+
+        await screen._run_compaction("auto")
+        await pilot.pause()
+
+        # Retried down to keep_recent_turns=1: turn 1 compacted, turn 2 kept.
+        assert len(session.messages) == 4  # system, summary, turn2_user, turn2_assistant
+        assert session.messages[2].content == "turn 2 user"
+
+        message_view = screen.query_one(MessageView)
+        assert "Compacted 2 earlier message(s)" in message_view._current_text
+        assert "kept only the last 1 recent turn(s)" in message_view._current_text
 
 
 @pytest.mark.asyncio
