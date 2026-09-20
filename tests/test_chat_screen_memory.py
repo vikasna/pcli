@@ -18,6 +18,7 @@ from pcli.session.models import Message, Session
 from pcli.session.store import SessionStore
 from pcli.tui.screens.chat import ChatScreen
 from pcli.tui.widgets.message_view import MessageView
+from pcli.tui.widgets.status_bar import StatusBar
 
 
 class _HostApp(App):
@@ -247,6 +248,71 @@ async def test_compaction_triggers_memory_extraction_and_records_its_cost(tmp_pa
         memory_turns = [t for t in session.cost.turns if t.source == "memory"]
         assert len(memory_turns) == 1
         assert memory_turns[0].usage.total_tokens == 35
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_busy_indicator_stays_lit_through_memory_extraction(tmp_path: Path):
+    """Regression coverage for a real reported bug: status_bar.busy used to
+    flip back to False the instant maybe_compact's own summarization call
+    finished, before the (also real, gateway-calling) memory-extraction
+    pass that follows a successful compaction - "Working..." would
+    disappear from the status bar, then reappear once extraction quietly
+    finished, looking exactly like pcli had stalled in between."""
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    session = store.new_session(model="fake-model", gateway_base_url="http://fake-gateway.test/v1")
+    session.messages = [
+        Message(role="system", content="system prompt"),
+        Message(role="user", content="turn 1 user"),
+        Message(role="assistant", content="turn 1 assistant"),
+        Message(role="user", content="turn 2 user"),
+        Message(role="assistant", content="turn 2 assistant"),
+    ]
+    settings = Settings(
+        gateway_base_url="http://fake-gateway.test/v1",
+        gateway_api_key="test-key",
+        default_model="fake-model",
+        sandbox_backend="subprocess",
+        auto_compact_keep_recent_turns=1,
+    )
+    screen = ChatScreen(settings, session=session, store=store)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        status_bar = screen.query_one(StatusBar)
+        observed_busy_states: list[bool] = []
+        responses = iter(
+            [
+                _text_response(
+                    "Summary of turn 1.",
+                    usage={"prompt_tokens": 50, "completion_tokens": 20, "total_tokens": 70},
+                ),
+                _remember_call_response("call_1", "Works as a backend Python developer", "profile"),
+                _text_response(
+                    "Done reviewing.",
+                    usage={"prompt_tokens": 30, "completion_tokens": 5, "total_tokens": 35},
+                ),
+            ]
+        )
+
+        def _record_busy_and_respond(request):
+            # Captured *before* each gateway call resolves - the compaction
+            # summarization call is #1, the other two are memory
+            # extraction's own nested AgentLoop turn - all three must see
+            # status_bar.busy already True.
+            observed_busy_states.append(status_bar.busy)
+            return next(responses)
+
+        respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+            side_effect=_record_busy_and_respond
+        )
+
+        assert status_bar.busy is False
+        await screen._run_compaction("auto")
+        await pilot.pause()
+
+        assert observed_busy_states == [True, True, True]
+        assert status_bar.busy is False  # back off once everything, including extraction, is done
 
 
 @pytest.mark.asyncio

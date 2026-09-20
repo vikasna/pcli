@@ -1418,94 +1418,111 @@ class ChatScreen(Screen):
         tightened_to: int | None = None
         status_bar.busy = True
         try:
-            result = await maybe_compact(
-                self._session,
-                gateway_client=self._client,
-                model=self._settings.default_model or self._session.model or None,
-                artifact_store=self._artifact_store,
-                keep_recent_turns=configured_keep_recent_turns,
-            )
+            # Regression guard: this used to only cover the maybe_compact
+            # call(s) below, not the bookkeeping/memory-extraction that
+            # follows a successful one - "Working..." would disappear the
+            # instant summarization finished, then reappear once memory
+            # extraction's own (invisible) gateway call finally completed,
+            # looking exactly like pcli had silently stalled in between.
+            # Covering the whole function in one busy=True/False window
+            # fixes that: the indicator now stays lit for everything this
+            # method actually does, not just its first step.
+            try:
+                result = await maybe_compact(
+                    self._session,
+                    gateway_client=self._client,
+                    model=self._settings.default_model or self._session.model or None,
+                    artifact_store=self._artifact_store,
+                    keep_recent_turns=configured_keep_recent_turns,
+                )
+                if result is None:
+                    # The configured recent-turns window can itself be
+                    # what's filling context - e.g. several truncation/
+                    # auto-continue retries (each its own turn boundary,
+                    # see compaction.py's turn_boundaries) concentrated
+                    # inside the protected window, with everything older
+                    # already compacted away by an earlier pass. Only retry
+                    # with a smaller window when there's genuine pressure
+                    # to free room - a small/fresh session at low usage
+                    # should still just report "nothing to compact" rather
+                    # than having its only turns eaten unnecessarily.
+                    usage = current_context_usage(
+                        self._session, limit_table=self._context_limit_table
+                    )
+                    if usage.fraction >= self._settings.auto_compact_threshold:
+                        for smaller in range(configured_keep_recent_turns - 1, -1, -1):
+                            result = await maybe_compact(
+                                self._session,
+                                gateway_client=self._client,
+                                model=self._settings.default_model or self._session.model or None,
+                                artifact_store=self._artifact_store,
+                                keep_recent_turns=smaller,
+                            )
+                            if result is not None:
+                                tightened_to = smaller
+                                break
+            except GatewayError as exc:
+                # Previously uncaught here: maybe_compact's one
+                # summarization call failing (e.g. a timeout) would crash
+                # straight out of this worker with nothing shown to the
+                # user - the turn that triggered auto-compaction had
+                # already completed and saved successfully by this point,
+                # so this is a notice, not a lost turn, but it still needs
+                # to be visible (context usage just silently won't have
+                # shrunk).
+                logger.exception("Gateway error during compaction: %s", exc.message)
+                message_view.add_message("system", f"Compaction failed: {exc.message}")
+                return
+
             if result is None:
-                # The configured recent-turns window can itself be what's
-                # filling context - e.g. several truncation/auto-continue
-                # retries (each its own turn boundary, see compaction.py's
-                # turn_boundaries) concentrated inside the protected window,
-                # with everything older already compacted away by an earlier
-                # pass. Only retry with a smaller window when there's genuine
-                # pressure to free room - a small/fresh session at low usage
-                # should still just report "nothing to compact" rather than
-                # having its only turns eaten unnecessarily.
-                usage = current_context_usage(self._session, limit_table=self._context_limit_table)
-                if usage.fraction >= self._settings.auto_compact_threshold:
-                    for smaller in range(configured_keep_recent_turns - 1, -1, -1):
-                        result = await maybe_compact(
-                            self._session,
-                            gateway_client=self._client,
-                            model=self._settings.default_model or self._session.model or None,
-                            artifact_store=self._artifact_store,
-                            keep_recent_turns=smaller,
-                        )
-                        if result is not None:
-                            tightened_to = smaller
-                            break
-        except GatewayError as exc:
-            # Previously uncaught here: maybe_compact's one summarization
-            # call failing (e.g. a timeout) would crash straight out of this
-            # worker with nothing shown to the user - the turn that
-            # triggered auto-compaction had already completed and saved
-            # successfully by this point, so this is a notice, not a lost
-            # turn, but it still needs to be visible (context usage just
-            # silently won't have shrunk).
-            logger.exception("Gateway error during compaction: %s", exc.message)
-            message_view.add_message("system", f"Compaction failed: {exc.message}")
-            return
+                if reason == "manual":
+                    message_view.add_message("system", "Nothing to compact yet.")
+                return
+
+            # Reuses ToolInvocation.full_result_ref purely so export_session
+            # (which only bundles blobs it finds referenced there) carries
+            # this artifact along too — no real tool call happened.
+            self._session.tool_invocations.append(
+                ToolInvocation(
+                    tool_name="_compaction",
+                    arguments={},
+                    status="ok",
+                    result_summary=f"Compacted {result.messages_compacted} message(s).",
+                    full_result_ref=SessionArtifactStore.blob_name_for(result.artifact_id),
+                )
+            )
+            # Real spend, so it counts toward cost — but tagged
+            # source="compaction" so current_context_usage/
+            # compute_max_response_tokens (which look for the last *main*-
+            # conversation entry, not just the literal last one) aren't
+            # misled into thinking the main conversation is however big
+            # this one summarization call's own prompt happened to be. Also
+            # deliberately not fed into _refresh_context_display, for the
+            # same reason subagent usage isn't - the status bar
+            # self-corrects on the next real turn's usage report.
+            self._cost_tracker.record_turn(
+                self._settings.default_model or self._session.model,
+                result.usage,
+                source="compaction",
+            )
+            self._refresh_cost_display(status_bar)
+            tightened_note = (
+                f" (kept only the last {tightened_to} recent turn(s) verbatim instead of the "
+                f"usual {configured_keep_recent_turns} — context was still full at that setting)"
+                if tightened_to is not None
+                else ""
+            )
+            message_view.add_message(
+                "system",
+                f"Compacted {result.messages_compacted} earlier message(s) to reduce context "
+                f"usage (archived as artifact_id='{result.artifact_id}'){tightened_note}.",
+            )
+            self._store.save(self._session)
+
+            if self._settings.memory_enabled:
+                await self._extract_memory_from(result.artifact_id, status_bar)
         finally:
             status_bar.busy = False
-
-        if result is None:
-            if reason == "manual":
-                message_view.add_message("system", "Nothing to compact yet.")
-            return
-
-        # Reuses ToolInvocation.full_result_ref purely so export_session
-        # (which only bundles blobs it finds referenced there) carries this
-        # artifact along too — no real tool call happened.
-        self._session.tool_invocations.append(
-            ToolInvocation(
-                tool_name="_compaction",
-                arguments={},
-                status="ok",
-                result_summary=f"Compacted {result.messages_compacted} message(s).",
-                full_result_ref=SessionArtifactStore.blob_name_for(result.artifact_id),
-            )
-        )
-        # Real spend, so it counts toward cost — but tagged source="compaction"
-        # so current_context_usage/compute_max_response_tokens (which look for
-        # the last *main*-conversation entry, not just the literal last one)
-        # aren't misled into thinking the main conversation is however big
-        # this one summarization call's own prompt happened to be. Also
-        # deliberately not fed into _refresh_context_display, for the same
-        # reason subagent usage isn't - the status bar self-corrects on the
-        # next real turn's usage report.
-        self._cost_tracker.record_turn(
-            self._settings.default_model or self._session.model, result.usage, source="compaction"
-        )
-        self._refresh_cost_display(status_bar)
-        tightened_note = (
-            f" (kept only the last {tightened_to} recent turn(s) verbatim instead of the "
-            f"usual {configured_keep_recent_turns} — context was still full at that setting)"
-            if tightened_to is not None
-            else ""
-        )
-        message_view.add_message(
-            "system",
-            f"Compacted {result.messages_compacted} earlier message(s) to reduce context "
-            f"usage (archived as artifact_id='{result.artifact_id}'){tightened_note}.",
-        )
-        self._store.save(self._session)
-
-        if self._settings.memory_enabled:
-            await self._extract_memory_from(result.artifact_id, status_bar)
 
     async def _extract_memory_from(self, artifact_id: str, status_bar: StatusBar) -> None:
         """Reviews the exact transcript maybe_compact just archived for
