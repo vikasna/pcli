@@ -52,6 +52,47 @@ in a pruned tool result's placeholder (see [Artifact
 archiving](#artifact-archiving) below and
 [`tui-guide.md`](tui-guide.md#tool-result-pruning)).
 
+## describe_tool
+
+Lets the model ask for full detail about any tool in its current tool set,
+instead of guessing at arguments from the one-line summary in the `tools=[...]`
+payload sent to the model. Motivated by the same `edit_file` multi-mode
+confusion its insert/delete modes are prone to (see [`edit_file`](#edit_file)
+above) — the system prompt's `# Tool documentation` section
+(`src/pcli/agent/prompt.py`) tells the model to call this before an
+unfamiliar or multi-mode tool call, and points at
+`describe_tool("edit_file")` specifically from the `# Editing files` section.
+
+Returns, for the named tool: its complete description, its parameter JSON
+schema (pretty-printed), whether it needs permission (plus its
+`risk_description` when it does), whether it's available in
+[plan mode](tui-guide.md#plan-mode) (`plan_mode_safe`), and a numbered list of
+hand-curated example calls, each with a one-line explanation.
+
+- **Parameters:** `name` (string, required — the exact tool name, e.g.
+  `"edit_file"`).
+- **Permission:** not required (`needs_permission=False`) — read-only.
+  `plan_mode_safe=True`, so it stays available while
+  [plan mode](tui-guide.md#plan-mode) is active.
+- **Examples are hand-curated, not derived from the JSON schema**
+  (`_EXAMPLES` in `src/pcli/tools/builtin/describe_tool.py`) — a schema shows
+  shape, not intent, and can't convey something like "pick exactly one of
+  these mutually-exclusive parameter groups." Not every tool has entries: a
+  simple, single-purpose tool (e.g. `read_file`) gets one anyway here for
+  illustration, but a tool with no curated examples just gets "(No curated
+  examples for this tool yet - its description and parameter schema above
+  should be enough; it's a simple, single-purpose call.)" instead of an empty
+  section. `edit_file` gets five separate examples, one per mode (replace,
+  replace with `replace_all`, insert at a line, insert at the very start,
+  delete a range) — see [`edit_file`](#edit_file) above. A test
+  (`tests/test_describe_tool.py`) enforces that every builtin tool except
+  `describe_tool` itself has at least one curated example, so this stays true
+  as new tools get added.
+- **Unknown tool name** gets a clean error, not a crash: "No tool named
+  '`<name>`' in your current tool set.\n[pcli] Suggestion: check the exact
+  spelling — available tools: `<comma-separated list of every registered tool
+  name>`" (`src/pcli/tools/builtin/describe_tool.py`).
+
 ## read_file
 
 Reads a text file. Resolves relative paths against the working directory,
@@ -65,6 +106,9 @@ the file is larger, and decodes with `errors="replace"`.
 - **File-not-found** gets an appended suggestion to try `list_dir` on the
   parent directory or `glob_search` if the exact path isn't certain
   (`src/pcli/tools/builtin/fs_tools.py:23`).
+- **Not-a-file** (the path exists but is a directory) gets: "Not a file:
+  `<path>` is a directory.\n[pcli] Suggestion: use `list_dir` to see what's
+  inside it instead." (`src/pcli/tools/builtin/fs_tools.py`).
 
 ## write_file
 
@@ -131,8 +175,14 @@ by name.
 - **Parameters:** `path` (string, optional, default: working directory).
 - **Permission:** not required.
 - **Guardrail:** `path` checked.
-- **Not-a-directory** gets an appended suggestion to `list_dir` the parent
-  to confirm the correct name/path (`src/pcli/tools/builtin/fs_tools.py:138`).
+- **Not-a-directory** gets one of two distinct messages via the shared
+  `not_a_directory_result()` helper (`src/pcli/tools/builtin/fs_tools.py`),
+  depending on why the path can't be listed: if it doesn't exist at all,
+  "`<path>` does not exist.\n[pcli] Suggestion: check the path — `list_dir`
+  its parent directory to see what's actually there, or `glob_search` for the
+  name if you're not sure exactly where it is."; if it exists but is a file,
+  "`<path>` is a file, not a directory.\n[pcli] Suggestion: use `read_file`
+  to read it directly instead."
 
 ## glob_search
 
@@ -144,8 +194,9 @@ Returns up to 500 matches (sorted, relative to the base), with a
   base directory).
 - **Permission:** not required.
 - **Guardrail:** `path` checked.
-- **Not-a-directory** gets the same `list_dir`-the-parent suggestion as
-  `list_dir` above (`src/pcli/tools/builtin/fs_tools.py:167`).
+- **Not-a-directory** gets the same two distinct messages as `list_dir`
+  above, via the same shared `not_a_directory_result()` helper
+  (`src/pcli/tools/builtin/fs_tools.py`).
 
 ## grep
 
@@ -162,8 +213,9 @@ implementation, not a wrapper around system `grep`/`ripgrep`). Scans up to
 - **Guardrail:** `path` checked.
 - **Invalid regex** gets an appended suggestion to escape the special
   character(s) or fall back to a plain substring search if regex features
-  aren't actually needed; **not-a-directory** gets the same `list_dir`-the-
-  parent suggestion as above (`src/pcli/tools/builtin/grep_tool.py:28`).
+  aren't actually needed; **not-a-directory** gets the same two distinct
+  messages as `list_dir` above, via the shared `not_a_directory_result()`
+  helper imported from `fs_tools.py` (`src/pcli/tools/builtin/grep_tool.py:28`).
 
 ## download_file
 
