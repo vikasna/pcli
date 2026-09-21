@@ -18,6 +18,26 @@ def test_prompt_mentions_diff_files_and_apply_patch():
     assert "apply_patch" in section
 
 
+def test_prompt_explains_edit_files_three_modes_and_warns_against_faking_an_insert():
+    """Regression coverage for a real reported confusion: some models pass
+    the same anchor text as both old_string and new_string when they
+    actually want to insert new content, since the tool/prompt never
+    described what old_string means or how to insert without replacing.
+    edit_file itself now rejects old_string == new_string outright (see
+    test_builtin_tools.py), but the prompt should also steer the model
+    toward the right tool call in the first place, not just react to the
+    mistake after it's made."""
+    section_start = BASE_SYSTEM_PROMPT.index("# Editing files")
+    section_end = BASE_SYSTEM_PROMPT.index("# Executing actions with care")
+    section = BASE_SYSTEM_PROMPT[section_start:section_end]
+    assert "verbatim" in section  # old_string must reflect real existing content
+    assert "insert_after_line" in section
+    assert "delete_start_line" in section
+    assert "delete_end_line" in section
+    assert "replace_all" in section
+    assert "identical" in section  # the old_string == new_string footgun, named explicitly
+
+
 def test_prompt_mentions_background_shell_execution():
     assert "run_shell_background" in BASE_SYSTEM_PROMPT
     assert "read_background_output" in BASE_SYSTEM_PROMPT

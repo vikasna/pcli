@@ -103,6 +103,198 @@ async def test_edit_file_ambiguous_match_errors_without_writing(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_edit_file_replace_all_replaces_every_occurrence(tmp_path: Path):
+    (tmp_path / "note.txt").write_text("dup\ndup\ndup\n")
+    ctx = _ctx(tmp_path)
+    result = await EDIT_FILE.handler(
+        {"path": "note.txt", "old_string": "dup", "new_string": "x", "replace_all": True}, ctx
+    )
+    assert result.is_error is False
+    assert "3 replacement(s)" in result.output
+    assert (tmp_path / "note.txt").read_text() == "x\nx\nx\n"
+
+
+@pytest.mark.asyncio
+async def test_edit_file_replace_all_still_errors_when_old_string_is_absent(tmp_path: Path):
+    (tmp_path / "note.txt").write_text("hello\n")
+    ctx = _ctx(tmp_path)
+    result = await EDIT_FILE.handler(
+        {"path": "note.txt", "old_string": "nope", "new_string": "x", "replace_all": True}, ctx
+    )
+    assert result.is_error is True
+    assert "not found" in result.output
+
+
+@pytest.mark.asyncio
+async def test_edit_file_rejects_identical_old_and_new_string(tmp_path: Path):
+    """Regression coverage for a real reported confusion: some models pass
+    the same anchor text as both old_string and new_string, expecting the
+    tool to somehow insert around it - that's a silent no-op with the old
+    plain content.replace() behavior (replacing X with X changes nothing),
+    which is exactly the confusing "it said success but nothing changed"
+    failure mode reported. Now rejected outright with a pointer to
+    insert_after_line, the actual way to insert without replacing."""
+    (tmp_path / "note.txt").write_text("anchor line\nother line\n")
+    ctx = _ctx(tmp_path)
+    result = await EDIT_FILE.handler(
+        {"path": "note.txt", "old_string": "anchor line", "new_string": "anchor line"}, ctx
+    )
+    assert result.is_error is True
+    assert "identical" in result.output
+    assert "insert_after_line" in result.output
+    assert (tmp_path / "note.txt").read_text() == "anchor line\nother line\n"  # untouched
+
+
+@pytest.mark.asyncio
+async def test_edit_file_insert_after_line_inserts_between_existing_lines(tmp_path: Path):
+    (tmp_path / "note.txt").write_text("line1\nline2\nline3\n")
+    ctx = _ctx(tmp_path)
+    result = await EDIT_FILE.handler(
+        {"path": "note.txt", "insert_after_line": 1, "new_string": "inserted"}, ctx
+    )
+    assert result.is_error is False
+    assert "line 1" in result.output
+    assert (tmp_path / "note.txt").read_text() == "line1\ninserted\nline2\nline3\n"
+
+
+@pytest.mark.asyncio
+async def test_edit_file_insert_after_line_zero_inserts_at_the_start(tmp_path: Path):
+    (tmp_path / "note.txt").write_text("line1\nline2\n")
+    ctx = _ctx(tmp_path)
+    result = await EDIT_FILE.handler(
+        {"path": "note.txt", "insert_after_line": 0, "new_string": "first"}, ctx
+    )
+    assert result.is_error is False
+    assert "start of the file" in result.output
+    assert (tmp_path / "note.txt").read_text() == "first\nline1\nline2\n"
+
+
+@pytest.mark.asyncio
+async def test_edit_file_insert_after_line_at_the_end(tmp_path: Path):
+    (tmp_path / "note.txt").write_text("line1\nline2\n")
+    ctx = _ctx(tmp_path)
+    result = await EDIT_FILE.handler(
+        {"path": "note.txt", "insert_after_line": 2, "new_string": "last"}, ctx
+    )
+    assert result.is_error is False
+    assert (tmp_path / "note.txt").read_text() == "line1\nline2\nlast\n"
+
+
+@pytest.mark.asyncio
+async def test_edit_file_insert_after_line_handles_a_missing_trailing_newline(tmp_path: Path):
+    (tmp_path / "note.txt").write_text("line1\nline2")  # no trailing newline
+    ctx = _ctx(tmp_path)
+    result = await EDIT_FILE.handler(
+        {"path": "note.txt", "insert_after_line": 2, "new_string": "last"}, ctx
+    )
+    assert result.is_error is False
+    assert (tmp_path / "note.txt").read_text() == "line1\nline2\nlast\n"
+
+
+@pytest.mark.asyncio
+async def test_edit_file_insert_after_line_multiline_new_string(tmp_path: Path):
+    (tmp_path / "note.txt").write_text("line1\nline4\n")
+    ctx = _ctx(tmp_path)
+    result = await EDIT_FILE.handler(
+        {"path": "note.txt", "insert_after_line": 1, "new_string": "line2\nline3"}, ctx
+    )
+    assert result.is_error is False
+    assert (tmp_path / "note.txt").read_text() == "line1\nline2\nline3\nline4\n"
+
+
+@pytest.mark.asyncio
+async def test_edit_file_insert_after_line_requires_new_string(tmp_path: Path):
+    (tmp_path / "note.txt").write_text("line1\n")
+    ctx = _ctx(tmp_path)
+    result = await EDIT_FILE.handler({"path": "note.txt", "insert_after_line": 0}, ctx)
+    assert result.is_error is True
+    assert "new_string" in result.output
+
+
+@pytest.mark.asyncio
+async def test_edit_file_insert_after_line_out_of_range_errors(tmp_path: Path):
+    (tmp_path / "note.txt").write_text("line1\nline2\n")
+    ctx = _ctx(tmp_path)
+    result = await EDIT_FILE.handler(
+        {"path": "note.txt", "insert_after_line": 5, "new_string": "x"}, ctx
+    )
+    assert result.is_error is True
+    assert "insert_after_line" in result.output
+    assert (tmp_path / "note.txt").read_text() == "line1\nline2\n"  # untouched
+
+
+@pytest.mark.asyncio
+async def test_edit_file_delete_lines_removes_the_inclusive_range(tmp_path: Path):
+    (tmp_path / "note.txt").write_text("line1\nline2\nline3\nline4\n")
+    ctx = _ctx(tmp_path)
+    result = await EDIT_FILE.handler(
+        {"path": "note.txt", "delete_start_line": 2, "delete_end_line": 3}, ctx
+    )
+    assert result.is_error is False
+    assert "2 line(s)" in result.output
+    assert (tmp_path / "note.txt").read_text() == "line1\nline4\n"
+
+
+@pytest.mark.asyncio
+async def test_edit_file_delete_a_single_line(tmp_path: Path):
+    (tmp_path / "note.txt").write_text("line1\nline2\nline3\n")
+    ctx = _ctx(tmp_path)
+    result = await EDIT_FILE.handler(
+        {"path": "note.txt", "delete_start_line": 2, "delete_end_line": 2}, ctx
+    )
+    assert result.is_error is False
+    assert (tmp_path / "note.txt").read_text() == "line1\nline3\n"
+
+
+@pytest.mark.asyncio
+async def test_edit_file_delete_lines_requires_both_bounds(tmp_path: Path):
+    (tmp_path / "note.txt").write_text("line1\nline2\n")
+    ctx = _ctx(tmp_path)
+    result = await EDIT_FILE.handler({"path": "note.txt", "delete_start_line": 1}, ctx)
+    assert result.is_error is True
+    assert "delete_end_line" in result.output
+
+
+@pytest.mark.asyncio
+async def test_edit_file_delete_lines_invalid_range_errors(tmp_path: Path):
+    (tmp_path / "note.txt").write_text("line1\nline2\n")
+    ctx = _ctx(tmp_path)
+    result = await EDIT_FILE.handler(
+        {"path": "note.txt", "delete_start_line": 3, "delete_end_line": 5}, ctx
+    )
+    assert result.is_error is True
+    assert "Invalid line range" in result.output
+    assert (tmp_path / "note.txt").read_text() == "line1\nline2\n"  # untouched
+
+
+@pytest.mark.asyncio
+async def test_edit_file_requires_exactly_one_editing_mode(tmp_path: Path):
+    (tmp_path / "note.txt").write_text("line1\n")
+    ctx = _ctx(tmp_path)
+    result = await EDIT_FILE.handler({"path": "note.txt"}, ctx)
+    assert result.is_error is True
+    assert "exactly one editing mode" in result.output
+
+
+@pytest.mark.asyncio
+async def test_edit_file_rejects_mixed_editing_modes(tmp_path: Path):
+    (tmp_path / "note.txt").write_text("line1\nline2\n")
+    ctx = _ctx(tmp_path)
+    result = await EDIT_FILE.handler(
+        {
+            "path": "note.txt",
+            "old_string": "line1",
+            "new_string": "x",
+            "insert_after_line": 1,
+        },
+        ctx,
+    )
+    assert result.is_error is True
+    assert "exactly one editing mode" in result.output
+    assert (tmp_path / "note.txt").read_text() == "line1\nline2\n"  # untouched
+
+
+@pytest.mark.asyncio
 async def test_list_dir(tmp_path: Path):
     (tmp_path / "a.txt").write_text("x")
     (tmp_path / "sub").mkdir()

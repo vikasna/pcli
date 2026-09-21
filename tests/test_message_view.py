@@ -215,6 +215,22 @@ def test_format_tool_call_body_shows_both_old_and_new_string_for_edit_file():
     assert char_count == len("def bar():\n    pass") + len("def bar():\n    return 1")
 
 
+def test_format_tool_call_body_highlights_edit_file_insert_mode_new_string():
+    """Insert mode (insert_after_line + new_string, no old_string) falls
+    through to the generic _CODE_ARG_BY_TOOL path rather than the
+    dedicated old_string/new_string branch above - real newlines/syntax
+    highlighting, not squashed into a pretty-JSON string blob."""
+    renderable, char_count = _format_tool_call_body(
+        "edit_file",
+        {"path": "bar.py", "insert_after_line": 3, "new_string": "def new_func():\n    pass"},
+    )
+    syntax_parts = [r for r in renderable.renderables if isinstance(r, Syntax)]
+    assert len(syntax_parts) == 1
+    assert syntax_parts[0].code == "def new_func():\n    pass"
+    assert syntax_parts[0].lexer.name.lower() == "python"
+    assert char_count == len("def new_func():\n    pass")
+
+
 def test_format_tool_call_body_falls_back_to_pretty_json_for_unknown_tools():
     renderable, char_count = _format_tool_call_body("grep", {"pattern": "foo", "path": "."})
     assert isinstance(renderable, Syntax)

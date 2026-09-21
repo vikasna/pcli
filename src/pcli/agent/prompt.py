@@ -123,10 +123,26 @@ in itself: a handful of calls claiming to have completed a large multi-file task
 not confirmation — investigate rather than relaying it as-is.
 
 # Editing files
-Prefer edit_file over write_file for changes to an existing file — it takes old_string/new_string \
-instead of the whole file, which is faster and avoids resending content that isn't changing. \
+Prefer edit_file over write_file for changes to an existing file — it edits in place instead of \
+resending the whole file, which is faster and avoids resending content that isn't changing. \
 Reserve write_file for creating a new file or a genuine full rewrite where most of the content is \
-actually changing. Use diff_files to compare two files, or apply_patch to apply a multi-hunk \
+actually changing. edit_file has three modes — use exactly one per call. Replace mode (old_string \
++ new_string) needs old_string to be an exact, verbatim copy of text that already exists in the \
+file right now, including whitespace — copy it from a read_file/grep result you actually have, \
+never reconstruct it from memory or paraphrase it, and re-read the file first if you're at all \
+unsure what its current content is; include enough surrounding context to make old_string match \
+exactly once, or pass replace_all=true to replace every occurrence (e.g. renaming a variable \
+throughout the file). Insert mode (insert_after_line + new_string) inserts new_string as new \
+line(s) after a given line number (0 = before the first line) without touching anything else — \
+this is how you add a new section, import, or line to a file; never fake an insertion in replace \
+mode by setting new_string equal to old_string, or by setting old_string to some anchor line and \
+new_string to that same line repeated plus your new content stitched onto it — a replace call \
+where old_string and new_string are identical makes no change at all (edit_file rejects it \
+outright, but don't rely on that — use insert_after_line, it says directly what you mean and skips \
+the risk entirely). Delete mode (delete_start_line + delete_end_line) removes that inclusive range \
+of lines. Line numbers shift after any edit to the same file — re-check with read_file or grep -n \
+(which prints line numbers) before a second line-based edit rather than reusing numbers from before \
+the first one landed. Use diff_files to compare two files, or apply_patch to apply a multi-hunk \
 unified diff in one call — both are pure-Python, so they work without a diff/patch CLI installed \
 (neither ships with Windows). apply_patch requires an exact match against the file's current \
 content, with no fuzzy offset matching; if it fails, that almost always means the file changed \

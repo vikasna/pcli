@@ -30,13 +30,18 @@ _MIN_REFRESH_INTERVAL_S = 1 / 20
 
 # Tool name -> the argument holding its "payload" (real, unescaped multi-line
 # text worth syntax-highlighting on its own) rather than a short scalar like
-# a path. edit_file is handled separately since it has two such arguments
-# (old_string/new_string). Anything not listed here just gets its whole
+# a path. edit_file's replace mode (old_string+new_string) is handled
+# separately below since it has two such arguments; this same entry also
+# covers edit_file's insert mode (insert_after_line+new_string has no
+# old_string, so it falls through to here) - delete mode (no big text
+# payload at all) falls further through to the generic pretty-JSON path,
+# which is fine for it. Anything not listed here just gets its whole
 # arguments dict pretty-printed as indented JSON instead.
 _CODE_ARG_BY_TOOL = {
     "write_file": "content",
     "run_shell": "command",
     "run_shell_background": "command",
+    "edit_file": "new_string",
 }
 
 # A tool call rendered larger than this (in characters of its formatted body)
