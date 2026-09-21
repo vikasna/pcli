@@ -59,6 +59,19 @@ async def test_read_file_not_found(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_read_file_on_a_directory_suggests_list_dir(tmp_path: Path):
+    """Regression coverage: this case previously had no suggestion at all -
+    the mirror image of list_dir/glob_search/grep being pointed at
+    read_file when given a file instead of a directory."""
+    (tmp_path / "subdir").mkdir()
+    ctx = _ctx(tmp_path)
+    result = await READ_FILE.handler({"path": "subdir"}, ctx)
+    assert result.is_error is True
+    assert "is a directory" in result.output
+    assert "[pcli] Suggestion: use list_dir" in result.output
+
+
+@pytest.mark.asyncio
 async def test_edit_file_replaces_unique_match(tmp_path: Path):
     (tmp_path / "note.txt").write_text("hello world\ngoodbye world\n")
     ctx = _ctx(tmp_path)
@@ -305,13 +318,23 @@ async def test_list_dir(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_list_dir_not_a_directory_suggests_checking_parent(tmp_path: Path):
+async def test_list_dir_path_is_a_file_suggests_read_file(tmp_path: Path):
     (tmp_path / "a.txt").write_text("x")
     ctx = _ctx(tmp_path)
     result = await LIST_DIR.handler({"path": "a.txt"}, ctx)
     assert result.is_error is True
-    assert "[pcli] Suggestion:" in result.output
-    assert "list_dir" in result.output
+    assert "is a file, not a directory" in result.output
+    assert "[pcli] Suggestion: use read_file" in result.output
+
+
+@pytest.mark.asyncio
+async def test_list_dir_path_does_not_exist_suggests_locating_it(tmp_path: Path):
+    ctx = _ctx(tmp_path)
+    result = await LIST_DIR.handler({"path": "nope"}, ctx)
+    assert result.is_error is True
+    assert "does not exist" in result.output
+    assert "list_dir its parent directory" in result.output
+    assert "glob_search for the name" in result.output
 
 
 @pytest.mark.asyncio
@@ -325,13 +348,23 @@ async def test_glob_search(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_glob_search_not_a_directory_suggests_checking_parent(tmp_path: Path):
+async def test_glob_search_base_path_is_a_file_suggests_read_file(tmp_path: Path):
     (tmp_path / "a.txt").write_text("x")
     ctx = _ctx(tmp_path)
     result = await GLOB_SEARCH.handler({"pattern": "*.py", "path": "a.txt"}, ctx)
     assert result.is_error is True
-    assert "[pcli] Suggestion:" in result.output
-    assert "list_dir" in result.output
+    assert "is a file, not a directory" in result.output
+    assert "[pcli] Suggestion: use read_file" in result.output
+
+
+@pytest.mark.asyncio
+async def test_glob_search_base_path_does_not_exist_suggests_locating_it(tmp_path: Path):
+    ctx = _ctx(tmp_path)
+    result = await GLOB_SEARCH.handler({"pattern": "*.py", "path": "nope"}, ctx)
+    assert result.is_error is True
+    assert "does not exist" in result.output
+    assert "list_dir its parent directory" in result.output
+    assert "glob_search for the name" in result.output
 
 
 @pytest.mark.asyncio
@@ -354,13 +387,22 @@ async def test_grep_invalid_regex(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_grep_not_a_directory_suggests_list_dir(tmp_path: Path):
+async def test_grep_base_path_is_a_file_suggests_read_file(tmp_path: Path):
     (tmp_path / "file.txt").write_text("x")
     ctx = _ctx(tmp_path)
     result = await GREP.handler({"pattern": "x", "path": "file.txt"}, ctx)
     assert result.is_error is True
-    assert "[pcli] Suggestion:" in result.output
-    assert "list_dir" in result.output
+    assert "is a file, not a directory" in result.output
+    assert "[pcli] Suggestion: use read_file" in result.output
+
+
+@pytest.mark.asyncio
+async def test_grep_base_path_does_not_exist_suggests_locating_it(tmp_path: Path):
+    ctx = _ctx(tmp_path)
+    result = await GREP.handler({"pattern": "x", "path": "nope"}, ctx)
+    assert result.is_error is True
+    assert "does not exist" in result.output
+    assert "list_dir its parent directory" in result.output
 
 
 @pytest.mark.asyncio

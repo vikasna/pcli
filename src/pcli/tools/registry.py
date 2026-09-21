@@ -68,6 +68,7 @@ def build_default_registry() -> ToolRegistry:
         BROWSER_WAIT_FOR,
     )
     from pcli.tools.builtin.decision_tool import RECORD_DECISION
+    from pcli.tools.builtin.describe_tool import DESCRIBE_TOOL
     from pcli.tools.builtin.diff_tools import APPLY_PATCH, DIFF_FILES
     from pcli.tools.builtin.fs_tools import EDIT_FILE, GLOB_SEARCH, LIST_DIR, READ_FILE, WRITE_FILE
     from pcli.tools.builtin.grep_tool import GREP
@@ -131,6 +132,7 @@ def build_default_registry() -> ToolRegistry:
         BROWSER_WAIT_FOR,
         BROWSER_READ_PAGE,
         BROWSER_SCREENSHOT,
+        DESCRIBE_TOOL,
     ):
         registry.register(tool)
     return registry

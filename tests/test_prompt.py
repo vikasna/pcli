@@ -18,6 +18,23 @@ def test_prompt_mentions_diff_files_and_apply_patch():
     assert "apply_patch" in section
 
 
+def test_prompt_introduces_describe_tool_and_points_to_it_from_edit_file():
+    """describe_tool needs to be established as a general practice (its own
+    section) *and* concretely pointed at from the one real case that
+    prompted it (edit_file's multiple modes) - a tool the model doesn't
+    know exists can't help it."""
+    assert "# Tool documentation" in BASE_SYSTEM_PROMPT
+    section_start = BASE_SYSTEM_PROMPT.index("# Tool documentation")
+    section_end = BASE_SYSTEM_PROMPT.index("# Editing files")
+    section = BASE_SYSTEM_PROMPT[section_start:section_end]
+    assert "describe_tool" in section
+
+    edit_files_start = BASE_SYSTEM_PROMPT.index("# Editing files")
+    edit_files_end = BASE_SYSTEM_PROMPT.index("# Executing actions with care")
+    edit_files_section = BASE_SYSTEM_PROMPT[edit_files_start:edit_files_end]
+    assert "describe_tool" in edit_files_section
+
+
 def test_prompt_explains_edit_files_three_modes_and_warns_against_faking_an_insert():
     """Regression coverage for a real reported confusion: some models pass
     the same anchor text as both old_string and new_string when they

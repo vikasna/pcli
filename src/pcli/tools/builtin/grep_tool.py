@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from pcli.tools.base import ToolContext, ToolResult, ToolSpec
+from pcli.tools.builtin.fs_tools import not_a_directory_result
 
 _MAX_MATCHES = 200
 _MAX_FILES_SCANNED = 5000
@@ -33,11 +34,7 @@ async def _grep(arguments: dict, ctx: ToolContext) -> ToolResult:
         )
 
     if not resolved_base.is_dir():
-        return ToolResult(
-            output=f"Not a directory: {resolved_base}\n"
-            "[pcli] Suggestion: list_dir its parent to confirm the correct name/path.",
-            is_error=True,
-        )
+        return not_a_directory_result(resolved_base)
 
     matches: list[str] = []
     scanned = 0
