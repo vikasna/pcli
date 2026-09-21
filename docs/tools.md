@@ -77,22 +77,51 @@ Overwrites (or creates) a text file, creating parent directories as needed.
 
 ## edit_file
 
-Replaces an exact, unique occurrence of `old_string` with `new_string` in an
-existing file — for a small change, without resending the whole file the way
-`write_file` requires. `old_string` must match the file's current content
-exactly (including whitespace) and occur exactly once.
+Edits an existing file in place — for a targeted change, without resending
+the whole file the way `write_file` requires. Takes exactly one of three
+mutually-exclusive modes per call; giving zero or more than one is rejected
+with a clean error naming the problem.
 
-- **Parameters:** `path` (string, required), `old_string` (string, required),
-  `new_string` (string, required).
+- **Replace mode** (`old_string` + `new_string`, the original behavior):
+  replaces an occurrence of `old_string` with `new_string`. `old_string` must
+  match the file's current content exactly (including whitespace) — copy it
+  from a real `read_file`/`grep` result, never reconstruct it from memory —
+  and by default must occur exactly once; pass `replace_all: true` to replace
+  every occurrence instead (e.g. renaming a variable throughout the file).
+  `old_string == new_string` is rejected outright (it would silently change
+  nothing) with a message pointing at insert mode instead.
+- **Insert mode** (`insert_after_line` + `new_string`, no `old_string`):
+  inserts `new_string` as new line(s) after a given 1-indexed line number
+  (`0` = insert at the very start of the file, before line 1), without
+  touching anything else. This is the correct way to add a new
+  section/import/line to a file — not by faking it in replace mode with
+  `new_string` equal to `old_string` or an anchor line repeated plus new
+  content stitched on. Handles a missing trailing newline on the target line
+  correctly (adds one first, so the inserted text starts on its own line).
+- **Delete mode** (`delete_start_line` + `delete_end_line`, both required
+  together): removes that inclusive range of 1-indexed lines.
+
+Line numbers shift after any edit to the same file — re-check with
+`read_file` or `grep -n` before a second line-based edit rather than reusing
+numbers from before the first one landed.
+
+- **Parameters:** `path` (string, required), `old_string` (string, replace
+  mode), `new_string` (string, replace/insert mode), `replace_all` (boolean,
+  replace mode, default false), `insert_after_line` (integer, insert mode),
+  `delete_start_line` / `delete_end_line` (integer, delete mode, required
+  together).
 - **Permission:** required. `risk_description`: "Edits a file on disk."
 - **Guardrail:** `path` checked against the fs allow/deny lists, same as
   `write_file`.
-- **Errors cleanly** (not a crash) in three cases
-  (`src/pcli/tools/builtin/fs_tools.py:79`): the file doesn't exist (message
-  points at `write_file` to create it instead), `old_string` isn't found
-  (appends a suggestion to `read_file` first, in case an earlier
-  `edit_file`/`write_file` call already changed that part), or `old_string`
-  matches more than once (asks for more surrounding context to disambiguate).
+- **Errors cleanly** (not a crash) (`src/pcli/tools/builtin/fs_tools.py`):
+  the file doesn't exist (message points at `write_file` to create it
+  instead); zero or more than one mode given; replace mode's `old_string`
+  isn't found (appends a suggestion to `read_file` first, in case an earlier
+  `edit_file`/`write_file` call already changed that part), matches more
+  than once without `replace_all` (asks for more surrounding context or
+  `replace_all: true`), or equals `new_string`; insert mode's
+  `insert_after_line` out of range or `new_string` missing; delete mode's
+  line range invalid or missing a bound.
 
 ## list_dir
 

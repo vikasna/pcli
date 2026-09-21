@@ -1050,18 +1050,26 @@ characters); it now parses the arguments and formats them:
   it (no more double-showing it inline *and* appended after a `#`, like an
   older version of this doc described).
 - Tools with a known "code" argument — `write_file`'s `content`,
-  `run_shell`/`run_shell_background`'s `command` (`_CODE_ARG_BY_TOOL`) — get
-  that argument rendered as a real, multi-line, syntax-highlighted
-  `rich.syntax.Syntax` block instead of an escaped JSON string. The language
-  is guessed from the call's `path` argument when present
-  (`Syntax.guess_lexer`), else a per-tool default (`bash` for the two
+  `run_shell`/`run_shell_background`'s `command`, `edit_file`'s `new_string`
+  (`_CODE_ARG_BY_TOOL`) — get that argument rendered as a real, multi-line,
+  syntax-highlighted `rich.syntax.Syntax` block instead of an escaped JSON
+  string. The language is guessed from the call's `path` argument when
+  present (`Syntax.guess_lexer`), else a per-tool default (`bash` for the two
   `run_shell*` tools, `text` otherwise). Any other arguments on the same call
   (e.g. `path`, `timeout_s`) print as a compact dim `key=value, key=value`
   summary line above the code block.
-- `edit_file` is special-cased since it has two code arguments: `old_string`
-  and `new_string` each render as their own labeled `Syntax` block — `-
+- `edit_file`'s **replace mode** (a call with both `old_string` and
+  `new_string`) is special-cased ahead of the generic `_CODE_ARG_BY_TOOL`
+  lookup above, since it has two code arguments: `old_string` and
+  `new_string` each render as their own labeled `Syntax` block — `-
   old_string` in bold red, `+ new_string` in bold green — using a lexer
-  guessed from `old_string` (and the call's `path`, if given).
+  guessed from `old_string` (and the call's `path`, if given). **Insert
+  mode** (`insert_after_line` + `new_string`, no `old_string`) has only one
+  code argument, so it falls through to the generic `_CODE_ARG_BY_TOOL` path
+  above and gets the same single-block treatment as `write_file`'s `content`.
+  **Delete mode** (`delete_start_line`/`delete_end_line`) has no big text
+  payload at all, so it falls through further to the generic pretty-JSON
+  rendering below.
 - Every other tool (`read_file`, `grep`, `list_dir`, toolbox tools, agent
   tools, ...) falls back to pretty-printed, indented JSON
   (`json.dumps(..., indent=2)` through `Syntax(..., "json", ...)`) rather
