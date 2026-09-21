@@ -115,6 +115,13 @@ def test_is_local_api_requires_gateway_to_be_in_the_list():
     assert other.is_local_api() is False
 
 
+def test_is_telegram_configured_requires_both_a_token_and_a_chat_id():
+    assert Settings().is_telegram_configured() is False
+    assert Settings(telegram_bot_token="abc").is_telegram_configured() is False
+    assert Settings(telegram_chat_id=123).is_telegram_configured() is False
+    assert Settings(telegram_bot_token="abc", telegram_chat_id=123).is_telegram_configured() is True
+
+
 def test_add_local_api_gateway_appends_without_overwriting_other_keys(isolated_config: Path):
     update_config_file(default_model="llama-3")
     add_local_api_gateway("http://localhost:1234/v1")

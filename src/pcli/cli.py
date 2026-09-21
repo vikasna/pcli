@@ -17,6 +17,7 @@ from pcli.session.directory_check import directory_mismatch
 from pcli.session.export import export_session
 from pcli.session.importer import import_session
 from pcli.session.store import SessionNotFoundError, SessionStore
+from pcli.telegram.bot import notify_telegram, run_telegram_daemon
 from pcli.util.logging import configure_logging
 
 app = typer.Typer(add_completion=False, no_args_is_help=False)
@@ -157,6 +158,13 @@ def run_command(
         "headless (the default for a scheduled/unattended run - nothing to show, and a real "
         "window shouldn't pop up unattended).",
     ),
+    notify_telegram_flag: bool = typer.Option(
+        False,
+        "--notify-telegram",
+        help="Also send the final answer to the configured Telegram chat once this run "
+        "finishes (see 'pcli telegram --help'). Requires telegram_bot_token/telegram_chat_id "
+        "to already be configured - skipped with a warning otherwise, never a hard failure.",
+    ),
 ) -> None:
     """Runs a single task non-interactively and exits - no TUI. Meant to be
     invoked by an OS scheduler (cron / Task Scheduler) for a task you've
@@ -220,10 +228,73 @@ def run_command(
 
         typer.echo(f"\n{result.final_text}" if not quiet else result.final_text)
         typer.echo(f"\nSession: {result.session.id} (resume with: pcli --resume {result.session.id})")
+
+        if notify_telegram_flag:
+            if not settings.is_telegram_configured():
+                typer.echo(
+                    "--notify-telegram was given but telegram_bot_token/telegram_chat_id "
+                    "aren't configured - skipping the notification.",
+                    err=True,
+                )
+            else:
+                try:
+                    await notify_telegram(settings, result.final_text)
+                except Exception as exc:  # noqa: BLE001 - a failed notification shouldn't fail the run
+                    typer.echo(f"Failed to send the Telegram notification: {exc}", err=True)
+
         if result.terminated_early or result.truncations_exhausted:
             raise typer.Exit(code=1)
 
     asyncio.run(_run())
+
+
+@app.command("telegram")
+def telegram_command() -> None:
+    """Runs pcli as a long-running Telegram bot - the third way to run
+    pcli, alongside the interactive TUI and one-shot `pcli run`. Requires
+    telegram_bot_token (from @BotFather) and telegram_chat_id (the one
+    chat this bot will talk to - everything else is silently ignored) to
+    already be configured; refuses to start otherwise rather than running
+    unsecured. Keeps one ongoing session for that chat (reset with the
+    bot's own /new command), driven by the same AgentLoop machinery as
+    everything else - a consequential tool call is approved or denied via
+    an inline-keyboard prompt in the chat, exactly like the TUI's own
+    permission modal. Runs until interrupted (Ctrl+C)."""
+
+    async def _run() -> None:
+        settings = get_settings()
+        if not settings.is_configured():
+            typer.echo(
+                "Gateway not configured. Set PCLI_GATEWAY_URL (and PCLI_GATEWAY_API_KEY if "
+                "your gateway requires auth) or edit the config file first.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        if not settings.is_telegram_configured():
+            typer.echo(
+                "telegram_bot_token and telegram_chat_id must both be set (env vars "
+                "PCLI_TELEGRAM_BOT_TOKEN / PCLI_TELEGRAM_CHAT_ID, or the constructor kwargs) "
+                "before pcli telegram can start.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+
+        cwd = Path.cwd()
+
+        def on_ready(session_id: str) -> None:
+            typer.echo(f"Listening for chat {settings.telegram_chat_id}. Session: {session_id}")
+            typer.echo("Press Ctrl+C to stop.")
+
+        try:
+            await run_telegram_daemon(settings, cwd, on_ready=on_ready)
+        except Exception as exc:
+            typer.echo(f"Startup failed: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        typer.echo("\nStopped.")
 
 
 @sessions_app.command("list")

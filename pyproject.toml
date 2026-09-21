@@ -35,6 +35,10 @@ win = ["pywin32>=306; sys_platform == 'win32'"]
 # with a one-time `playwright install chromium` after this (see
 # docs/browser-automation.md).
 browser = ["playwright>=1.40"]
+# `pcli telegram` (telegram/bot.py) - a long-running Telegram bot front
+# end. No separate binary/download step needed (unlike browser above) -
+# installing this extra is enough.
+telegram = ["python-telegram-bot>=21"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

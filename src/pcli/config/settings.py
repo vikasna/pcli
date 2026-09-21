@@ -76,6 +76,21 @@ class Settings(BaseSettings):
         description="Header name used to send the API key. Value sent is 'Bearer <key>' for "
         "'Authorization', otherwise the raw key.",
     )
+    telegram_bot_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("PCLI_TELEGRAM_BOT_TOKEN", "telegram_bot_token"),
+        repr=False,
+        description="Bot token for `pcli telegram` (from @BotFather). Env-var/config-kwarg "
+        "only, same as gateway_api_key - never written by update_config_file, so it's never "
+        "persisted to config.toml.",
+    )
+    telegram_chat_id: int = Field(
+        default=0,
+        validation_alias=AliasChoices("PCLI_TELEGRAM_CHAT_ID", "telegram_chat_id"),
+        description="The one Telegram chat `pcli telegram` will talk to - messages from any "
+        "other chat are silently ignored. This is personal automation, not a multi-user bot. "
+        "0 means unset.",
+    )
     default_model: str = Field(
         default="",
         validation_alias=AliasChoices("PCLI_MODEL", "default_model"),
@@ -242,6 +257,9 @@ class Settings(BaseSettings):
 
     def is_local_api(self) -> bool:
         return bool(self.gateway_base_url) and self.gateway_base_url in self.local_api_gateways
+
+    def is_telegram_configured(self) -> bool:
+        return bool(self.telegram_bot_token) and self.telegram_chat_id != 0
 
     @property
     def effective_request_timeout_s(self) -> float:

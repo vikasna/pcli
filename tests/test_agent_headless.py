@@ -243,3 +243,68 @@ async def test_run_headless_task_permission_not_pre_granted_denies_the_tool_call
     assert len(tool_messages) == 1
     assert "Permission denied" in tool_messages[0].content
     assert route.call_count == 2
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_run_headless_task_uses_a_supplied_ask_callback(tmp_path: Path):
+    """A caller that does have a way to ask (namely `pcli telegram`, see
+    telegram/daemon.py) can supply `ask` - the tool call is then gated
+    through it exactly like an interactive TUI session, instead of always
+    failing closed the way the no-`ask` default above does."""
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(
+            200,
+            content=_sse(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_1",
+                                        "function": {"name": "run_shell", "arguments": '{"command": "echo hi"}'},
+                                    }
+                                ]
+                            },
+                            "finish_reason": None,
+                        }
+                    ]
+                },
+                {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+            ),
+        ),
+        _text_response("Ran it."),
+    ]
+
+    settings = _settings()
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    session = new_headless_session(store, settings, tmp_path)
+    runtime = await build_agent_runtime(settings, tmp_path)
+    asked: list[str] = []
+
+    async def ask(tool_name: str, arguments: dict, risk_description: str):
+        asked.append(tool_name)
+        return "allow", "once"
+
+    try:
+        await run_headless_task(
+            "run a command",
+            session=session,
+            runtime=runtime,
+            settings=settings,
+            permission_manager=build_permission_manager(settings),
+            cwd=tmp_path,
+            store=store,
+            ask=ask,
+        )
+    finally:
+        await runtime.client.aclose()
+
+    assert asked == ["run_shell"]
+    tool_messages = [m for m in session.messages if m.role == "tool"]
+    assert len(tool_messages) == 1
+    assert "Permission denied" not in tool_messages[0].content
+    assert "hi" in tool_messages[0].content

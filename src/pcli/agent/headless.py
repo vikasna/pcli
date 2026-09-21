@@ -1,10 +1,11 @@
 """Runs a single task non-interactively - the machinery behind `pcli run`
-(cli.py) and, later, each incoming message `pcli telegram` handles. No
-MessageView/StatusBar: progress is reported through a plain callback
-instead, and there's no UI to ask permission or a free-form question
-through (see agent/runtime.py's make_tool_context - ask/ask_question both
-default to None there, which the permission/ask_user_question machinery
-already handles safely on its own).
+(cli.py) and each incoming message `pcli telegram` handles (telegram/
+daemon.py). No MessageView/StatusBar: progress is reported through a plain
+callback instead. `ask`/`ask_question` both default to None - no UI to ask
+through - which the permission/ask_user_question machinery already handles
+safely on its own (see agent/runtime.py's make_tool_context); `pcli
+telegram` is the one caller that actually supplies them, wired to Telegram
+inline-keyboard prompts instead of None.
 
 Deliberately narrower than ChatScreen._run_one_turn: no tool-result
 pruning, no auto-compaction, and no memory-extraction pass (all three are
@@ -30,10 +31,11 @@ from pcli.config.settings import Settings
 from pcli.cost.tracker import CostTracker
 from pcli.memory.models import render_memory_section
 from pcli.memory.store import read_memory
-from pcli.permissions.manager import PermissionManager
+from pcli.permissions.manager import AskCallback, PermissionManager
 from pcli.session.models import Message, Session
 from pcli.session.store import SessionStore
 from pcli.tools.artifacts import SessionArtifactStore
+from pcli.tools.base import AskQuestionCallback
 
 _MAX_CONSECUTIVE_AUTO_CONTINUES = 3
 """Same cap and reasoning as ChatScreen's own _MAX_CONSECUTIVE_AUTO_CONTINUES
@@ -91,6 +93,8 @@ async def run_headless_task(
     cwd: Path,
     store: SessionStore,
     on_progress: ProgressCallback = lambda _line: None,
+    ask: AskCallback | None = None,
+    ask_question: AskQuestionCallback | None = None,
 ) -> HeadlessTurnResult:
     artifact_store = SessionArtifactStore(store, session.id)
     cost_tracker = CostTracker(session)
@@ -103,6 +107,8 @@ async def run_headless_task(
             session=session,
             permission_manager=permission_manager,
             artifact_store=artifact_store,
+            ask=ask,
+            ask_question=ask_question,
         )
 
     agent_loop = AgentLoop(
@@ -129,7 +135,7 @@ async def run_headless_task(
         run_again = False
         chat_messages = [m.to_chat_message() for m in session.messages]
         text_parts: list[str] = []
-        async for event in agent_loop.run_turn(chat_messages):
+        async for event in agent_loop.run_turn(chat_messages, ask=ask):
             if event.kind == "text_delta":
                 text_parts.append(event.text)
             elif event.kind == "usage":

@@ -267,3 +267,80 @@ def _root_and_run_args() -> list[str]:
         "--task",
         "x",
     ]
+
+
+@respx.mock
+def test_run_notify_telegram_warns_and_skips_when_not_configured(isolated_store: SessionStore):
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=_final_response("the answer")
+    )
+
+    result = runner.invoke(app, _base_args("--task", "say hello", "--notify-telegram"))
+
+    assert result.exit_code == 0
+    assert "the answer" in result.output
+    assert "telegram_bot_token/telegram_chat_id" in result.output
+
+
+@respx.mock
+def test_run_notify_telegram_sends_the_final_answer_when_configured(
+    isolated_store: SessionStore, monkeypatch: pytest.MonkeyPatch
+):
+    from unittest.mock import AsyncMock
+
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=_final_response("the answer")
+    )
+    monkeypatch.setenv("PCLI_TELEGRAM_BOT_TOKEN", "abc123")
+    monkeypatch.setenv("PCLI_TELEGRAM_CHAT_ID", "555")
+    fake_notify = AsyncMock()
+    monkeypatch.setattr("pcli.cli.notify_telegram", fake_notify)
+
+    result = runner.invoke(app, _base_args("--task", "say hello", "--notify-telegram"))
+
+    assert result.exit_code == 0
+    fake_notify.assert_awaited_once()
+    _settings_arg, text_arg = fake_notify.call_args.args
+    assert text_arg == "the answer"
+
+
+@respx.mock
+def test_run_without_notify_telegram_never_calls_it(
+    isolated_store: SessionStore, monkeypatch: pytest.MonkeyPatch
+):
+    from unittest.mock import AsyncMock
+
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=_final_response("the answer")
+    )
+    monkeypatch.setenv("PCLI_TELEGRAM_BOT_TOKEN", "abc123")
+    monkeypatch.setenv("PCLI_TELEGRAM_CHAT_ID", "555")
+    fake_notify = AsyncMock()
+    monkeypatch.setattr("pcli.cli.notify_telegram", fake_notify)
+
+    result = runner.invoke(app, _base_args("--task", "say hello"))
+
+    assert result.exit_code == 0
+    fake_notify.assert_not_awaited()
+
+
+@respx.mock
+def test_run_notify_telegram_failure_does_not_fail_the_run(
+    isolated_store: SessionStore, monkeypatch: pytest.MonkeyPatch
+):
+    from unittest.mock import AsyncMock
+
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=_final_response("the answer")
+    )
+    monkeypatch.setenv("PCLI_TELEGRAM_BOT_TOKEN", "abc123")
+    monkeypatch.setenv("PCLI_TELEGRAM_CHAT_ID", "555")
+    monkeypatch.setattr(
+        "pcli.cli.notify_telegram", AsyncMock(side_effect=RuntimeError("network unreachable"))
+    )
+
+    result = runner.invoke(app, _base_args("--task", "say hello", "--notify-telegram"))
+
+    assert result.exit_code == 0
+    assert "the answer" in result.output
+    assert "Failed to send the Telegram notification" in result.output
