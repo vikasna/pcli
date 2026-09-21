@@ -11,7 +11,10 @@ name plus the same purpose-stripped arguments, three times in a row, is
 blocked outright — see [`sandbox-and-permissions.md`](sandbox-and-permissions.md#identical-tool-call-repeat-guard)),
 then JSON-schema validation of arguments, then
 `PermissionManager.check_with_reason` (guardrails first, then remembered
-grants/ask-the-user — see [`sandbox-and-permissions.md`](sandbox-and-permissions.md)),
+grants/ask-the-user — see [`sandbox-and-permissions.md`](sandbox-and-permissions.md);
+the `ask` callback is the TUI's modal, a headless no-op, or — for `pcli
+telegram` — an inline-button prompt in the chat, see
+[`telegram-bot.md`](telegram-bot.md#permission-approval-over-inline-buttons)),
 then the handler runs, then the result passes through the artifact-archiving
 choke point described below before going back to the model. A denial is
 reported back to the model as `"Permission denied: <reason>."` (or the bare

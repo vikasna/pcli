@@ -54,6 +54,10 @@ TUI (ChatScreen) -> AgentLoop -> GatewayClient (LLM gateway)
   Chromium browser via Playwright: the seven `browser_*` tools, the
   shared/persistent `BrowserSession`, and the headed-vs-headless default
   split between the TUI and `pcli run`.
+- [`telegram-bot.md`](telegram-bot.md) — `pcli telegram`, a long-running
+  two-way Telegram bot front end: the single-authorized-chat security
+  model, inline-button permission approval, the message-queue
+  serialization design, and the `pcli run --notify-telegram` flag.
 - [`toolbox-plugins.md`](toolbox-plugins.md) — discovering OS/software tools
   (kubectl, SGE, Kafka, httpd, ...) for the agent to use.
 - [`agent-tools-guide.md`](agent-tools-guide.md) — how to create and register

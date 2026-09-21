@@ -7,14 +7,13 @@ runtime.py` and `src/pcli/agent/headless.py` factor the UI-agnostic setup and
 turn-driving logic out of `ChatScreen` so a non-interactive front end can
 drive the same machinery without pulling in Textual at all.
 
-Today the only such front end is `pcli run` (below), a one-shot "run this
-task and exit" command meant to be invoked by an OS scheduler. One more is
-planned to land later on this same foundation — a `pcli telegram` daemon
-that answers incoming messages — and will likely extend this page when it
-does. [Browser automation](browser-automation.md) has already landed on
-this foundation too: `pcli run` shares the same `AgentRuntime`/
-`BrowserSession` wiring the TUI uses, just defaulting to headless (see
-`--headed` below).
+Today there are two such front ends: `pcli run` (below), a one-shot "run
+this task and exit" command meant to be invoked by an OS scheduler, and
+`pcli telegram`, a long-running daemon that answers incoming messages over
+Telegram — see [`telegram-bot.md`](telegram-bot.md) for that one.
+[Browser automation](browser-automation.md) has also landed on this
+foundation: `pcli run` shares the same `AgentRuntime`/`BrowserSession`
+wiring the TUI uses, just defaulting to headless (see `--headed` below).
 
 ## Shared runtime building blocks
 
@@ -55,6 +54,7 @@ pcli run --task-file path/to/task.txt
 pcli run --task "..." --session <id>
 pcli run --task "..." --quiet
 pcli run --task "..." --headed
+pcli run --task "..." --notify-telegram
 ```
 
 | Flag | Behavior |
@@ -64,6 +64,7 @@ pcli run --task "..." --headed
 | `--session ID` | Append to an existing session (`pcli sessions list` for ids) instead of starting a fresh one via `new_headless_session` — gives a scheduled job continuity across runs, the same session history and cost totals carrying forward each time it fires. |
 | `--quiet` | Print only the final answer text, not tool-call progress lines — for a clean cron-job log. |
 | `--headed` | Show the browser window if any `browser_*` tool gets used, instead of the headless default. See [`browser-automation.md`](browser-automation.md#headed-vs-headless) for why `pcli run` defaults to headless while the TUI defaults to headed. |
+| `--notify-telegram` | After the run finishes, also send the final answer text to the configured Telegram chat — a lightweight one-off message (`notify_telegram`, `telegram/bot.py`), not the full `pcli telegram` daemon/polling machinery. If `telegram_bot_token`/`telegram_chat_id` aren't configured, this prints a warning and skips rather than failing the run; if sending itself fails (network, bad token, ...), that's also just a warning. See [`telegram-bot.md`](telegram-bot.md#pcli-run---notify-telegram). |
 
 Passing both or neither of `--task`/`--task-file` is a usage error (exit
 code 1, "Provide exactly one of --task or --task-file."). All the normal

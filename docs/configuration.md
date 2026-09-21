@@ -40,6 +40,8 @@ to `table_key` when reading back, so both shapes round-trip.
 | `gateway_api_key` | `PCLI_GATEWAY_API_KEY` | `--api-key` | `gateway_api_key` | `""` | API key sent to the gateway. Optional — local unauthenticated servers (LM Studio, Ollama) don't need one. |
 | `gateway_auth_header` | `PCLI_GATEWAY_AUTH_HEADER` | *(none)* | `gateway_auth_header` | `"Authorization"` | Header used to send the key. If `"Authorization"`, the value sent is `Bearer <key>`; otherwise the raw key is sent under that header name. |
 | `brave_search_api_key` | `PCLI_BRAVE_SEARCH_API_KEY` | *(none)* | `brave_search_api_key` | `""` | API key for the [Brave Search API](https://api.search.brave.com/res/v1/web/search), used by the `web_search` tool (see [`tools.md#web_search`](tools.md#web_search)). Optional — like `gateway_api_key`, this field is `repr=False` (never printed/logged). When unset, `web_search` falls back to a best-effort, no-API-key scrape of DuckDuckGo's HTML results page instead — works out of the box but is inherently more fragile. |
+| `telegram_bot_token` | `PCLI_TELEGRAM_BOT_TOKEN` | *(none)* | `telegram_bot_token` | `""` | Bot token for `pcli telegram` (from [@BotFather](https://t.me/BotFather)). Env-var/config-kwarg only, same treatment as `gateway_api_key` — `repr=False` and never written by `update_config_file`, so it's never persisted to `config.toml`. See [`telegram-bot.md`](telegram-bot.md). |
+| `telegram_chat_id` | `PCLI_TELEGRAM_CHAT_ID` | *(none)* | `telegram_chat_id` | `0` | The one Telegram chat `pcli telegram` will talk to — messages from any other chat are silently ignored (personal automation, not a multi-user bot). `0` means unset. See [`telegram-bot.md`](telegram-bot.md). |
 | `default_model` | `PCLI_MODEL` | `--model` | `default_model` | `""` | Model id passed as `model` in chat-completions requests. |
 | `default_temperature` | `PCLI_DEFAULT_TEMPERATURE` | *(none)* | `default_temperature` | `None` (unset) | Sampling temperature passed as `temperature` in chat-completions requests, via `AgentLoop`/`GatewayClient` (see [Sampling temperature](#sampling-temperature) below). Unset (`None`, the default) means no `temperature` field is sent at all, so the gateway/model's own default applies — this is *not* the same as `0`, which is a real, valid, deterministic setting ("always pick the top token") that *is* sent. Changeable live in the TUI with [`/temperature`](tui-guide.md#slash-commands). |
 | `request_timeout_s` | `PCLI_REQUEST_TIMEOUT_S` | *(none)* | `request_timeout_s` | `120.0` | HTTP timeout applied per-request (chat completions, `/models`, health check) via `GatewayClient`'s `_effective_timeout()` helper, which reads `Settings.effective_request_timeout_s` fresh on every call rather than a value baked into the client at construction — so a change takes effect on the very next gateway request, no restart needed. Changeable live in the TUI with [`/timeout`](tui-guide.md#slash-commands), which persists it to `config.toml` the same way `/models <model-id>` persists `default_model`. See the local-api floor below. |
@@ -115,6 +117,10 @@ model with `/models <model-id>` in the TUI does the same for `default_model`.
 **The API key is never auto-persisted.** `update_config_file` is deliberately
 never called with `gateway_api_key` — pass `--api-key` (or set
 `PCLI_GATEWAY_API_KEY`) every time you start pcli if your gateway needs one.
+`telegram_bot_token` gets the same treatment for the same reason — it's a
+secret, not a convenience setting — so `PCLI_TELEGRAM_BOT_TOKEN` (or the
+constructor kwarg) has to be supplied every time `pcli telegram` or `pcli
+run --notify-telegram` starts.
 
 ## Auto-compaction
 
