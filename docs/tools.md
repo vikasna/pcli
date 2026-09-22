@@ -1371,10 +1371,26 @@ archiving doesn't.
   (`_render_transcript`) and archived via `ArtifactStore.put()` — the exact
   same store/mechanism as the artifact archiving above — then summarized with
   one dedicated, non-streaming `GatewayClient.collect()` call (a system
-  prompt instructing the model to capture what was asked, what's been done,
-  and what's still pending). The compacted range is replaced in
-  `session.messages` with a single `role="system"` message holding the
-  summary plus a note referencing the archived `artifact_id`.
+  prompt instructing the model to capture what was asked, what's been done
+  (files changed, commands run, key outcomes), and any assumptions made along
+  the way and why — explicitly, so the continuation doesn't silently
+  re-litigate or contradict something already assumed and acted on).
+  `_render_ground_truth_state` then appends up to two more sections after
+  that LLM-written summary, sourced directly from the session's own
+  structured state rather than the summarizer's prose: a `**Decisions
+  recorded so far:**` list (`session.decisions`, one `- <decision> —
+  <rationale>` line each) and a `**Current todo list:**` (`session.todos`,
+  rendered via the same `render_todos` the todo tool itself uses) — either
+  section is omitted entirely, not shown empty, if there's nothing to put in
+  it. `Session.decisions`/`Session.todos` live outside `session.messages`, so
+  they were never themselves at risk from compaction, but the ongoing
+  conversation only ever learns their state through messages — which
+  compaction just replaced — so this verbatim splice is what keeps that
+  state (a decision's rationale especially) from being lost to, or garbled
+  by, the summarizer's own lossy reconstruction. The compacted range is
+  replaced in `session.messages` with a single `role="system"` message
+  holding the LLM summary, then the ground-truth sections (if any), then a
+  note referencing the archived `artifact_id`.
 - **Retrieval:** `fetch_artifact` (above) works unchanged against a
   compaction's `artifact_id` — it's just another entry in the same
   `ArtifactStore`; no new tool was added for this.

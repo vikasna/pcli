@@ -149,6 +149,20 @@ Recompaction needs no special-casing: a later compaction naturally includes
 a prior compaction's own summary message among the older messages it folds
 into a fresh combined summary.
 
+The summarization prompt asks the model to cover what the user asked for,
+what's been done so far (files changed, commands run, key outcomes), and any
+assumptions made along the way and why — explicitly, so the continuation
+doesn't silently re-litigate or contradict something already assumed and
+acted on. It deliberately does *not* ask the model to reconstruct decisions
+or the todo list from the transcript: after the LLM's summary comes back,
+`maybe_compact` appends those two directly, verbatim, sourced from
+`Session.decisions` (each with its rationale) and `Session.todos` — data
+that lives on `Session` itself, outside `session.messages`, so it was never
+at risk from compaction in the first place, but the splice keeps the
+*ongoing conversation's* view of it from being lost or garbled by a lossy
+re-summarization pass. See [`tools.md`](tools.md#auto-compaction) for the
+exact section format.
+
 Counting user turns this way is normally the whole story, but a session
 driven by a single instruction that then runs many internal tool-calling
 rounds (a long-running autonomous task) has only one user turn for its

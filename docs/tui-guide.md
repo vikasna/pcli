@@ -698,6 +698,17 @@ rendered into the message view. See
 [`configuration.md`](configuration.md#auto-compaction) for the three
 settings involved.
 
+That summary is more than free-form prose from the LLM: alongside what the
+user asked for, what's been done, and any assumptions made along the way (and
+why), it always carries a verbatim, structured snapshot of the session's
+actual decisions (with rationale) and current todo list, appended straight
+from `Session.decisions`/`Session.todos` rather than reconstructed by the
+summarizing model from the raw transcript. Because that part isn't up to the
+summarizer's own prose, it can't be lost or garbled the way free-form
+narrative can be in a lossy re-summarization pass. See
+[`tools.md`](tools.md#auto-compaction) for the exact mechanism and section
+format.
+
 Eligibility is normally based on counting real user-typed turns (`/compact`
 above and `auto_compact_keep_recent_turns`), but that alone can't see any
 structure inside a single long-running turn — one user instruction followed
