@@ -15,14 +15,19 @@ from pcli.llm.client import GatewayClient
 from pcli.llm.models import ChatMessage, Usage
 from pcli.session.models import Message, Session
 from pcli.tools.artifacts import ArtifactStore
+from pcli.tools.builtin.todo_tool import render_todos
 
 _COMPACTION_SYSTEM_PROMPT = (
     "You are summarizing an in-progress coding-agent conversation so it can continue with "
     "much less context. Write a concise but complete summary covering: what the user asked "
-    "for, what has been done so far (files changed, commands run, key decisions), the "
-    "current state of any todo list, and anything still pending or unresolved. Do not "
-    "include pleasantries or restate this instruction — write plain prose/bullets the "
-    "assistant can use to pick up exactly where it left off."
+    "for, what has been done so far (files changed, commands run, key outcomes), and any "
+    "assumptions you made along the way and why — state them explicitly, since the "
+    "continuation must not silently re-litigate or contradict something already assumed and "
+    "acted on. The session's own recorded decisions and current todo list are appended "
+    "separately, verbatim, after your summary — don't restate them, but do mention anything "
+    "still pending or unresolved that isn't already reflected there. Do not include "
+    "pleasantries or restate this instruction — write plain prose/bullets the assistant can "
+    "use to pick up exactly where it left off."
 )
 
 
@@ -128,6 +133,27 @@ def _render_transcript(messages: list[Message]) -> str:
     return "\n\n".join(lines)
 
 
+def _render_ground_truth_state(session: Session) -> str:
+    """Renders the session's own recorded decisions and current todo list —
+    both live on Session directly (record_decision/write_todos), not inside
+    session.messages, so this source data is never itself at risk from
+    compaction. Spliced verbatim into the compaction summary rather than
+    trusted to the summarizer's own prose reconstruction of the raw
+    transcript: a decision's rationale (the "why") is exactly the kind of
+    detail easy to lose in a lossy re-summarization pass, and the todo
+    list needs to reflect its actual current state, not whatever it
+    happened to look like at some earlier point in the now-compacted
+    history. Returns "" (nothing to append) if there are no decisions and
+    no todos yet."""
+    parts: list[str] = []
+    if session.decisions:
+        lines = [f"- {d.decision} — {d.rationale}" for d in session.decisions]
+        parts.append("**Decisions recorded so far:**\n" + "\n".join(lines))
+    if session.todos:
+        parts.append("**Current todo list:**\n" + render_todos(session.todos))
+    return "\n\n".join(parts)
+
+
 async def maybe_compact(
     session: Session,
     *,
@@ -165,7 +191,9 @@ async def maybe_compact(
         f"Archived as artifact_id='{artifact_id}'. Call fetch_artifact(artifact_id="
         f"'{artifact_id}') if you need something specific from the original conversation.]"
     )
-    summary_message = Message(role="system", content=summary_text + note)
+    ground_truth = _render_ground_truth_state(session)
+    content = summary_text + (f"\n\n{ground_truth}" if ground_truth else "") + note
+    summary_message = Message(role="system", content=content)
 
     session.messages[prefix_len:cut_index] = [summary_message]
 

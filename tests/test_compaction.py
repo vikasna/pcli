@@ -17,7 +17,7 @@ from pcli.agent.compaction import (
 from pcli.config.settings import Settings
 from pcli.llm.client import GatewayClient
 from pcli.llm.models import ToolCall, ToolCallFunction
-from pcli.session.models import Message
+from pcli.session.models import Decision, Message, TodoItem
 from pcli.session.store import SessionStore
 from pcli.tools.artifacts import SessionArtifactStore
 
@@ -143,6 +143,116 @@ async def test_maybe_compact_happy_path_archives_and_summarizes(tmp_path: Path):
     assert "turn 1 user" in archived
     assert "turn 1 assistant" in archived
     assert "turn 2 user" not in archived  # only the compacted range was archived
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_maybe_compact_splices_recorded_decisions_with_rationale_verbatim(tmp_path: Path):
+    """Decisions live on Session.decisions, not session.messages, so
+    they're never themselves at risk from compaction - but the ongoing
+    conversation only sees them via messages, which compaction just
+    replaced. Splicing the current, structured decisions (rationale
+    included) into the summary verbatim means the continuation doesn't
+    depend on the summarizer having faithfully reconstructed them in
+    prose from the raw transcript."""
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=_summary_response("Summary of early turns.")
+    )
+
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    session = store.new_session(model="fake-model", gateway_base_url="http://fake-gateway.test/v1")
+    session.messages = _make_messages()
+    session.decisions = [
+        Decision(decision="Use httpx", rationale="already async elsewhere"),
+        Decision(decision="Skip caching for now", rationale="premature at this scale"),
+    ]
+    artifact_store = SessionArtifactStore(store, session.id)
+
+    async with GatewayClient(_settings()) as client:
+        result = await maybe_compact(
+            session,
+            gateway_client=client,
+            model="fake-model",
+            artifact_store=artifact_store,
+            keep_recent_turns=2,
+        )
+
+    assert result is not None
+    summary_content = session.messages[1].content
+    assert "Decisions recorded so far" in summary_content
+    assert "Use httpx — already async elsewhere" in summary_content
+    assert "Skip caching for now — premature at this scale" in summary_content
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_maybe_compact_splices_the_current_todo_list_verbatim(tmp_path: Path):
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=_summary_response("Summary of early turns.")
+    )
+
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    session = store.new_session(model="fake-model", gateway_base_url="http://fake-gateway.test/v1")
+    session.messages = _make_messages()
+    session.todos = [
+        TodoItem(content="Write the failing test", status="completed"),
+        TodoItem(content="Fix the bug", status="in_progress"),
+        TodoItem(content="Re-run the suite", status="pending"),
+    ]
+    artifact_store = SessionArtifactStore(store, session.id)
+
+    async with GatewayClient(_settings()) as client:
+        result = await maybe_compact(
+            session,
+            gateway_client=client,
+            model="fake-model",
+            artifact_store=artifact_store,
+            keep_recent_turns=2,
+        )
+
+    assert result is not None
+    summary_content = session.messages[1].content
+    assert "Current todo list" in summary_content
+    assert "Write the failing test" in summary_content
+    assert "Fix the bug" in summary_content
+    assert "Re-run the suite" in summary_content
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_maybe_compact_omits_ground_truth_sections_when_nothing_recorded(tmp_path: Path):
+    """No decisions/todos yet - nothing to splice, and no empty/awkward
+    headers left behind either."""
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=_summary_response("Summary of early turns.")
+    )
+
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    session = store.new_session(model="fake-model", gateway_base_url="http://fake-gateway.test/v1")
+    session.messages = _make_messages()
+    artifact_store = SessionArtifactStore(store, session.id)
+
+    async with GatewayClient(_settings()) as client:
+        result = await maybe_compact(
+            session,
+            gateway_client=client,
+            model="fake-model",
+            artifact_store=artifact_store,
+            keep_recent_turns=2,
+        )
+
+    assert result is not None
+    summary_content = session.messages[1].content
+    assert "Decisions recorded so far" not in summary_content
+    assert "Current todo list" not in summary_content
+
+
+def test_compaction_system_prompt_asks_for_assumptions_and_defers_to_the_spliced_state():
+    from pcli.agent.compaction import _COMPACTION_SYSTEM_PROMPT
+
+    assert "assumptions" in _COMPACTION_SYSTEM_PROMPT
+    assert "re-litigate" in _COMPACTION_SYSTEM_PROMPT
+    assert "appended separately" in _COMPACTION_SYSTEM_PROMPT
 
 
 @pytest.mark.asyncio
