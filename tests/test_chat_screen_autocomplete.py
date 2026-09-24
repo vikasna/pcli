@@ -86,8 +86,9 @@ def test_every_dispatched_command_has_an_autocomplete_entry():
     dispatched = {
         "sessions", "export", "toolbox", "models", "compact", "timeout",
         "temperature", "context-limit", "max-tool-iterations", "artifact-threshold",
-        "max-tool-calls-per-turn", "max-tool-calls-per-minute", "prune-tool-results",
-        "subagent", "memory", "max-response-tokens", "rename", "plan", "build", "help",
+        "max-tool-calls-per-turn", "max-tool-calls-per-minute", "allowed-roots",
+        "prune-tool-results", "subagent", "memory", "max-response-tokens", "rename",
+        "plan", "build", "help",
     }
     listed = {name for name, _ in _SLASH_COMMANDS}
     assert listed == dispatched

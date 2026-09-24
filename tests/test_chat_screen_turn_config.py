@@ -336,6 +336,126 @@ async def test_max_tool_calls_per_minute_notes_it_is_ignored_in_local_api_mode(t
         assert reloaded.max_tool_calls_per_minute == 15
 
 
+# --- /allowed-roots ---
+
+
+@pytest.mark.asyncio
+async def test_allowed_roots_with_no_argument_lists_current_roots(tmp_path: Path):
+    screen, _session = _make_screen(tmp_path)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        screen._handle_command("/allowed-roots")
+        await pilot.pause()
+
+        message_view = screen.query_one(MessageView)
+        assert "." in message_view._current_text  # GuardrailsConfig's default
+        assert "/allowed-roots add" in message_view._current_text
+
+
+@pytest.mark.asyncio
+async def test_allowed_roots_add_persists_and_takes_effect_live(tmp_path: Path):
+    screen, _session = _make_screen(tmp_path)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        screen._handle_command(f"/allowed-roots add {tmp_path}")
+        await pilot.pause()
+
+        message_view = screen.query_one(MessageView)
+        assert "Added" in message_view._current_text
+        assert str(tmp_path) in screen._permission_manager.guardrails.fs_allowed_roots
+
+        reloaded = GuardrailsConfig.load()
+        assert str(tmp_path) in reloaded.fs_allowed_roots
+        # The original default entry is preserved, not overwritten.
+        assert "." in reloaded.fs_allowed_roots
+
+
+@pytest.mark.asyncio
+async def test_allowed_roots_add_rejects_a_duplicate(tmp_path: Path):
+    screen, _session = _make_screen(tmp_path)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        screen._handle_command("/allowed-roots add .")
+        await pilot.pause()
+
+        message_view = screen.query_one(MessageView)
+        assert "already in allowed_roots" in message_view._current_text
+        assert screen._permission_manager.guardrails.fs_allowed_roots == ["."]
+
+
+@pytest.mark.asyncio
+async def test_allowed_roots_remove_persists_and_takes_effect_live(tmp_path: Path):
+    screen, _session = _make_screen(tmp_path)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen._handle_command(f"/allowed-roots add {tmp_path}")
+        await pilot.pause()
+
+        screen._handle_command("/allowed-roots remove .")
+        await pilot.pause()
+
+        message_view = screen.query_one(MessageView)
+        assert "Removed" in message_view._current_text
+        assert "." not in screen._permission_manager.guardrails.fs_allowed_roots
+        assert str(tmp_path) in screen._permission_manager.guardrails.fs_allowed_roots
+
+        reloaded = GuardrailsConfig.load()
+        assert "." not in reloaded.fs_allowed_roots
+
+
+@pytest.mark.asyncio
+async def test_allowed_roots_remove_rejects_an_unknown_entry(tmp_path: Path):
+    screen, _session = _make_screen(tmp_path)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        screen._handle_command("/allowed-roots remove /never/added")
+        await pilot.pause()
+
+        message_view = screen.query_one(MessageView)
+        assert "isn't in allowed_roots" in message_view._current_text
+
+
+@pytest.mark.asyncio
+async def test_allowed_roots_refuses_to_remove_the_last_entry(tmp_path: Path):
+    """Regression guard: removing the last allowed_roots entry would leave
+    every filesystem tool call denied - the agent couldn't even reach its
+    own working directory anymore."""
+    screen, _session = _make_screen(tmp_path)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        screen._handle_command("/allowed-roots remove .")
+        await pilot.pause()
+
+        message_view = screen.query_one(MessageView)
+        assert "Refusing" in message_view._current_text
+        assert screen._permission_manager.guardrails.fs_allowed_roots == ["."]
+
+
+@pytest.mark.asyncio
+async def test_allowed_roots_unknown_subcommand_reports_usage(tmp_path: Path):
+    screen, _session = _make_screen(tmp_path)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        screen._handle_command("/allowed-roots frobnicate")
+        await pilot.pause()
+
+        message_view = screen.query_one(MessageView)
+        assert "Unknown /allowed-roots subcommand" in message_view._current_text
+
+
 # --- /max-response-tokens ---
 
 

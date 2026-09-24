@@ -145,7 +145,14 @@ class GuardrailsConfig(BaseModel):
             deny_resolved = Path(deny_path).expanduser().resolve()
             if resolved == deny_resolved or _is_relative_to(resolved, deny_resolved):
                 return GuardrailResult(
-                    allowed=False, reason=f"path is within denied path '{deny_path}'"
+                    allowed=False,
+                    reason=f"path is within denied path '{deny_path}'.\n"
+                    "[pcli] Suggestion: this is a deliberate guardrails.toml [fs] deny_paths "
+                    "entry (a hard block on a sensitive location - SSH keys, cloud "
+                    "credentials, ...), checked before any permission prompt, so it can't be "
+                    "approved by asking. If this is genuinely blocking legitimate work, that's "
+                    "a guardrails.toml change for the user to make, not something to route "
+                    "around",
                 )
 
         for allowed_root in self.fs_allowed_roots:
@@ -153,8 +160,16 @@ class GuardrailsConfig(BaseModel):
             if resolved == allowed_resolved or _is_relative_to(resolved, allowed_resolved):
                 return GuardrailResult(allowed=True)
 
+        roots_list = ", ".join(
+            str(Path(root).expanduser()) for root in self.fs_allowed_roots
+        )
         return GuardrailResult(
-            allowed=False, reason=f"path '{resolved}' is outside all allowed roots"
+            allowed=False,
+            reason=f"path '{resolved}' is outside all allowed roots ({roots_list}).\n"
+            "[pcli] Suggestion: this is a guardrail (guardrails.toml's [fs] allowed_roots), "
+            "checked before any permission prompt, so it can't be approved by asking - add "
+            "the path (or a parent of it) to allowed_roots to let the agent reach it (in the "
+            "TUI: /allowed-roots add <path>)",
         )
 
 
@@ -175,6 +190,24 @@ def update_guardrails_limits(**limit_updates: Any) -> None:
     limits = dict(raw.get("limits", {}))
     limits.update({key: value for key, value in limit_updates.items() if value is not None})
     raw["limits"] = limits
+    path.write_text(_dump_toml(raw), encoding="utf-8")
+
+
+def update_guardrails_fs_allowed_roots(allowed_roots: list[str]) -> None:
+    """Persists a full replacement allowed_roots list into guardrails.toml's
+    [fs] table, preserving deny_paths and every other table untouched -
+    same shape as update_guardrails_limits above but for a list-valued
+    [fs] key instead of a scalar [limits] one, so the caller (chat.py's
+    /allowed-roots add/remove) computes the whole new list itself rather
+    than this function doing partial add/remove logic."""
+    path = guardrails_file()
+    if path.exists():
+        raw = dict(tomllib.loads(path.read_text(encoding="utf-8")))
+    else:
+        raw = dict(tomllib.loads(DEFAULT_GUARDRAILS_TOML))
+    fs = dict(raw.get("fs", {}))
+    fs["allowed_roots"] = allowed_roots
+    raw["fs"] = fs
     path.write_text(_dump_toml(raw), encoding="utf-8")
 
 

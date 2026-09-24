@@ -37,11 +37,40 @@ def test_guardrails_evaluate_path_outside_allowed_roots():
     assert result.allowed is False
 
 
+def test_guardrails_evaluate_path_outside_allowed_roots_suggests_the_fix(tmp_path: Path):
+    """Regression coverage for a real reported gap: the old message ("path
+    'X' is outside all allowed roots") gave no indication this is a
+    config-driven guardrail (not a permission choice a prompt could
+    override), or how to actually fix it."""
+    guardrails = _guardrails()
+    result = guardrails.evaluate_path("/somewhere/else/file.txt")
+    assert result.allowed is False
+    assert "[pcli] Suggestion:" in result.reason
+    assert "guardrails.toml" in result.reason
+    assert "allowed_roots" in result.reason
+    assert "/allowed-roots add" in result.reason
+    assert "checked before any permission prompt" in result.reason
+
+
 def test_guardrails_evaluate_path_within_deny_path():
     guardrails = _guardrails()
     result = guardrails.evaluate_path("/allowed/.secret/token")
     assert result.allowed is False
     assert "denied path" in result.reason
+
+
+def test_guardrails_evaluate_path_within_deny_path_explains_why_not_just_that(tmp_path: Path):
+    guardrails = _guardrails()
+    result = guardrails.evaluate_path("/allowed/.secret/token")
+    assert result.allowed is False
+    assert "[pcli] Suggestion:" in result.reason
+    assert "guardrails.toml" in result.reason
+    assert "deny_paths" in result.reason
+    assert "checked before any permission prompt" in result.reason
+    # Deliberately no "/allowed-roots add"-style one-liner here - this is a
+    # sensitive-path block (SSH keys, credentials, ...), not routine
+    # working-directory friction, and shouldn't read as trivially bypassable.
+    assert "/allowed-roots" not in result.reason
 
 
 def test_guardrails_evaluate_path_allowed():

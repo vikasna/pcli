@@ -44,7 +44,7 @@ from pcli.llm.models import ChatMessage, Usage
 from pcli.memory.extraction import extract_memory
 from pcli.memory.models import render_memory_list, render_memory_section
 from pcli.memory.store import clear_memory, read_memory, remove_entry
-from pcli.permissions.guardrails import update_guardrails_limits
+from pcli.permissions.guardrails import update_guardrails_fs_allowed_roots, update_guardrails_limits
 from pcli.permissions.manager import AskCallback
 from pcli.sandbox.base import Sandbox, SandboxSecurityError
 from pcli.sandbox.subprocess_backend import RestrictedSubprocessSandbox
@@ -139,6 +139,12 @@ local-api mode).
 - **/max-tool-calls-per-minute [n]** — view or set the guardrail cap on \
 tool calls per minute, across the whole session (0 = unlimited; ignored \
 — always unlimited — in local-api mode).
+- **/allowed-roots [add|remove] [path]** — view or edit the filesystem \
+guardrail's allowed_roots list (default: just the working directory). A \
+path outside every allowed_roots entry is denied outright, before any \
+permission prompt — this is how to widen what read_file/write_file/\
+edit_file/list_dir/etc. can reach, not a prompt you can approve your way \
+past.
 - **/prune-tool-results [off|on|n]** — view, toggle, or set how many \
 recent turns' tool results stay verbatim before older ones are shrunk to \
 a short placeholder (archived, retrievable via fetch_artifact) to save \
@@ -206,6 +212,7 @@ _SLASH_COMMANDS: list[tuple[str, str]] = [
     ("artifact-threshold", "View or set the tool-output archiving threshold."),
     ("max-tool-calls-per-turn", "View or set the guardrail cap on tool calls per turn."),
     ("max-tool-calls-per-minute", "View or set the guardrail cap on tool calls per minute."),
+    ("allowed-roots", "View or edit which filesystem paths the agent can reach."),
     ("prune-tool-results", "View, toggle, or set old tool-result pruning."),
     ("max-response-tokens", "View, toggle, or set the dynamic response-length cap."),
     ("rename", "View or set the current session's title."),
@@ -715,6 +722,8 @@ class ChatScreen(Screen):
                 command_name="max-tool-calls-per-minute",
                 window="tool call",
             )
+        elif command == "allowed-roots":
+            self._handle_allowed_roots_command(rest)
         elif command == "prune-tool-results":
             self._handle_prune_tool_results_command(rest or None)
         elif command == "subagent":
@@ -970,6 +979,77 @@ class ChatScreen(Screen):
             setattr(guardrails, attr_name, value)
             note = f" Takes effect on the next {window}."
         message_view.add_message("system", f"{config_key} set to {value}.{note}")
+
+    def _handle_allowed_roots_command(self, rest: str) -> None:
+        """`/allowed-roots [add|remove] <path>` — view or live-edit
+        guardrails.toml's [fs] allowed_roots list (permissions/
+        guardrails.py's evaluate_path, gating read_file/write_file/
+        edit_file/list_dir/glob_search/grep/diff_files/apply_patch/
+        download_file). A path outside every allowed_roots entry is a hard
+        guardrail deny — checked before, and never overridable by, a
+        permission prompt (see the system prompt's "Respecting
+        guardrails") — this command is the actual, intended way to widen
+        what the agent can reach, not something to route around via a
+        prompt. Mirrors _handle_guardrail_rate_limit_command's persist-
+        then-hot-reload shape, but for a list-valued [fs] key instead of a
+        scalar [limits] one."""
+        message_view = self.query_one(MessageView)
+        guardrails = self._permission_manager.guardrails
+        sub_command, _, arg = rest.partition(" ")
+        sub_command = sub_command.strip().lower()
+        arg = arg.strip()
+
+        if not sub_command:
+            roots = "\n".join(f"- `{root}`" for root in guardrails.fs_allowed_roots)
+            message_view.add_message(
+                "system",
+                f"**Current allowed_roots:**\n{roots}\n\nUsage: /allowed-roots add <path> | "
+                "/allowed-roots remove <path>",
+            )
+            return
+
+        if sub_command == "add":
+            if not arg:
+                message_view.add_message("system", "Usage: /allowed-roots add <path>")
+                return
+            if arg in guardrails.fs_allowed_roots:
+                message_view.add_message("system", f"'{arg}' is already in allowed_roots.")
+                return
+            new_roots = [*guardrails.fs_allowed_roots, arg]
+            update_guardrails_fs_allowed_roots(new_roots)
+            guardrails.fs_allowed_roots = new_roots
+            message_view.add_message(
+                "system", f"Added '{arg}' to allowed_roots. Takes effect immediately."
+            )
+            return
+
+        if sub_command == "remove":
+            if not arg:
+                message_view.add_message("system", "Usage: /allowed-roots remove <path>")
+                return
+            if arg not in guardrails.fs_allowed_roots:
+                message_view.add_message("system", f"'{arg}' isn't in allowed_roots.")
+                return
+            if len(guardrails.fs_allowed_roots) == 1:
+                message_view.add_message(
+                    "system",
+                    "Refusing to remove the last allowed_roots entry — the agent needs at "
+                    "least one, or every filesystem tool call would be denied.",
+                )
+                return
+            new_roots = [root for root in guardrails.fs_allowed_roots if root != arg]
+            update_guardrails_fs_allowed_roots(new_roots)
+            guardrails.fs_allowed_roots = new_roots
+            message_view.add_message(
+                "system", f"Removed '{arg}' from allowed_roots. Takes effect immediately."
+            )
+            return
+
+        message_view.add_message(
+            "system",
+            f"Unknown /allowed-roots subcommand: '{sub_command}'. Use /allowed-roots, "
+            "/allowed-roots add <path>, or /allowed-roots remove <path>.",
+        )
 
     def _handle_subagent_command(self) -> None:
         """`/subagent` — a one-off snapshot of the currently-running
