@@ -70,10 +70,26 @@ wall-clock timeout as the universal safety net.
   `PYTHONIOENCODING`); any extra env vars passed in are added *unless* their
   name contains `_KEY`, `_TOKEN`, `_SECRET`, `_PASSWORD`, `_CREDENTIAL`, or
   `_AUTH`.
-- **Resource limits (POSIX only):** `RLIMIT_CPU` (default 30s) and
-  `RLIMIT_AS` (default 512MB) via a `preexec_fn`. Windows has no `resource`
-  module equivalent — there, the wall-clock timeout plus
-  `psutil`-based process-tree kill on timeout is the actual safety net.
+- **Resource limits (POSIX only):** `RLIMIT_CPU` (default 30s, configurable
+  via `Settings.sandbox_cpu_limit_s` / `PCLI_SANDBOX_CPU_LIMIT_S`) via a
+  `preexec_fn`. `RLIMIT_AS` (virtual address space) is **not** applied by
+  default (`memory_bytes=None`) — it bounds *virtual* memory, not actual
+  usage, and Go's runtime (`kubectl`, `terraform`, most Go-based CLIs —
+  exactly what the toolbox feature exists to wrap) routinely reserves well
+  past a few hundred MB of virtual space at startup regardless of real RSS,
+  so an always-on 512MB default here broke ordinary tool invocations
+  outright, not just runaway ones. `RLIMIT_RSS` isn't a fix (advisory/
+  unenforced on modern Linux), and `RLIMIT_DATA` only bounds `sbrk`-based
+  allocation, which mmap-based allocators (Go's included) bypass entirely —
+  real, non-collateral-damage memory enforcement needs cgroups, which is
+  exactly what `DockerSandbox`'s `--memory` already does correctly. Set
+  `Settings.sandbox_memory_limit_bytes` / `PCLI_SANDBOX_MEMORY_LIMIT_BYTES`
+  explicitly if you deliberately want a memory cap back (e.g. on a
+  constrained VM) and have confirmed your tools tolerate it. Because of
+  this, the wall-clock timeout plus `psutil`-based process-tree kill on
+  timeout is this backend's actual safety net on POSIX too, not just on
+  Windows — Windows just has no `resource` module equivalent at all, so
+  there it's the *only* mechanism rather than the primary one.
 - **No network isolation on any platform** — `capabilities()` always reports
   `supports_network_isolation=False`. Guardrails/permission prompts should
   treat network-sensitive calls as always-ask when this backend is active.
