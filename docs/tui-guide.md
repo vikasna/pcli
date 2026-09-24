@@ -544,6 +544,36 @@ as a normal system message instead.
   applies live and takes effect on the next tool call rather than the next
   turn, since a rate limit has no per-turn boundary. Rejects non-numeric
   input and negative values (0 is allowed).
+- **`/allowed-roots [add|remove] [path]`** — view or live-edit the
+  filesystem guardrail's `allowed_roots` list (`GuardrailsConfig.fs_allowed_roots`,
+  default: `["."]`, just the working directory) — the `[fs]` counterpart to
+  `/max-tool-calls-per-turn`/`/max-tool-calls-per-minute` above for `[limits]`.
+  A path outside every `allowed_roots` entry is a hard guardrail deny,
+  checked before any permission prompt, so it's never something a user can
+  approve their way past by answering a prompt — this command is the actual,
+  intended way to widen what `read_file`/`write_file`/`edit_file`/`list_dir`/
+  `glob_search`/`grep`/`diff_files`/`apply_patch`/`download_file` can reach.
+  See [Guardrails](sandbox-and-permissions.md#guardrails) for the deny path
+  this fixes.
+  - With no argument, lists the current `allowed_roots` as a bulleted list,
+    followed by a usage reminder (`Usage: /allowed-roots add <path> |
+    /allowed-roots remove <path>`).
+  - **`add <path>`** — appends `path`, persists the full new list to
+    `guardrails.toml`'s `[fs]` table via `update_guardrails_fs_allowed_roots()`
+    (preserving `deny_paths` and every other table untouched), and
+    hot-reloads it into the running `PermissionManager.guardrails` so it
+    takes effect immediately, no restart needed. If `path` is already in the
+    list, it's a no-op reporting `"'{path}' is already in allowed_roots."`.
+  - **`remove <path>`** — same persist-and-hot-reload treatment in reverse.
+    If `path` isn't currently in the list, it's a no-op reporting `"'{path}'
+    isn't in allowed_roots."`. Refuses to remove the last remaining entry
+    (an empty `allowed_roots` would deny every filesystem tool call
+    outright), reporting `"Refusing to remove the last allowed_roots entry —
+    the agent needs at least one, or every filesystem tool call would be
+    denied."` instead.
+  - An unrecognized subcommand reports `"Unknown /allowed-roots subcommand:
+    '{sub_command}'. Use /allowed-roots, /allowed-roots add <path>, or
+    /allowed-roots remove <path>."`.
 - **`/prune-tool-results [off|on|<n>]`** — view/toggle/set the automatic
   tool-result pruning pass (`agent/context_pruning.py`'s
   `prune_old_tool_results`, run every turn from `ChatScreen._run_one_turn`

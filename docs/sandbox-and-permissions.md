@@ -173,7 +173,29 @@ Three checks, each tied to a specific tool argument via `ToolSpec`'s
   via shell-style wildcards anywhere in the command.
 - **`evaluate_path(path)`** — resolves the path; denied if it's within (or
   equal to) any `deny_paths` entry; allowed only if it's within (or equal to)
-  one of `allowed_roots`; otherwise denied ("outside all allowed roots").
+  one of `allowed_roots`; otherwise denied. Both deny branches explain
+  themselves rather than just stating the fact, since a guardrail deny is
+  structurally impossible to approve via the permission-prompt flow (it
+  never reaches the UI at all — see [Permission
+  manager](#permission-manager) below) and the bare old messages gave no
+  indication of that, or of how to fix it:
+  - The `deny_paths` branch: `"path is within denied path '{deny_path}'.\n[pcli]
+    Suggestion: this is a deliberate guardrails.toml [fs] deny_paths entry (a
+    hard block on a sensitive location - SSH keys, cloud credentials, ...),
+    checked before any permission prompt, so it can't be approved by asking.
+    If this is genuinely blocking legitimate work, that's a guardrails.toml
+    change for the user to make, not something to route around"` — no pointer
+    to a live command, since fixing this means deliberately editing
+    `deny_paths` in `guardrails.toml`, not something to route around.
+  - The outside-`allowed_roots` branch: `"path 'X' is outside all allowed
+    roots ({roots_list}).\n[pcli] Suggestion: this is a guardrail
+    (guardrails.toml's [fs] allowed_roots), checked before any permission
+    prompt, so it can't be approved by asking - add the path (or a parent of
+    it) to allowed_roots to let the agent reach it (in the TUI: /allowed-roots
+    add <path>)"` — this one does point at the live fix, the
+    [`/allowed-roots`](tui-guide.md#slash-commands) TUI command, which edits
+    `guardrails.toml`'s `[fs] allowed_roots` and hot-reloads the running
+    `PermissionManager` without a restart.
 - **`evaluate_python_module(qualified_name)`** — denied if the *top-level*
   module name is in `python_module_denylist` (these overlap with the
   dedicated fs/shell tools, so letting the LLM reach them indirectly via
@@ -309,10 +331,10 @@ only need the decision don't have to unpack a tuple.
 1. Guardrails first — command/path/python-module checks above. Any violation
    is an immediate `"deny"`, with `reason` set to that guardrail's own
    `GuardrailResult.reason` string (e.g. `"command matches denylist pattern
-   '...'"`, `"path is within denied path '...'"` or `"path 'X' is outside
-   all allowed roots"`, `"module 'X' is blocked (...)"`). A rate-limit
-   violation (`max_tool_calls_per_minute`) is checked first of all and denies
-   with reason `"rate limit exceeded (max_tool_calls_per_minute)"`.
+   '...'"`, the `deny_paths`/`allowed_roots` explanations quoted above, or
+   `"module 'X' is blocked (...)"`). A rate-limit violation
+   (`max_tool_calls_per_minute`) is checked first of all and denies with
+   reason `"rate limit exceeded (max_tool_calls_per_minute)"`.
 2. If the tool doesn't need permission (`default_allow=True`, i.e.
    `ToolSpec.needs_permission=False`), allow (`reason` is `None`).
 3. Otherwise, check `PermissionPolicy` for an existing remembered grant for
