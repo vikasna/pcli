@@ -124,8 +124,25 @@ class RestrictedSubprocessSandbox(Sandbox):
         allowed_roots: list[Path] | None = None,
         max_output_bytes: int = 2_000_000,
         cpu_seconds: int | None = 30,
-        memory_bytes: int | None = 512 * 1024 * 1024,
+        memory_bytes: int | None = None,
     ) -> None:
+        # memory_bytes defaults to None (no RLIMIT_AS): confirmed real case
+        # - RLIMIT_AS bounds *virtual* address space, not actual usage, and
+        # Go's runtime (kubectl, terraform, most Go-based CLIs - exactly
+        # what toolbox exists to wrap) routinely reserves well past a few
+        # hundred MB of virtual space at startup regardless of real RSS, so
+        # the old 512MB default made ordinary tool invocations fail
+        # outright. RLIMIT_RSS is advisory/unenforced on modern Linux, and
+        # RLIMIT_DATA only bounds sbrk allocation, which mmap-based
+        # allocators (Go's included) bypass - neither is a real fix. This
+        # backend's actual safety net is (and always was, per limits.py's
+        # own docstring) the wall-clock timeout + kill_process_tree, the
+        # same on every platform; cpu_seconds doesn't share this false-
+        # positive problem (a large virtual reservation burns no CPU time)
+        # and stays on by default. Both are still constructor overrides -
+        # see Settings.sandbox_memory_limit_bytes/sandbox_cpu_limit_s
+        # (agent/runtime.py) - for anyone who deliberately wants a memory
+        # cap, e.g. on a constrained VM.
         self._allowed_roots = [p.expanduser().resolve() for p in (allowed_roots or [Path.cwd()])]
         self._max_output_bytes = max_output_bytes
         self._cpu_seconds = cpu_seconds

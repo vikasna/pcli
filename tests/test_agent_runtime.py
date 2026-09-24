@@ -87,6 +87,29 @@ async def test_build_agent_runtime_sets_up_a_real_sandbox_and_client(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_build_agent_runtime_threads_sandbox_resource_limits_from_settings(tmp_path: Path):
+    """Regression coverage for a real reported bug: without this wiring,
+    Settings.sandbox_cpu_limit_s/sandbox_memory_limit_bytes would be
+    configurable but never actually reach the constructed sandbox."""
+    settings = _settings(sandbox_cpu_limit_s=5, sandbox_memory_limit_bytes=64 * 1024 * 1024)
+    runtime = await build_agent_runtime(settings, tmp_path)
+
+    assert runtime.sandbox._cpu_seconds == 5
+    assert runtime.sandbox._memory_bytes == 64 * 1024 * 1024
+    await runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_build_agent_runtime_defaults_to_no_sandbox_memory_limit(tmp_path: Path):
+    settings = _settings()
+    runtime = await build_agent_runtime(settings, tmp_path)
+
+    assert runtime.sandbox._memory_bytes is None
+    assert runtime.sandbox._cpu_seconds == 30
+    await runtime.client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_build_agent_runtime_attaches_a_browser_session_that_is_not_started_yet(
     tmp_path: Path,
 ):

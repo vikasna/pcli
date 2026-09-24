@@ -128,6 +128,28 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("PCLI_SANDBOX_BACKEND", "sandbox_backend"),
         description="auto | docker | subprocess | none",
     )
+    sandbox_cpu_limit_s: int | None = Field(
+        default=30,
+        validation_alias=AliasChoices("PCLI_SANDBOX_CPU_LIMIT_S", "sandbox_cpu_limit_s"),
+        description="RestrictedSubprocessSandbox (the 'subprocess' backend) only, POSIX only: "
+        "CPU-time limit (RLIMIT_CPU) applied to every spawned process. None disables it, "
+        "leaving the wall-clock timeout as the only cap. No effect on DockerSandbox (which "
+        "uses --cpus) or on Windows (no RLIMIT_CPU equivalent).",
+    )
+    sandbox_memory_limit_bytes: int | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "PCLI_SANDBOX_MEMORY_LIMIT_BYTES", "sandbox_memory_limit_bytes"
+        ),
+        description="RestrictedSubprocessSandbox (the 'subprocess' backend) only, POSIX only: "
+        "virtual-address-space limit (RLIMIT_AS) applied to every spawned process. None "
+        "(the default) disables it - RLIMIT_AS bounds virtual memory, not actual usage, and "
+        "Go-based CLIs (kubectl, terraform, ...) routinely reserve far more of that than "
+        "they actually use, so a default-on limit here made ordinary tool calls fail "
+        "outright. Set an explicit byte count only if you deliberately want a memory cap "
+        "(e.g. on a constrained VM) and have confirmed your tools tolerate it. No effect on "
+        "DockerSandbox (which uses --memory, a real cgroup-enforced limit) or on Windows.",
+    )
     artifact_threshold_chars: int = Field(
         default=4000,
         validation_alias=AliasChoices("PCLI_ARTIFACT_THRESHOLD_CHARS", "artifact_threshold_chars"),

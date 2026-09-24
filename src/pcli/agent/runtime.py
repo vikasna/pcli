@@ -107,7 +107,12 @@ async def build_agent_runtime(
     browser work is part of what makes it trustworthy to watch. `pcli run`
     passes True by default instead (nothing to show, and a scheduled run
     shouldn't pop up a window), overridable with --headed."""
-    sandbox = await select_sandbox(backend_override=settings.sandbox_backend, allowed_roots=[cwd])
+    sandbox = await select_sandbox(
+        backend_override=settings.sandbox_backend,
+        allowed_roots=[cwd],
+        cpu_limit_s=settings.sandbox_cpu_limit_s,
+        memory_limit_bytes=settings.sandbox_memory_limit_bytes,
+    )
 
     tool_registry = build_default_registry()
     if not settings.is_local_api():

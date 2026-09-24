@@ -122,6 +122,25 @@ def test_is_telegram_configured_requires_both_a_token_and_a_chat_id():
     assert Settings(telegram_bot_token="abc", telegram_chat_id=123).is_telegram_configured() is True
 
 
+def test_sandbox_resource_limit_defaults():
+    """Regression coverage for a real reported bug: sandbox_memory_limit_bytes
+    defaults to None (no RLIMIT_AS) - see subprocess_backend.py's own
+    __init__ comment for why an always-on virtual-memory limit broke
+    ordinary Go-based CLI tool calls (kubectl, terraform, ...), not just
+    runaway ones. sandbox_cpu_limit_s is unaffected and stays at 30."""
+    settings = Settings()
+    assert settings.sandbox_memory_limit_bytes is None
+    assert settings.sandbox_cpu_limit_s == 30
+
+
+def test_sandbox_resource_limits_are_configurable_via_env_vars(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("PCLI_SANDBOX_CPU_LIMIT_S", "5")
+    monkeypatch.setenv("PCLI_SANDBOX_MEMORY_LIMIT_BYTES", str(64 * 1024 * 1024))
+    settings = Settings()
+    assert settings.sandbox_cpu_limit_s == 5
+    assert settings.sandbox_memory_limit_bytes == 64 * 1024 * 1024
+
+
 def test_add_local_api_gateway_appends_without_overwriting_other_keys(isolated_config: Path):
     update_config_file(default_model="llama-3")
     add_local_api_gateway("http://localhost:1234/v1")

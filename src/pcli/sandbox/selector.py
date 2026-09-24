@@ -33,12 +33,23 @@ async def probe_docker_available(*, timeout_s: float = 1.5) -> bool:
 
 
 async def select_sandbox(
-    *, backend_override: str = "auto", allowed_roots: list[Path] | None = None
+    *,
+    backend_override: str = "auto",
+    allowed_roots: list[Path] | None = None,
+    cpu_limit_s: int | None = 30,
+    memory_limit_bytes: int | None = None,
 ) -> Sandbox:
+    """cpu_limit_s/memory_limit_bytes only affect RestrictedSubprocessSandbox
+    (POSIX only) - see Settings.sandbox_cpu_limit_s/sandbox_memory_limit_bytes
+    for why memory_limit_bytes defaults to None (RLIMIT_AS's virtual-vs-actual
+    memory mismatch breaks ordinary Go-based CLI tool calls, not just
+    runaway ones)."""
     if backend_override == "docker":
         return DockerSandbox()
     if backend_override == "subprocess":
-        return RestrictedSubprocessSandbox(allowed_roots=allowed_roots)
+        return RestrictedSubprocessSandbox(
+            allowed_roots=allowed_roots, cpu_seconds=cpu_limit_s, memory_bytes=memory_limit_bytes
+        )
     if backend_override == "none":
         return NullSandbox()
     if backend_override not in ("auto", ""):
@@ -50,4 +61,6 @@ async def select_sandbox(
 
     if await probe_docker_available():
         return DockerSandbox()
-    return RestrictedSubprocessSandbox(allowed_roots=allowed_roots)
+    return RestrictedSubprocessSandbox(
+        allowed_roots=allowed_roots, cpu_seconds=cpu_limit_s, memory_bytes=memory_limit_bytes
+    )

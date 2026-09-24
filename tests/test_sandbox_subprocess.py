@@ -31,6 +31,59 @@ def test_posix_preexec_fn_does_not_call_setsid_itself():
     preexec()  # must not raise
 
 
+def test_default_memory_limit_is_none():
+    """Regression coverage for a real reported bug: RLIMIT_AS bounds
+    *virtual* address space, not actual usage, and Go's runtime (kubectl,
+    terraform, most Go-based CLIs - exactly what toolbox exists to wrap)
+    routinely reserves well past a few hundred MB of virtual space at
+    startup regardless of real RSS, so the old 512MB default made ordinary
+    tool invocations fail outright, not just runaway ones. See
+    subprocess_backend.py's own __init__ comment for the full reasoning."""
+    sandbox = RestrictedSubprocessSandbox()
+    assert sandbox._memory_bytes is None
+
+
+def test_default_cpu_limit_is_unchanged():
+    """cpu_seconds (RLIMIT_CPU) doesn't share RLIMIT_AS's false-positive
+    problem - a large virtual reservation at startup burns no CPU time -
+    so it stays on by default."""
+    sandbox = RestrictedSubprocessSandbox()
+    assert sandbox._cpu_seconds == 30
+
+
+_MMAP_600MB = [
+    sys.executable,
+    "-c",
+    "import mmap; mmap.mmap(-1, 600 * 1024 * 1024); print('reserved-ok')",
+]
+
+
+@_posix_only
+@pytest.mark.asyncio
+async def test_default_memory_limit_does_not_break_a_large_virtual_reservation(tmp_path: Path):
+    """End-to-end reproduction of the reported bug class, portable (stdlib
+    mmap, no real Go binary needed): reserving 600MB of *virtual* address
+    space (what Go's runtime routinely does at startup, well past the old
+    512MB RLIMIT_AS default) must succeed now that memory_bytes defaults
+    to None, the same way it would have failed under the old default."""
+    sandbox = RestrictedSubprocessSandbox(allowed_roots=[tmp_path])
+    result = await sandbox.execute(ExecRequest(command=_MMAP_600MB, cwd=tmp_path, timeout_s=10))
+    assert result.exit_code == 0
+    assert "reserved-ok" in result.stdout
+
+
+@_posix_only
+@pytest.mark.asyncio
+async def test_explicit_memory_limit_still_enforces_rlimit_as(tmp_path: Path):
+    """memory_bytes is still a real, working override for anyone who
+    deliberately wants a memory cap back (e.g. on a constrained VM) - not
+    removed outright, just no longer forced on everyone by default."""
+    sandbox = RestrictedSubprocessSandbox(allowed_roots=[tmp_path], memory_bytes=64 * 1024 * 1024)
+    result = await sandbox.execute(ExecRequest(command=_MMAP_600MB, cwd=tmp_path, timeout_s=10))
+    assert result.exit_code != 0
+    assert "reserved-ok" not in result.stdout
+
+
 @pytest.mark.asyncio
 async def test_execute_argv_list(tmp_path: Path):
     sandbox = RestrictedSubprocessSandbox(allowed_roots=[tmp_path])
