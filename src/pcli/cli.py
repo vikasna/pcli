@@ -8,16 +8,15 @@ from pathlib import Path
 
 import typer
 
-from pcli.agent.headless import new_headless_session, run_headless_task
-from pcli.agent.runtime import build_agent_runtime, build_permission_manager
 from pcli.config.paths import data_dir
 from pcli.config.settings import add_local_api_gateway, get_settings, update_config_file
 from pcli.cost.tracker import global_cost_report
+from pcli.scheduler.runner import ScheduledSessionNotFoundError, run_task_once
 from pcli.session.directory_check import directory_mismatch
 from pcli.session.export import export_session
 from pcli.session.importer import import_session
 from pcli.session.store import SessionNotFoundError, SessionStore
-from pcli.telegram.bot import notify_telegram, run_telegram_daemon
+from pcli.telegram.bot import run_telegram_daemon
 from pcli.util.logging import configure_logging
 
 app = typer.Typer(add_completion=False, no_args_is_help=False)
@@ -30,6 +29,10 @@ app.add_typer(cost_app, name="cost")
 
 toolbox_app = typer.Typer(help="Discover OS/software tools for the agent to use.")
 app.add_typer(toolbox_app, name="toolbox")
+
+schedule_app = typer.Typer(help="Crontab-like recurring task scheduling (requires the "
+    "'schedule' extra: pip install -e '.[schedule]').")
+app.add_typer(schedule_app, name="schedule")
 
 
 @app.callback(invoke_without_command=True)
@@ -192,55 +195,32 @@ def run_command(
 
         store = SessionStore()
         cwd = Path.cwd()
-        if session:
-            try:
-                headless_session = store.load(session)
-            except SessionNotFoundError:
-                typer.echo(f"No session found with id '{session}'.", err=True)
-                raise typer.Exit(code=1) from None
-        else:
-            headless_session = new_headless_session(store, settings, cwd)
-
-        try:
-            runtime = await build_agent_runtime(settings, cwd, browser_headless=not headed)
-        except Exception as exc:
-            typer.echo(f"Startup failed: {exc}", err=True)
-            raise typer.Exit(code=1) from exc
 
         def on_progress(line: str) -> None:
             if not quiet:
                 typer.echo(line)
 
         try:
-            result = await run_headless_task(
+            result = await run_task_once(
                 task,
-                session=headless_session,
-                runtime=runtime,
                 settings=settings,
-                permission_manager=build_permission_manager(settings),
-                cwd=cwd,
                 store=store,
+                cwd=cwd,
+                session_id=session,
+                quiet=quiet,
+                headed=headed,
+                notify_telegram_flag=notify_telegram_flag,
                 on_progress=on_progress,
             )
-        finally:
-            await runtime.client.aclose()
-            await runtime.browser_session.close()
+        except ScheduledSessionNotFoundError:
+            typer.echo(f"No session found with id '{session}'.", err=True)
+            raise typer.Exit(code=1) from None
+        except Exception as exc:
+            typer.echo(f"Run failed: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
 
         typer.echo(f"\n{result.final_text}" if not quiet else result.final_text)
         typer.echo(f"\nSession: {result.session.id} (resume with: pcli --resume {result.session.id})")
-
-        if notify_telegram_flag:
-            if not settings.is_telegram_configured():
-                typer.echo(
-                    "--notify-telegram was given but telegram_bot_token/telegram_chat_id "
-                    "aren't configured - skipping the notification.",
-                    err=True,
-                )
-            else:
-                try:
-                    await notify_telegram(settings, result.final_text)
-                except Exception as exc:  # noqa: BLE001 - a failed notification shouldn't fail the run
-                    typer.echo(f"Failed to send the Telegram notification: {exc}", err=True)
 
         if result.terminated_early or result.truncations_exhausted:
             raise typer.Exit(code=1)
@@ -399,6 +379,197 @@ def toolbox_remove(name: str) -> None:
     registry.pop(name)
     store.write_registry(registry)
     typer.echo(f"Removed '{name}' from the toolbox.")
+
+
+@schedule_app.command("add")
+def schedule_add(
+    cron: str = typer.Option(..., "--cron", help="Standard 5-field cron expression, e.g. "
+        "'*/15 * * * *' (minute hour day month weekday)."),
+    task: str | None = typer.Option(None, "--task", help="The task to run, given inline."),
+    task_file: str | None = typer.Option(
+        None, "--task-file", help="Path to a file containing the task. Exactly one of "
+        "--task/--task-file is required."
+    ),
+    name: str = typer.Option("", "--name", help="A friendly label shown in 'pcli schedule list'."),
+    session: str | None = typer.Option(
+        None, "--session", help="Append to this existing session on every run, instead of "
+        "starting a fresh one each time."
+    ),
+    headed: bool = typer.Option(False, "--headed", help="Show the browser window, if used."),
+    notify_telegram_flag: bool = typer.Option(
+        False, "--notify-telegram", help="Send the final answer to the configured Telegram "
+        "chat after each run."
+    ),
+    quiet: bool = typer.Option(
+        True, "--quiet/--no-quiet", help="Only keep the final answer in the run's progress "
+        "log, not tool-call-by-tool-call output."
+    ),
+) -> None:
+    """Adds a new recurring job. Nothing runs until 'pcli schedule run' (the
+    daemon) is actually started - adding a job only saves it."""
+    from croniter import croniter
+
+    from pcli.scheduler.models import ScheduleJob
+    from pcli.scheduler.store import add_job
+
+    if bool(task) == bool(task_file):
+        typer.echo("Provide exactly one of --task or --task-file.", err=True)
+        raise typer.Exit(code=1)
+    if not croniter.is_valid(cron):
+        typer.echo(f"'{cron}' isn't a valid 5-field cron expression.", err=True)
+        raise typer.Exit(code=1)
+
+    job = ScheduleJob(
+        name=name,
+        cron=cron,
+        task=task,
+        task_file=task_file,
+        session_id=session,
+        headed=headed,
+        notify_telegram=notify_telegram_flag,
+        quiet=quiet,
+    )
+    add_job(job)
+    typer.echo(f"Added job {job.id} ({cron}). Start 'pcli schedule run' to begin executing it.")
+
+
+@schedule_app.command("list")
+def schedule_list() -> None:
+    from pcli.scheduler.store import read_schedule
+
+    jobs = read_schedule().jobs
+    if not jobs:
+        typer.echo("No scheduled jobs. Add one with: pcli schedule add --cron '...' --task '...'")
+        return
+    for job in jobs:
+        state = "enabled" if job.enabled else "disabled"
+        next_run = job.next_run_at.isoformat() if job.next_run_at else "not yet computed"
+        last = f"{job.last_status} @ {job.last_run_at.isoformat()}" if job.last_run_at else "never run"
+        label = job.name or "(unnamed)"
+        typer.echo(f"{job.id}  {label}  [{job.cron}]  {state}  next: {next_run}  last: {last}")
+
+
+@schedule_app.command("remove")
+def schedule_remove(job_id: str) -> None:
+    from pcli.scheduler.store import remove_job
+
+    if not remove_job(job_id):
+        typer.echo(f"No job found with id '{job_id}'.", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"Removed job {job_id}.")
+
+
+@schedule_app.command("enable")
+def schedule_enable(job_id: str) -> None:
+    from pcli.scheduler.store import set_job_enabled
+
+    if not set_job_enabled(job_id, True):
+        typer.echo(f"No job found with id '{job_id}'.", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"Enabled job {job_id}.")
+
+
+@schedule_app.command("disable")
+def schedule_disable(job_id: str) -> None:
+    from pcli.scheduler.store import set_job_enabled
+
+    if not set_job_enabled(job_id, False):
+        typer.echo(f"No job found with id '{job_id}'.", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"Disabled job {job_id}.")
+
+
+@schedule_app.command("run")
+def schedule_run(
+    poll_interval: int = typer.Option(
+        30, "--poll-interval", help="Seconds between checking schedule.json for due jobs."
+    ),
+) -> None:
+    """The daemon: runs until interrupted (Ctrl+C), firing each enabled
+    job's task when its cron schedule says it's due. Point an OS-level
+    scheduler (Task Scheduler/systemd/a 'nohup'/tmux session) at this
+    command to keep it running - it is itself the thing that decides
+    *when*, not something an external cron needs to re-invoke per job."""
+    from pcli.agent.headless import HeadlessTurnResult
+    from pcli.scheduler.daemon import run_scheduler_daemon
+    from pcli.scheduler.models import ScheduleJob
+
+    async def _run() -> None:
+        settings = get_settings()
+        if not settings.is_configured():
+            typer.echo(
+                "Gateway not configured. Set PCLI_GATEWAY_URL (and PCLI_GATEWAY_API_KEY if "
+                "your gateway requires auth) or edit the config file first.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+
+        def on_job_run(
+            job: ScheduleJob, result: HeadlessTurnResult | None, error: Exception | None
+        ) -> None:
+            if error is not None:
+                typer.echo(f"[{job.id}] {job.name or job.cron} failed: {error}", err=True)
+            else:
+                typer.echo(f"[{job.id}] {job.name or job.cron} finished.")
+
+        typer.echo(f"Scheduler running (polling every {poll_interval}s). Press Ctrl+C to stop.")
+        await run_scheduler_daemon(settings, poll_interval_s=poll_interval, on_job_run=on_job_run)
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        typer.echo("\nStopped.")
+
+
+@schedule_app.command("run-now")
+def schedule_run_now(job_id: str) -> None:
+    """Fires one job immediately, bypassing its cron schedule - for testing
+    a job works before trusting the daemon's own timing."""
+    from pcli.scheduler.store import get_job
+
+    job = get_job(job_id)
+    if job is None:
+        typer.echo(f"No job found with id '{job_id}'.", err=True)
+        raise typer.Exit(code=1)
+
+    task = job.task
+    if job.task_file:
+        task = Path(job.task_file).read_text(encoding="utf-8")
+    assert task is not None
+
+    async def _run() -> None:
+        settings = get_settings()
+        if not settings.is_configured():
+            typer.echo(
+                "Gateway not configured. Set PCLI_GATEWAY_URL (and PCLI_GATEWAY_API_KEY if "
+                "your gateway requires auth) or edit the config file first.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+
+        store = SessionStore()
+        try:
+            result = await run_task_once(
+                task,
+                settings=settings,
+                store=store,
+                cwd=Path.cwd(),
+                session_id=job.session_id,
+                quiet=job.quiet,
+                headed=job.headed,
+                notify_telegram_flag=job.notify_telegram,
+                on_progress=typer.echo,
+            )
+        except ScheduledSessionNotFoundError:
+            typer.echo(f"No session found with id '{job.session_id}'.", err=True)
+            raise typer.Exit(code=1) from None
+        except Exception as exc:
+            typer.echo(f"Run failed: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+
+        typer.echo(f"\n{result.final_text}")
+
+    asyncio.run(_run())
 
 
 def main() -> None:

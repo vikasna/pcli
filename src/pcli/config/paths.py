@@ -73,6 +73,13 @@ def cost_ledger_file() -> Path:
     return data_dir() / "cost_ledger.jsonl"
 
 
+def schedule_file() -> Path:
+    # JSON, not TOML: written to at runtime (last_run_at/next_run_at
+    # bookkeeping updates after every scheduled run) - same reasoning as
+    # memory_file().
+    return data_dir() / "schedule.json"
+
+
 def browser_profiles_dir(profile: str = "default") -> Path:
     # A dedicated Playwright persistent-context profile directory per name
     # (see browser/session.py) - this is what makes a login/cookies survive

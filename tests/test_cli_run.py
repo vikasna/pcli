@@ -187,8 +187,8 @@ def test_run_exits_nonzero_when_the_turn_terminated_early(
     async def _fake_run_headless_task(task, *, session, **kwargs):
         return HeadlessTurnResult(session=session, final_text="incomplete", terminated_early=True)
 
-    monkeypatch.setattr("pcli.cli.build_agent_runtime", AsyncMock(return_value=fake_runtime))
-    monkeypatch.setattr("pcli.cli.run_headless_task", _fake_run_headless_task)
+    monkeypatch.setattr("pcli.scheduler.runner.build_agent_runtime", AsyncMock(return_value=fake_runtime))
+    monkeypatch.setattr("pcli.scheduler.runner.run_headless_task", _fake_run_headless_task)
 
     result = runner.invoke(app, _root_and_run_args())
     assert result.exit_code == 1
@@ -217,8 +217,8 @@ def test_run_defaults_the_browser_to_headless(isolated_store: SessionStore, monk
     async def _fake_run_headless_task(task, *, session, **kwargs):
         return HeadlessTurnResult(session=session, final_text="done", terminated_early=False)
 
-    monkeypatch.setattr("pcli.cli.build_agent_runtime", fake_build)
-    monkeypatch.setattr("pcli.cli.run_headless_task", _fake_run_headless_task)
+    monkeypatch.setattr("pcli.scheduler.runner.build_agent_runtime", fake_build)
+    monkeypatch.setattr("pcli.scheduler.runner.run_headless_task", _fake_run_headless_task)
 
     result = runner.invoke(app, _root_and_run_args())
 
@@ -246,8 +246,8 @@ def test_run_headed_flag_shows_the_browser(isolated_store: SessionStore, monkeyp
     async def _fake_run_headless_task(task, *, session, **kwargs):
         return HeadlessTurnResult(session=session, final_text="done", terminated_early=False)
 
-    monkeypatch.setattr("pcli.cli.build_agent_runtime", fake_build)
-    monkeypatch.setattr("pcli.cli.run_headless_task", _fake_run_headless_task)
+    monkeypatch.setattr("pcli.scheduler.runner.build_agent_runtime", fake_build)
+    monkeypatch.setattr("pcli.scheduler.runner.run_headless_task", _fake_run_headless_task)
 
     result = runner.invoke(app, [*_root_and_run_args(), "--headed"])
 
@@ -294,7 +294,7 @@ def test_run_notify_telegram_sends_the_final_answer_when_configured(
     monkeypatch.setenv("PCLI_TELEGRAM_BOT_TOKEN", "abc123")
     monkeypatch.setenv("PCLI_TELEGRAM_CHAT_ID", "555")
     fake_notify = AsyncMock()
-    monkeypatch.setattr("pcli.cli.notify_telegram", fake_notify)
+    monkeypatch.setattr("pcli.scheduler.runner.notify_telegram", fake_notify)
 
     result = runner.invoke(app, _base_args("--task", "say hello", "--notify-telegram"))
 
@@ -316,7 +316,7 @@ def test_run_without_notify_telegram_never_calls_it(
     monkeypatch.setenv("PCLI_TELEGRAM_BOT_TOKEN", "abc123")
     monkeypatch.setenv("PCLI_TELEGRAM_CHAT_ID", "555")
     fake_notify = AsyncMock()
-    monkeypatch.setattr("pcli.cli.notify_telegram", fake_notify)
+    monkeypatch.setattr("pcli.scheduler.runner.notify_telegram", fake_notify)
 
     result = runner.invoke(app, _base_args("--task", "say hello"))
 
@@ -336,7 +336,7 @@ def test_run_notify_telegram_failure_does_not_fail_the_run(
     monkeypatch.setenv("PCLI_TELEGRAM_BOT_TOKEN", "abc123")
     monkeypatch.setenv("PCLI_TELEGRAM_CHAT_ID", "555")
     monkeypatch.setattr(
-        "pcli.cli.notify_telegram", AsyncMock(side_effect=RuntimeError("network unreachable"))
+        "pcli.scheduler.runner.notify_telegram", AsyncMock(side_effect=RuntimeError("network unreachable"))
     )
 
     result = runner.invoke(app, _base_args("--task", "say hello", "--notify-telegram"))
