@@ -150,6 +150,15 @@ class Settings(BaseSettings):
         "(e.g. on a constrained VM) and have confirmed your tools tolerate it. No effect on "
         "DockerSandbox (which uses --memory, a real cgroup-enforced limit) or on Windows.",
     )
+    ui_theme: str = Field(
+        default="textual-dark",
+        validation_alias=AliasChoices("PCLI_UI_THEME", "ui_theme"),
+        description="Textual theme name applied on startup (App.theme) - any of Textual's own "
+        "builtins (textual-dark, gruvbox, nord, dracula, monokai, ...) or one of pcli's own "
+        "vim-* themes (see tui/themes.py). Set live and persisted via the TUI's /theme "
+        "command; an unknown/stale value here is ignored rather than failing startup, "
+        "falling back to whatever App.theme already defaults to.",
+    )
     artifact_threshold_chars: int = Field(
         default=4000,
         validation_alias=AliasChoices("PCLI_ARTIFACT_THRESHOLD_CHARS", "artifact_threshold_chars"),

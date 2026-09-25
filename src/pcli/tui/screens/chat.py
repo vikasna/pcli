@@ -155,6 +155,9 @@ headroom below the model's context limit so a single response can't \
 consume the entire remaining window by itself.
 - **/rename [name]** — view or set the current session's title (shown in \
 /sessions).
+- **/theme [name]** — view the available Textual themes (built-in and \
+pcli's own vim-* ones) and which is active, or switch live and remember \
+it for next time.
 - **/plan** — enter plan mode: the agent can only use read-only/exploration \
 tools (no writes, edits, or shell commands) until you exit.
 - **/build** — exit plan mode, restoring full tool access.
@@ -216,6 +219,7 @@ _SLASH_COMMANDS: list[tuple[str, str]] = [
     ("prune-tool-results", "View, toggle, or set old tool-result pruning."),
     ("max-response-tokens", "View, toggle, or set the dynamic response-length cap."),
     ("rename", "View or set the current session's title."),
+    ("theme", "View or switch the TUI's color theme."),
     ("plan", "Enter plan mode (read-only tools only)."),
     ("build", "Exit plan mode, restoring full tool access."),
     ("toolbox", "Discover, list, or remove toolbox tools."),
@@ -756,6 +760,8 @@ class ChatScreen(Screen):
             self._handle_max_response_tokens_command(rest or None)
         elif command == "rename":
             self._handle_rename_command(rest or None)
+        elif command == "theme":
+            self._handle_theme_command(rest or None)
         elif command == "plan":
             self._set_plan_mode(True)
         elif command == "build":
@@ -1282,6 +1288,32 @@ class ChatScreen(Screen):
         self._session.title = arg
         self._store.save(self._session)
         message_view.add_message("system", f"Session renamed to '{arg}'.")
+
+    def _handle_theme_command(self, arg: str | None) -> None:
+        """`/theme [name]` — App.theme is the actual switch (Textual repaints
+        every CSS design-token-based style live, no restart needed); this
+        just persists the choice the same way /rename persists a title, so
+        it's remembered next time (see PcliApp.on_mount, which applies
+        settings.ui_theme at startup). No-arg lists every registered theme
+        (Textual's own builtins plus pcli's vim-* ones from tui/themes.py),
+        marking the active one — also the fallback shown for an unknown
+        name, rather than silently doing nothing."""
+        message_view = self.query_one(MessageView)
+        available = sorted(self.app.available_themes)
+        current = self.app.theme
+
+        if arg and arg in self.app.available_themes:
+            self.app.theme = arg
+            self._settings.ui_theme = arg
+            update_config_file(ui_theme=arg)
+            message_view.add_message("system", f"Theme set to '{arg}'.")
+            return
+
+        listing = "\n".join(f"- `{name}`{' (active)' if name == current else ''}" for name in available)
+        prefix = f"Unknown theme '{arg}'.\n\n" if arg else ""
+        message_view.add_message(
+            "system", f"{prefix}**Available themes:**\n{listing}\n\nUsage: /theme <name>"
+        )
 
     def _set_plan_mode(self, enabled: bool) -> None:
         """`/plan` (enter) / `/build` (exit) — restricts the agent to
