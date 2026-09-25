@@ -60,12 +60,26 @@ text otherwise goes to the model.
 ### Submitting while a turn is in progress
 
 Submitting a message while pcli is still working on a previous turn no longer
-cancels that turn. Your message is appended to the transcript right away, just
-like normal, and is then automatically sent as a follow-up turn the instant
-the current one finishes. If you keep typing and submitting while pcli is
-still busy, each message queues up and runs in turn, back-to-back, with
-nothing lost or interrupted along the way — the same queued-input behavior
-you may know from opencode or Claude Code.
+cancels that turn. Instead of being appended to the transcript right away, it's
+held in `ChatScreen._queued_followups` and shown immediately via
+`MessageView.add_queued_user_message` — a dimmed `.message-queued` style that
+visually distinguishes it as "received, will send once ready" — without being
+written to `session.messages` yet. Only once the in-flight turn actually
+finishes does `_stream_response` fold each queued message into
+`session.messages`, in order, and start a follow-up turn for it. If you keep
+typing and submitting while pcli is still busy, each message queues up and
+runs in turn, back-to-back, with nothing lost or interrupted along the way —
+the same queued-input behavior you may know from opencode or Claude Code.
+
+This deliberate delay fixes a real bug: appending the message and showing it
+immediately, on the same event-loop turn the keystroke arrived, could land it
+*before* the in-flight turn's own assistant reply in `session.messages`
+(that reply isn't appended until `turn_complete` fires), corrupting the
+order of conversation history sent to the LLM on the next turn — and, if
+typed while the assistant's reply was actively streaming, calling the normal
+`MessageView.add_message` would silently hijack the widget streaming text
+was being appended into, redirecting the rest of that reply into the new
+message's own widget instead.
 
 The input box is a `ChatInput` (`src/pcli/tui/widgets/chat_input.py`), a
 `TextArea` subclass — Textual's `Input` is fundamentally single-line (there's
@@ -272,9 +286,11 @@ background, orphaned.
   work.
 - **Escape with no turn running** is a silent no-op.
 - After cancelling, a system message "Turn cancelled." appears in the chat.
-  If a follow-up message had been queued mid-turn (see "Submitting while a
-  turn is in progress" above) it's dropped rather than sent, and the note
-  says so: "A queued follow-up message was not sent."
+  If one or more follow-up messages had been queued mid-turn (see "Submitting
+  while a turn is in progress" above, `ChatScreen._queued_followups`) they're
+  dropped rather than sent, and the note says so, pluralized as needed: "1
+  queued follow-up message not sent." or "2 queued follow-up messages not
+  sent."
 - No new keybinding conflicts: plain Escape had no prior binding on the chat
   screen (`ChatScreen.BINDINGS`, `src/pcli/tui/screens/chat.py:72`).
 
@@ -874,10 +890,12 @@ headroom instead of immediately hitting the same wall again. When it fires:
   token limit before finishing — continuing automatically (N/3)."
 - A synthetic `"Continue."` user-role message is appended to the session —
   the exact same fix a user would type manually — and the existing
-  queued-followup mechanism (`_has_queued_followup`, the same one that lets
-  a user's own follow-up message queue up while a turn is still running) is
-  reused to trigger another turn automatically. No new turn-loop mechanism
-  was added. Each synthetic `"Continue."` message is its own turn boundary
+  `_has_queued_followup` boolean (unrelated, despite the similar name, to
+  `_queued_followups` — the list that holds a *user's own* messages typed
+  while a turn is in progress, see "Submitting while a turn is in progress"
+  above) is set to trigger another turn automatically via the same
+  `_stream_response` loop. No new turn-loop mechanism was added. Each
+  synthetic `"Continue."` message is its own turn boundary
   like any real user message, so several in a row can concentrate inside
   auto-compaction's protected `auto_compact_keep_recent_turns` window — see
   [Auto-compaction](#auto-compaction) above for what happens when that
@@ -1329,7 +1347,7 @@ One line normally, growing to two while a subagent is running
 (`StatusBar._sync_height`, `src/pcli/tui/widgets/status_bar.py`):
 
 ```
-[PLAN MODE]   ⠋ Working...   model: gpt-4o   cost: $0.0123   ctx: 3.2k/128.0k (2%)   tokens: 4.1k   sandbox: docker
+[PLAN MODE]   ⠋ Working...   model: gpt-4o   cost: $0.0123   ctx: 3.2k/128.0k (2%)   tokens: 4.1k   tools: 2   sandbox: docker
 ⟳ Subagent: investigate failing test — 3 tool call(s), last: run_shell
 ```
 
@@ -1364,6 +1382,14 @@ Line 1:
   recent LLM call's reported usage (only shown once a limit is known).
 - `tokens` — cumulative total tokens for the session, formatted with
   k/m suffixes.
+- `tools` — the main agent's own top-level tool-call count for the *current
+  turn* (`StatusBar.main_tool_calls`), reset to 0 at the start of every turn
+  (`ChatScreen._run_one_turn`) and incremented once per `tool_result` chunk
+  the main loop itself produces. Deliberately separate from the subagent
+  tool-call count on line 2 below: a subagent's own internal tool calls are
+  never added to this count — only the main loop's own top-level calls are,
+  so `spawn_subagent` itself counts here as exactly one call regardless of
+  how much work the subagent does internally.
 - `sandbox` — the backend actually selected at startup (`docker` or
   `subprocess`), so you always know the isolation level in effect.
 
