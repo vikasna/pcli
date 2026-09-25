@@ -676,6 +676,29 @@ reads as over `auto_compact_threshold`.
   `derive_title()` prefers an explicitly-set title over the auto-derived
   snippet of the first message, so a renamed session keeps that name in the
   session list even as the conversation moves on.
+- **`/theme [name]`** — with no argument, lists every theme registered on
+  the running `App` (`self.app.available_themes`) as a bulleted list,
+  marking the currently-active one `(active)`. With an argument (`/theme
+  nord`), if `name` is a known theme, switches to it live —
+  `self.app.theme = name` repaints every CSS design-token-based style
+  immediately, no restart — and persists the choice to `config.toml`
+  (`update_config_file(ui_theme=name)`, same pattern as `/rename`), so it's
+  remembered next launch. An unknown `name` reports "Unknown theme
+  '`name`'." followed by the same available-themes list, rather than
+  silently failing (`ChatScreen._handle_theme_command`,
+  `src/pcli/tui/screens/chat.py`). Available themes are Textual's own
+  builtins (`textual-dark`, `textual-light`, `gruvbox`, `nord`, `dracula`,
+  `monokai`, `catppuccin-*`, `solarized-*`, `tokyo-night`, `flexoki`,
+  `rose-pine-*`, `atom-one-*`, `ansi-*`, ...) plus five pcli-specific
+  themes approximating classic bundled vim colorschemes not already
+  covered by Textual's builtins — `vim-desert`, `vim-torte`,
+  `vim-evening`, `vim-elflord`, `vim-slate` (period-appropriate
+  approximations, not byte-exact ports — vim's terminal-256-color palette
+  model doesn't map 1:1 onto Textual's primary/secondary/accent/surface/panel
+  tokens — `src/pcli/tui/themes.py`). These five are registered on startup
+  (`PcliApp.on_mount`) alongside Textual's builtins, then `Settings.ui_theme`
+  is applied as the initial theme if it names a registered one — see
+  [`configuration.md`](configuration.md#settings-fields).
 - **`/plan`** / **`/build`** — toggle plan mode: a restricted mode for
   investigating and proposing an approach without the model being able to
   make any changes. See [Plan mode](#plan-mode) below for the full behavior.
