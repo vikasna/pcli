@@ -48,8 +48,12 @@ TUI (ChatScreen) -> AgentLoop -> GatewayClient (LLM gateway)
   auto-compaction, system-prompt injection, and the `/memory` command.
 - [`headless-and-scheduled-runs.md`](headless-and-scheduled-runs.md) — the
   shared non-interactive runtime (`agent/runtime.py`, `agent/headless.py`)
-  and `pcli run`, the one-shot "run a task and exit" command meant for OS
-  schedulers (cron / Task Scheduler).
+  and `pcli run`, the one-shot "run a task and exit" command that an OS
+  scheduler (cron / Task Scheduler) or pcli's own scheduler can invoke.
+- [`scheduling.md`](scheduling.md) — `pcli schedule`, pcli's own
+  crontab-like recurring task scheduler: the `ScheduleJob` model,
+  `schedule.json` persistence, the polling daemon (`pcli schedule run`),
+  and the `add`/`list`/`remove`/`enable`/`disable`/`run-now` subcommands.
 - [`browser-automation.md`](browser-automation.md) — driving a real
   Chromium browser via Playwright: the seven `browser_*` tools, the
   shared/persistent `BrowserSession`, and the headed-vs-headless default

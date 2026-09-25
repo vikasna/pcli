@@ -8,12 +8,19 @@ turn-driving logic out of `ChatScreen` so a non-interactive front end can
 drive the same machinery without pulling in Textual at all.
 
 Today there are two such front ends: `pcli run` (below), a one-shot "run
-this task and exit" command meant to be invoked by an OS scheduler, and
-`pcli telegram`, a long-running daemon that answers incoming messages over
-Telegram — see [`telegram-bot.md`](telegram-bot.md) for that one.
+this task and exit" command that can be invoked by an OS scheduler or by
+pcli's own scheduler, and `pcli telegram`, a long-running daemon that
+answers incoming messages over Telegram — see
+[`telegram-bot.md`](telegram-bot.md) for that one.
 [Browser automation](browser-automation.md) has also landed on this
 foundation: `pcli run` shares the same `AgentRuntime`/`BrowserSession`
 wiring the TUI uses, just defaulting to headless (see `--headed` below).
+`pcli schedule` — pcli's own crontab-like recurring task scheduler — is
+built on this same foundation too: a fired scheduled job runs through the
+same `run_task_once` (`src/pcli/scheduler/runner.py`) that `pcli run`
+itself calls, now factored out so the two entry points share one
+implementation instead of two that could drift. See
+[`scheduling.md`](scheduling.md) for that command group and its daemon.
 
 ## Shared runtime building blocks
 
@@ -45,6 +52,12 @@ wiring the TUI uses, just defaulting to headless (see `--headed` below).
   headless.py`) — builds a fresh `Session` with the same system prompt a
   brand-new TUI session gets, including the [global user
   memory](memory.md) section if `memory_enabled`.
+- **`run_task_once(...)`** (`scheduler/runner.py`) — one level up from the
+  two above: builds the `AgentRuntime`, loads/creates the session, calls
+  `run_headless_task`, optionally sends a Telegram notification, and cleans
+  up. This is the actual body of `pcli run` (below) and of a fired
+  scheduled job (`pcli schedule` — see [`scheduling.md`](scheduling.md)),
+  factored out so the two share one implementation.
 
 ## `pcli run`: one-shot task execution
 
@@ -164,11 +177,25 @@ This makes a scheduled `pcli run` invocation scriptable/monitorable from
 cron or Task Scheduler: a non-zero exit means the task likely didn't finish
 its work, distinct from a clean `0` finish.
 
-### Scheduling is the OS's job, not pcli's
+### Recurring runs: pcli's own scheduler, or the OS's
 
-`pcli run` is only the "run one task and exit cleanly" primitive — pcli
-itself has no scheduler or daemon loop. Recurrence is left to whatever
-scheduler the OS already provides:
+`pcli run` is the "run one task and exit cleanly" primitive; something
+still has to decide *when* to call it again. There are now two ways to get
+that recurrence:
+
+- **`pcli schedule`** — pcli's own crontab-like scheduler, built on top of
+  `pcli run`'s same `run_task_once` implementation. You start one
+  long-running daemon (`pcli schedule run`), and it decides when each job
+  is due using standard 5-field cron expressions, entirely inside pcli —
+  no OS-level cron entry per job. See [`scheduling.md`](scheduling.md) for
+  the full command group (`add`/`list`/`remove`/`enable`/`disable`/`run`/
+  `run-now`).
+
+#### OS-level scheduling still works too
+
+If you'd rather not run a standing pcli daemon at all, plain `pcli run`
+still works exactly as before — invoked fresh by whatever scheduler the OS
+already provides:
 
 ```cron
 # crontab: every day at 07:00, appending to the same running session
@@ -178,3 +205,11 @@ scheduler the OS already provides:
 On Windows, the equivalent is a Task Scheduler task whose action runs `pcli
 run --task-file ... --quiet` with the working directory set to the target
 project, on whatever trigger (daily, at logon, ...) fits.
+
+The two approaches trade off the same way as `pcli schedule` vs. an
+external cron always do: the OS scheduler needs no extra process kept
+alive and fires reliably across reboots without you remembering to
+restart anything, while `pcli schedule run` keeps all your recurring jobs
+in one place (`pcli schedule list`), editable without touching crontab/
+Task Scheduler at all, at the cost of needing that one daemon process kept
+running.

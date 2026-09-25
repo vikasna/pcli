@@ -1,6 +1,6 @@
 # pcli
 
-An opencode-style AI coding agent CLI/TUI for Python. Connects to any OpenAI-compatible LLM gateway, with session management, cost tracking, permission handling, guardrails, tiered sandboxed execution, a lazy-loading Python discovery tool, a global cross-session memory of the user, a toolbox for discovering and using installed OS software (kubectl, SGE, Kafka, httpd, ...), one-shot non-interactive task execution (`pcli run`) for cron/Task Scheduler-driven runs, real browser automation (click/type/navigate a live Chromium via Playwright, watchable in the TUI or headless under `pcli run`), and a two-way Telegram bot front end (`pcli telegram`) with inline-button permission approval.
+An opencode-style AI coding agent CLI/TUI for Python. Connects to any OpenAI-compatible LLM gateway, with session management, cost tracking, permission handling, guardrails, tiered sandboxed execution, a lazy-loading Python discovery tool, a global cross-session memory of the user, a toolbox for discovering and using installed OS software (kubectl, SGE, Kafka, httpd, ...), one-shot non-interactive task execution (`pcli run`) for cron/Task Scheduler-driven runs, its own crontab-like recurring task scheduler (`pcli schedule`) as an alternative to an OS-level scheduler, real browser automation (click/type/navigate a live Chromium via Playwright, watchable in the TUI or headless under `pcli run`), and a two-way Telegram bot front end (`pcli telegram`) with inline-button permission approval.
 
 See `requirements.md` for the original project brief. For a full reference
 (architecture, every setting, every tool, the TUI, sandboxing/permissions,
@@ -9,7 +9,7 @@ sessions/cost, and the toolbox plugin system), see [`docs/README.md`](docs/READM
 ## Development
 
 ```
-pip install -e ".[dev,docker,win,browser,telegram]"
+pip install -e ".[dev,docker,win,browser,telegram,schedule]"
 pcli
 ```
 
@@ -19,7 +19,10 @@ install chromium` once after installing. See
 [`docs/browser-automation.md`](docs/browser-automation.md). The `telegram`
 extra, unlike `browser`, needs no separate download — installing it is the
 whole setup for `pcli telegram`. See
-[`docs/telegram-bot.md`](docs/telegram-bot.md).
+[`docs/telegram-bot.md`](docs/telegram-bot.md). The `schedule` extra
+(`croniter`) is likewise self-sufficient, and is only needed for `pcli
+schedule` — pcli's own crontab-like recurring task scheduler. See
+[`docs/scheduling.md`](docs/scheduling.md).
 
 ## Configuring the gateway
 
