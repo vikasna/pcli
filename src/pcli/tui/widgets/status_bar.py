@@ -55,6 +55,13 @@ class StatusBar(Static):
     # the LLM, streaming its reply, running tool calls, ...) — cleared only
     # once the response has been fully printed.
     busy: reactive[bool] = reactive(False)
+    # The main agent's own top-level tool-call count for the current turn -
+    # reset to 0 at the start of each turn (see ChatScreen._run_one_turn),
+    # incremented on each of its own tool_result chunks. Deliberately
+    # separate from subagent_tool_calls below: a subagent's internal calls
+    # are its own isolated count, not part of this one (spawn_subagent
+    # itself counts here as a single call).
+    main_tool_calls: reactive[int] = reactive(0)
     # Second line, shown only while non-None: a running subagent's progress.
     subagent_task: reactive[str | None] = reactive(None)
     subagent_tool_calls: reactive[int] = reactive(0)
@@ -99,6 +106,7 @@ class StatusBar(Static):
             f"cost: ${self.session_cost_usd:.4f}   "
             f"{context_part}"
             f"tokens: {format_token_count(self.total_tokens)}   "
+            f"tools: {self.main_tool_calls}   "
             f"sandbox: {self.sandbox_backend}"
         )
 

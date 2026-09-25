@@ -266,6 +266,18 @@ class ChatScreen(Screen):
         # or (the bug this fixes) silently cancelling the in-flight turn —
         # see _stream_response/on_input_submitted.
         self._turn_in_progress = False
+        # Raw text of user messages submitted while _turn_in_progress - kept
+        # out of session.messages (and, in the UI, shown via
+        # MessageView.add_queued_user_message rather than add_message) until
+        # the active turn actually finishes, so they can't land ahead of
+        # that turn's own assistant reply in the history, or hijack
+        # MessageView's in-flight streaming target - see on_chat_input_
+        # submitted/_stream_response for where this is populated/flushed.
+        self._queued_followups: list[str] = []
+        # Unrelated to the queue above - set only by the auto-continue-
+        # after-truncation path at the very end of a turn that's already
+        # finished (see _run_one_turn's response_truncated handling), purely
+        # to make _stream_response's loop run one more time.
         self._has_queued_followup = False
         self._last_escape_at = 0.0
         self._plan_mode = False
@@ -567,12 +579,14 @@ class ChatScreen(Screen):
             # no live loop left to consult it, and a LATER, unrelated turn's
             # loop-check would spuriously run an extra empty-input
             # _run_one_turn() — clearing it here is required, not optional.
-            dropped_followup = self._has_queued_followup
+            dropped_count = len(self._queued_followups)
+            self._queued_followups = []
             self._has_queued_followup = False
             self.workers.cancel_group(self, "agent-turn")
             note = "Turn cancelled."
-            if dropped_followup:
-                note += " A queued follow-up message was not sent."
+            if dropped_count:
+                plural = "s" if dropped_count != 1 else ""
+                note += f" {dropped_count} queued follow-up message{plural} not sent."
             message_view.add_message("system", note)
         else:
             self._last_escape_at = now
@@ -603,17 +617,25 @@ class ChatScreen(Screen):
         if self._agent_loop is None:
             return
         message_view = self.query_one(MessageView)
-        self._session.messages.append(Message(role="user", content=text))
-        message_view.add_message("user", text)
         self._consecutive_truncations = 0  # a real message means a fresh direction
         if self._turn_in_progress:
             # Queue it rather than starting a second _stream_response worker
             # (which, on the same exclusive group, would cancel the one
-            # already running instead of running alongside or after it) —
-            # the message is already visible above; _stream_response picks
-            # it up itself once the current turn finishes.
-            self._has_queued_followup = True
+            # already running instead of running alongside or after it).
+            # Deliberately NOT appended to session.messages and NOT shown via
+            # add_message here - either would happen out of order relative
+            # to the in-flight turn's own assistant reply (session.messages
+            # would see this new user message before that reply, since
+            # turn_complete hasn't fired yet) and add_message would hijack
+            # MessageView's in-flight streaming target mid-response. Shown
+            # via the non-disruptive add_queued_user_message instead;
+            # _stream_response folds it into session.messages once the
+            # active turn actually finishes.
+            self._queued_followups.append(text)
+            message_view.add_queued_user_message(text)
         else:
+            self._session.messages.append(Message(role="user", content=text))
+            message_view.add_message("user", text)
             self._stream_response()
 
     def _run_interactive_shell(self, command: str) -> None:
@@ -1653,6 +1675,18 @@ class ChatScreen(Screen):
         try:
             while True:
                 await self._run_one_turn()
+                if self._queued_followups:
+                    # The turn that just finished has already appended its
+                    # own assistant reply to session.messages (turn_complete,
+                    # inside _run_one_turn) - only now is it safe to append
+                    # what the user typed while that was still in flight, so
+                    # it lands after that reply instead of before it.
+                    for text in self._queued_followups:
+                        self._session.messages.append(Message(role="user", content=text))
+                    self._queued_followups = []
+                    self._store.save(self._session)
+                    self._has_queued_followup = False
+                    continue
                 if not self._has_queued_followup:
                     break
                 self._has_queued_followup = False
@@ -1700,6 +1734,7 @@ class ChatScreen(Screen):
         self._current_ask = ask
         self._current_ask_question = ask_question
         status_bar.busy = True
+        status_bar.main_tool_calls = 0
 
         # Reasoning models stream their chain-of-thought under a channel
         # separate from the actual reply (see llm/streaming.py) — buffered
@@ -1770,6 +1805,7 @@ class ChatScreen(Screen):
                     message_view.finish_streaming()
                 elif chunk.kind == "tool_result":
                     self._record_tool_invocation(chunk)
+                    status_bar.main_tool_calls += 1
                     if chunk.tool_call.function.name == "write_todos":
                         self._refresh_todo_pane()
                     # source="subagent": real spend from a nested AgentLoop

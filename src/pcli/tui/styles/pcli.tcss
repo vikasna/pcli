@@ -47,6 +47,14 @@ Screen {
     border-left: thick $secondary;
 }
 
+.message-queued {
+    color: $text-muted;
+    /* $text-muted is an "auto"-computed contrast color, which the
+       border-color parser rejects as not a concrete color - see the
+       .reasoning-collapsible rule below for the same fix. */
+    border-left: thick $foreground-muted;
+}
+
 .tool-result-collapsible {
     margin-bottom: 1;
     border-left: thick $warning;

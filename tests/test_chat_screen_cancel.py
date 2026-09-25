@@ -163,12 +163,12 @@ async def test_escape_escape_outside_the_window_does_not_cancel(tmp_path: Path):
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_escape_escape_drops_a_queued_followup_and_clears_the_flag(tmp_path: Path):
+async def test_escape_escape_drops_queued_followups_and_clears_the_queue(tmp_path: Path):
     """Regression test for a bug caught during design review: cancelling the
     worker running _stream_response's while-loop kills the loop that would
-    have consulted _has_queued_followup - if that flag were left True, a
-    LATER, unrelated turn's loop-check would spuriously run an extra
-    empty-input _run_one_turn(). Cancellation must clear it."""
+    have consulted the queue - if it were left non-empty, a LATER, unrelated
+    turn's loop-check would spuriously run an extra turn for stale queued
+    text. Cancellation must clear it."""
     screen, _session = _make_screen(tmp_path)
     app = _HostApp(screen)
     async with app.run_test() as pilot:
@@ -176,15 +176,15 @@ async def test_escape_escape_drops_a_queued_followup_and_clears_the_flag(tmp_pat
         release_event = asyncio.Event()
         await _start_a_slow_turn(screen, pilot, release_event)
 
-        # Simulate a second message having been queued while the turn above
-        # was in flight (on_input_submitted's queueing path).
-        screen._has_queued_followup = True
+        # Simulate two messages having been queued while the turn above was
+        # in flight (on_chat_input_submitted's queueing path).
+        screen._queued_followups = ["a followup", "another followup"]
 
         screen.action_cancel_turn()
         screen.action_cancel_turn()
         for _ in range(20):
             await pilot.pause()
 
-        assert screen._has_queued_followup is False
+        assert screen._queued_followups == []
         message_view = screen.query_one(MessageView)
-        assert "A queued follow-up message was not sent." in message_view._current_text
+        assert "2 queued follow-up messages not sent." in message_view._current_text

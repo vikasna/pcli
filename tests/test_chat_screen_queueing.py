@@ -6,8 +6,16 @@ _stream_response itself) silently cancelled whichever one was already
 running instead of queueing or running after it — e.g. submitting a second
 chat message mid-turn killed the first turn outright. Fixed by giving
 _stream_response its own dedicated worker group ("agent-turn") and having
-on_input_submitted queue a follow-up (via _turn_in_progress /
-_has_queued_followup) instead of starting a second worker in that group."""
+on_chat_input_submitted queue a follow-up (via _turn_in_progress /
+_queued_followups) instead of starting a second worker in that group.
+
+A second, later bug (also covered here): the queued text used to be
+spliced into session.messages *immediately*, on the same event-loop turn
+the keystroke arrived — before the in-flight turn's own assistant reply had
+been appended (that only happens once turn_complete fires). So the queued
+message landed *before* that reply in the conversation history, corrupting
+turn order. Fixed by holding queued text in _queued_followups (not
+session.messages) until the in-flight turn actually finishes."""
 
 import asyncio
 import json
@@ -90,14 +98,16 @@ async def test_second_message_submitted_mid_turn_is_queued_not_cancelled(tmp_pat
         assert screen._turn_in_progress is True
 
         # Submitted while the first turn is still in flight: must be queued,
-        # not start a second worker that would cancel the first.
+        # not start a second worker that would cancel the first, and NOT yet
+        # appear in session.messages (that would land it before the first
+        # turn's own reply, corrupting order — the actual bug this covers).
         field.text = "second"
         await pilot.press("enter")
         await pilot.pause()
 
-        assert screen._has_queued_followup is True
+        assert screen._queued_followups == ["second"]
         user_messages = [m for m in session.messages if m.role == "user"]
-        assert [m.content for m in user_messages] == ["first", "second"]
+        assert [m.content for m in user_messages] == ["first"]
 
         # Release the first (still in-flight) gateway response and let both
         # turns run to completion.
@@ -106,9 +116,16 @@ async def test_second_message_submitted_mid_turn_is_queued_not_cancelled(tmp_pat
             await pilot.pause()
 
         assert screen._turn_in_progress is False
-        assert screen._has_queued_followup is False
-        assistant_messages = [m for m in session.messages if m.role == "assistant"]
-        assert [m.content for m in assistant_messages] == ["first reply", "second reply"]
+        assert screen._queued_followups == []
+        # Correct interleaving: "second" (appended only once the first turn
+        # finished) sits after "first reply", not before it.
+        roles_and_content = [(m.role, m.content) for m in session.messages if m.role != "system"]
+        assert roles_and_content == [
+            ("user", "first"),
+            ("assistant", "first reply"),
+            ("user", "second"),
+            ("assistant", "second reply"),
+        ]
         assert len(calls) == 2  # the first turn was never restarted/duplicated
 
 

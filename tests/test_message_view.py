@@ -486,3 +486,44 @@ async def test_scrolling_back_to_bottom_resumes_auto_scroll():
         await _settle(pilot)
 
         assert view.is_vertical_scroll_end
+
+
+@pytest.mark.asyncio
+async def test_add_queued_user_message_does_not_hijack_the_streaming_target():
+    """Regression test for a real bug: a message submitted mid-turn used to
+    go through add_message, which reassigns self._current - the widget
+    append_to_last writes into. Submitting one while the assistant's reply
+    was actively streaming silently redirected the rest of that stream into
+    the new user message's widget instead of the assistant's own. Confirmed
+    by scripting the exact interleaving: add_message (assistant) ->
+    append_to_last (first fragment) -> add_queued_user_message (the
+    interruption) -> append_to_last (second fragment) - the second fragment
+    must still land in the assistant's widget, not the queued one."""
+    app = _ViewApp()
+    async with app.run_test() as pilot:
+        view = app.query_one(MessageView)
+        view.add_message("assistant", "")
+        view.append_to_last("Hello ")
+        await pilot.pause()
+
+        view.add_queued_user_message("a message typed mid-stream")
+        await pilot.pause()
+
+        view.append_to_last("world")
+        await pilot.pause()
+
+        assert view._current_role == "assistant"
+        assert view._current_text == "Hello world"
+
+
+@pytest.mark.asyncio
+async def test_add_queued_user_message_is_mounted_and_visible():
+    app = _ViewApp()
+    async with app.run_test() as pilot:
+        view = app.query_one(MessageView)
+        widget = view.add_queued_user_message("queued text")
+        await pilot.pause()
+
+        assert "message-queued" in widget.classes
+        assert "message-user" in widget.classes
+        assert widget in view.children

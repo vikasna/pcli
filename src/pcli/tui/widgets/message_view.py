@@ -200,6 +200,26 @@ class MessageView(VerticalScroll):
         self._last_refresh = time.monotonic()
         return widget
 
+    def add_queued_user_message(self, text: str) -> Static:
+        """Shows a user message submitted while a turn is still in progress
+        (ChatScreen._turn_in_progress) — deliberately does NOT reassign
+        self._current/_current_role/_current_text the way add_message does.
+        Those track whatever widget append_to_last is currently streaming
+        text into; calling add_message here (a real prior bug) would hijack
+        that target mid-stream, silently redirecting the rest of the
+        in-flight turn's own reply (or reasoning, or a tool-call preview)
+        into this new user message's widget instead of its own. The queued
+        message is only folded into session.messages once the active turn
+        actually finishes (see ChatScreen._stream_response), so this widget
+        is purely a "received, will send once ready" visual - styled via
+        message-queued rather than a plain message-user."""
+        was_at_bottom = self.is_vertical_scroll_end
+        widget = Static(classes="message message-user message-queued")
+        widget.update(self._render_message("user", text))
+        self.mount(widget)
+        self._scroll_end_if_at_bottom(was_at_bottom)
+        return widget
+
     def append_to_last(self, fragment: str) -> None:
         if self._current is None:
             self.add_message("assistant", fragment)

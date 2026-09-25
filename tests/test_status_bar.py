@@ -1,4 +1,4 @@
-from pcli.tui.widgets.status_bar import format_model_name
+from pcli.tui.widgets.status_bar import StatusBar, format_model_name
 
 
 def test_format_model_name_shortens_a_windows_gguf_path_to_the_bare_model_name():
@@ -31,3 +31,17 @@ def test_format_model_name_truncates_a_long_non_path_name_as_a_fallback():
 
 def test_format_model_name_handles_empty_string():
     assert format_model_name("") == ""
+
+
+def test_status_bar_renders_main_agent_tool_call_count():
+    """main_tool_calls (the main agent's own top-level tool-call count for
+    the current turn - see ChatScreen._run_one_turn) must actually show up
+    in the rendered status line, not just be a tracked-but-invisible
+    reactive."""
+    status_bar = StatusBar()
+    status_bar.main_tool_calls = 5
+    assert "tools: 5" in status_bar._render_line1()
+
+
+def test_status_bar_main_tool_calls_defaults_to_zero():
+    assert StatusBar().main_tool_calls == 0
