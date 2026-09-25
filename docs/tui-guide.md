@@ -365,6 +365,18 @@ command — not just a plain chat turn. `/compact` and `/toolbox discover`
 also used to crash uncaught on a gateway failure; both now report the error
 as a normal system message instead.
 
+A `GatewayError` partway through a plain chat turn is also often exactly a
+context-length overflow — an internal round-trip within the turn getting
+rejected by the gateway for being too large, sometimes right after the
+status bar's live usage display has already shown context crossing 100% on
+an earlier round-trip of that same turn. Rather than just reporting the
+error and leaving the session stuck over threshold for every subsequent
+turn, pcli still attempts the same prune-then-maybe-auto-compact recovery
+that runs at the end of a clean turn (see
+[Auto-compaction](#auto-compaction) above) right before the error is shown —
+safe to attempt unconditionally, since it's a no-op unless context actually
+reads as over `auto_compact_threshold`.
+
 ## Slash commands
 
 - **`/help`** — prints a static Markdown reference (`_HELP_TEXT`,
@@ -719,6 +731,10 @@ needed: at the end of every turn, once the session is saved, if
 not just the summarization call, but also the tool-invocation bookkeeping,
 the system notice, the session save, and the memory-extraction pass below,
 so the indicator doesn't drop and then reappear across that gap.
+
+This check isn't limited to a turn that completes cleanly: a turn that
+instead fails with a [gateway error](#gateway-errors) still gets the same
+recovery attempt right before the failure is reported — see below.
 
 When it fires, a short system notice appears in the transcript (e.g.
 "Compacted N earlier message(s)... archived as artifact_id='art_...'"); the

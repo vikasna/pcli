@@ -151,6 +151,20 @@ Recompaction needs no special-casing: a later compaction naturally includes
 a prior compaction's own summary message among the older messages it folds
 into a fresh combined summary.
 
+This same pruning-then-maybe-compact check
+(`ChatScreen._prune_and_maybe_auto_compact`) also runs when a turn instead
+fails outright with a `GatewayError` (see
+[Gateway error messages](#gateway-error-messages) below) — a real reported
+bug had the status bar show context usage cross 100% once, but with no
+compaction ever attempted, because a `GatewayError` partway through a turn
+(often itself caused by the oversized context — an internal round-trip
+rejected by the gateway for being too large) used to return early, before
+this check was ever reached, leaving a session already over
+`auto_compact_threshold` stuck over threshold with every subsequent turn
+failing the exact same way. The check is unconditional on any `GatewayError`
+mid-turn, not just ones confirmed to be about context length — it's a no-op
+unless usage actually reads as over threshold once run.
+
 The summarization prompt asks the model to cover what the user asked for,
 what's been done so far (files changed, commands run, key outcomes), and any
 assumptions made along the way and why — explicitly, so the continuation
@@ -223,11 +237,16 @@ archive-then-`fetch_artifact` pattern as artifact archiving).
 Unlike [auto-compaction](#auto-compaction) above, this is a purely mechanical
 pass with **no LLM call**: it runs every turn, right after the turn is saved
 and *before* the auto-compact threshold check, rather than only once context
-usage crosses a threshold. It doesn't touch user/assistant messages or
-summarize anything — it only replaces the `content` of old tool-role messages
-(older than the most recent `prune_tool_results_keep_recent_turns` turns,
-default `1`) with a short placeholder, after archiving the original content
-via the same `ArtifactStore` mechanism. The default `keep_recent_turns` of
+usage crosses a threshold. It shares the same `ChatScreen` helper as the
+auto-compact check (`_prune_and_maybe_auto_compact`), so it also now runs on
+a turn that fails with a [gateway error](#gateway-error-messages) instead of
+only on a clean end-of-turn, for the same reason described under
+[Auto-compaction](#auto-compaction) above. It doesn't touch user/assistant
+messages or summarize anything — it only replaces the `content` of old
+tool-role messages (older than the most recent
+`prune_tool_results_keep_recent_turns` turns, default `1`) with a short
+placeholder, after archiving the original content via the same
+`ArtifactStore` mechanism. The default `keep_recent_turns` of
 `1` is deliberately tighter than `auto_compact_keep_recent_turns`'s default
 of `2`, so pruning routinely has something to do well before compaction's own
 threshold would ever be reached. Eligibility is computed by the same
