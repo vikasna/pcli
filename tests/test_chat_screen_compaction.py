@@ -10,6 +10,7 @@ scripting a full turn's SSE stream just to reach a 3-line conditional.
 """
 
 import json
+import logging
 from pathlib import Path
 
 import httpx
@@ -275,3 +276,70 @@ async def test_run_compaction_gateway_error_is_shown_not_crashed(tmp_path: Path)
 
         # Nothing was mutated - the session's messages are untouched.
         assert session.messages == messages_before
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_gateway_error_mid_turn_still_attempts_auto_compaction_recovery(tmp_path: Path, caplog):
+    """Regression test for a real reported bug: context usage was reported
+    over 100% once (the status bar's live per-round-trip update — see
+    ChatScreen._refresh_context_display) but auto-compaction never actually
+    ran. Root cause: a turn that fails outright with a GatewayError (e.g.
+    because the next internal round-trip got rejected for being too large)
+    previously hit an early `return` inside _run_one_turn's `except
+    GatewayError` block, before the normal end-of-turn auto-compact check
+    was ever reached — so a session already over auto_compact_threshold
+    stayed over threshold, and every subsequent turn failed the exact same
+    way. The fix threads the same prune-then-maybe-compact recovery into
+    that exception handler too."""
+
+    def _route(request: httpx.Request) -> httpx.Response:
+        if b"You are summarizing an in-progress coding-agent conversation" in request.content:
+            return _summary_response("Summary of turn 1.")
+        return httpx.Response(400, content=b'{"error": {"message": "context_length_exceeded"}}')
+
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(side_effect=_route)
+
+    screen, _store, session = _make_screen(tmp_path, keep_recent_turns=1)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert screen._client is not None
+
+        # Force context usage to already read as over auto_compact_threshold
+        # (default 0.8) before the failing turn even starts — simulating an
+        # earlier round-trip (this turn's or a prior one's) having already
+        # pushed usage past the model's real window, exactly what the status
+        # bar would have shown crossing 100% right before the next call got
+        # rejected.
+        screen._context_limit_table = ContextLimitTable(entries={}, default=1)
+        session.cost.turns.append(
+            TurnCost(
+                turn_index=0,
+                model="fake-model",
+                usage=Usage(total_tokens=999),
+                cost_usd=0.0,
+                source="main",
+            )
+        )
+
+        session.messages.append(Message(role="user", content="one more message"))
+        with caplog.at_level(logging.ERROR, logger="pcli.tui.screens.chat"):
+            screen._stream_response()
+            for _ in range(10):
+                await pilot.pause()
+
+        # The turn's own GatewayError still happened and was logged (this
+        # isn't hidden or swallowed by the recovery)...
+        assert any("Gateway error during turn" in r.message for r in caplog.records)
+
+        # ...but unlike before the fix, compaction was still attempted
+        # afterward rather than leaving the session stuck over threshold.
+        compaction_invocations = [
+            inv for inv in session.tool_invocations if inv.tool_name == "_compaction"
+        ]
+        assert compaction_invocations, (
+            "a GatewayError mid-turn while already over auto_compact_threshold should "
+            "still trigger an auto-compaction recovery pass, not silently leave the "
+            "session stuck over threshold for every subsequent turn"
+        )

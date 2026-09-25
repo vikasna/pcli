@@ -1659,6 +1659,32 @@ class ChatScreen(Screen):
         finally:
             self._turn_in_progress = False
 
+    async def _prune_and_maybe_auto_compact(self) -> None:
+        """Cheap, mechanical, no-LLM-call pruning first (so compaction's own
+        summarization call has less bulk to work with by the time its
+        threshold is reached), then a real auto-compaction pass if context
+        is still over auto_compact_threshold afterward. Factored out so the
+        exact same recovery can run from _run_one_turn's GatewayError
+        handler, not just its normal end-of-turn path — see that call site
+        for why: a turn that fails outright because context was already
+        full previously skipped this entirely (an early `return` inside the
+        except block), so a session over threshold stayed over threshold and
+        every subsequent turn failed the exact same way, with no compaction
+        ever attempted despite the status bar having shown the overflow."""
+        if self._settings.prune_tool_results_enabled:
+            pruned_count = prune_old_tool_results(
+                self._session,
+                keep_recent_turns=self._settings.prune_tool_results_keep_recent_turns,
+                artifact_store=self._artifact_store,
+            )
+            if pruned_count:
+                self._store.save(self._session)
+
+        if self._settings.auto_compact_enabled:
+            usage = current_context_usage(self._session, limit_table=self._context_limit_table)
+            if usage.fraction >= self._settings.auto_compact_threshold:
+                await self._run_compaction("auto")
+
     async def _run_one_turn(self) -> None:
         assert self._agent_loop is not None
         message_view = self.query_one(MessageView)
@@ -1784,6 +1810,18 @@ class ChatScreen(Screen):
             message_view.finish_streaming()
             message_view.add_message("system", f"Gateway error: {exc.message}")
             self._store.save(self._session)
+            # A GatewayError this far into a turn is often exactly a context-
+            # length overflow (see llm/client.py's _http_status_hint) - the
+            # status bar may well have shown context usage crossing 100% on
+            # an earlier "usage" chunk of this same turn, right before the
+            # next internal call got rejected for being too large. Without
+            # this, the oversized history that caused the failure would
+            # never get compacted (the normal end-of-turn call below is
+            # never reached on this path), so every subsequent turn would
+            # fail the exact same way. Safe to attempt unconditionally: it's
+            # a no-op unless context is actually still over threshold, and
+            # _run_compaction already handles its own GatewayError quietly.
+            await self._prune_and_maybe_auto_compact()
             return
         finally:
             status_bar.busy = False
@@ -1816,22 +1854,7 @@ class ChatScreen(Screen):
             message_view.add_message("system", note)
         self._store.save(self._session)
 
-        if self._settings.prune_tool_results_enabled:
-            # Cheap, mechanical, no LLM call - runs before the auto-compact
-            # check so compaction's own (LLM-cost) summarization has less
-            # bulk to work with by the time its threshold is ever reached.
-            pruned_count = prune_old_tool_results(
-                self._session,
-                keep_recent_turns=self._settings.prune_tool_results_keep_recent_turns,
-                artifact_store=self._artifact_store,
-            )
-            if pruned_count:
-                self._store.save(self._session)
-
-        if self._settings.auto_compact_enabled:
-            usage = current_context_usage(self._session, limit_table=self._context_limit_table)
-            if usage.fraction >= self._settings.auto_compact_threshold:
-                await self._run_compaction("auto")
+        await self._prune_and_maybe_auto_compact()
 
         if response_truncated:
             # Deliberately after pruning/auto-compact above, not before: if
