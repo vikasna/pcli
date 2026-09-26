@@ -14,6 +14,81 @@ def _fixture_pricing() -> PricingTable:
     )
 
 
+def test_cost_usd_with_no_cached_tokens_is_unchanged():
+    """Regression guard: cached_tokens defaults to 0, so every pre-existing
+    call site that never passes it must price exactly as before this
+    parameter existed."""
+    table = PricingTable(
+        entries={"fake-model": ModelPricing(input_per_1m=2.0, output_per_1m=4.0)},
+        default=ModelPricing(),
+    )
+    assert table.cost_usd("fake-model", prompt_tokens=1_000_000, completion_tokens=1_000_000) == 6.0
+
+
+def test_cost_usd_prices_cached_tokens_at_the_cached_rate_when_known():
+    table = PricingTable(
+        entries={
+            "fake-model": ModelPricing(
+                input_per_1m=2.0, output_per_1m=4.0, cached_input_per_1m=0.5
+            )
+        },
+        default=ModelPricing(),
+    )
+    cost = table.cost_usd(
+        "fake-model", prompt_tokens=1_000_000, completion_tokens=0, cached_tokens=1_000_000
+    )
+    assert cost == 0.5  # entirely cached - priced at the cached rate, not the full input rate
+
+
+def test_cost_usd_splits_cached_and_uncached_portions_of_the_same_call():
+    table = PricingTable(
+        entries={
+            "fake-model": ModelPricing(
+                input_per_1m=2.0, output_per_1m=0.0, cached_input_per_1m=0.5
+            )
+        },
+        default=ModelPricing(),
+    )
+    # 600k cached (at 0.5/1M = 0.30) + 400k uncached (at 2.0/1M = 0.80) = 1.10
+    cost = table.cost_usd(
+        "fake-model", prompt_tokens=1_000_000, completion_tokens=0, cached_tokens=600_000
+    )
+    assert cost == 1.10
+
+
+def test_cost_usd_falls_back_to_input_rate_when_no_cached_rate_is_known():
+    """cached_input_per_1m unset (None, the common case for a model with no
+    modeled cache discount) must NOT undercount spend - cached tokens are
+    priced the same as ordinary input tokens instead of at some assumed
+    discount that was never actually configured."""
+    table = PricingTable(
+        entries={"fake-model": ModelPricing(input_per_1m=2.0, output_per_1m=0.0)},
+        default=ModelPricing(),
+    )
+    cost = table.cost_usd(
+        "fake-model", prompt_tokens=1_000_000, completion_tokens=0, cached_tokens=1_000_000
+    )
+    assert cost == 2.0
+
+
+def test_cost_usd_clamps_cached_tokens_to_prompt_tokens():
+    """A gateway reporting cached_tokens >= prompt_tokens (not guaranteed
+    never to happen across every backend) must not produce a negative
+    uncached-token count, which would silently under- or over-charge."""
+    table = PricingTable(
+        entries={
+            "fake-model": ModelPricing(
+                input_per_1m=2.0, output_per_1m=0.0, cached_input_per_1m=0.5
+            )
+        },
+        default=ModelPricing(),
+    )
+    cost = table.cost_usd(
+        "fake-model", prompt_tokens=100, completion_tokens=0, cached_tokens=1_000_000
+    )
+    assert cost == (100 / 1_000_000) * 0.5  # entirely treated as cached, not negative uncached
+
+
 def test_pricing_table_lookup_exact_and_wildcard():
     table = PricingTable(
         entries={
@@ -97,6 +172,51 @@ def test_old_turn_cost_without_source_field_still_validates_as_main():
     restored = TurnCost.model_validate(raw)
     assert restored.source == "main"
     json.dumps(raw)  # sanity: still valid JSON without the field present
+
+
+def test_cost_tracker_applies_cached_discount_from_usage(tmp_path: Path):
+    """record_turn must actually thread Usage.cached_tokens through to
+    cost_usd - previously it was parsed off the wire (llm/streaming.py) and
+    stored on Usage, but never consulted anywhere, so a cache-aware gateway
+    made pcli's own cost display overstate real spend."""
+    session = Session(model="fake-model")
+    pricing = PricingTable(
+        entries={
+            "fake-model": ModelPricing(
+                input_per_1m=2.0, output_per_1m=0.0, cached_input_per_1m=0.5
+            )
+        },
+        default=ModelPricing(),
+    )
+    ledger_path = tmp_path / "ledger.jsonl"
+    tracker = CostTracker(session, pricing_table=pricing, ledger_path=ledger_path)
+
+    turn = tracker.record_turn(
+        "fake-model",
+        Usage(
+            prompt_tokens=1_000_000,
+            completion_tokens=0,
+            total_tokens=1_000_000,
+            cached_tokens=1_000_000,
+        ),
+    )
+
+    assert turn.cost_usd == 0.5  # cached rate, not the 2.0 full input rate
+    assert session.cost.session_total_usd == 0.5
+
+    record = json.loads(ledger_path.read_text(encoding="utf-8").strip())
+    assert record["cached_tokens"] == 1_000_000
+
+
+def test_cost_tracker_ledger_records_zero_cached_tokens_when_none_reported(tmp_path: Path):
+    session = Session(model="fake-model")
+    ledger_path = tmp_path / "ledger.jsonl"
+    tracker = CostTracker(session, pricing_table=_fixture_pricing(), ledger_path=ledger_path)
+
+    tracker.record_turn("fake-model", Usage(prompt_tokens=100, completion_tokens=50, total_tokens=150))
+
+    record = json.loads(ledger_path.read_text(encoding="utf-8").strip())
+    assert record["cached_tokens"] == 0
 
 
 def test_cost_tracker_marks_estimated_usage(tmp_path: Path):

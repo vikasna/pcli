@@ -62,7 +62,9 @@ def _build_session_with_two_turns(store: SessionStore) -> Session:
     return session
 
 
-def _make_screen(tmp_path: Path, *, keep_recent_turns: int = 1) -> tuple[ChatScreen, SessionStore, Session]:
+def _make_screen(
+    tmp_path: Path, *, keep_recent_turns: int = 1, **settings_overrides
+) -> tuple[ChatScreen, SessionStore, Session]:
     store = SessionStore(base_dir=tmp_path / "sessions")
     session = _build_session_with_two_turns(store)
     settings = Settings(
@@ -78,6 +80,7 @@ def _make_screen(tmp_path: Path, *, keep_recent_turns: int = 1) -> tuple[ChatScr
         # assertions; on here it'd just be an extra, untested gateway call
         # muddying this file's own token/call-count assertions.
         memory_enabled=False,
+        **settings_overrides,
     )
     screen = ChatScreen(settings, session=session, store=store)
     return screen, store, session
@@ -343,3 +346,85 @@ async def test_gateway_error_mid_turn_still_attempts_auto_compaction_recovery(tm
             "still trigger an auto-compaction recovery pass, not silently leave the "
             "session stuck over threshold for every subsequent turn"
         )
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_run_compaction_uses_compaction_model_when_configured(tmp_path: Path):
+    """settings.compaction_model, when set, is a deliberately cheaper model
+    for this mechanical background call - it must actually be the model
+    named in the request, not just default_model as before this setting
+    existed."""
+    requested_models: list[str | None] = []
+
+    def _route(request: httpx.Request) -> httpx.Response:
+        requested_models.append(json.loads(request.content)["model"])
+        return _summary_response("Summary of turn 1.")
+
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(side_effect=_route)
+
+    screen, _store, _session = _make_screen(
+        tmp_path, keep_recent_turns=1, compaction_model="cheap-model"
+    )
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert screen._client is not None
+
+        await screen._run_compaction("manual")
+        await pilot.pause()
+
+        assert requested_models == ["cheap-model"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_run_compaction_falls_back_to_default_model_when_compaction_model_is_unset(
+    tmp_path: Path,
+):
+    requested_models: list[str | None] = []
+
+    def _route(request: httpx.Request) -> httpx.Response:
+        requested_models.append(json.loads(request.content)["model"])
+        return _summary_response("Summary of turn 1.")
+
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(side_effect=_route)
+
+    screen, _store, _session = _make_screen(tmp_path, keep_recent_turns=1)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert screen._client is not None
+
+        await screen._run_compaction("manual")
+        await pilot.pause()
+
+        assert requested_models == ["fake-model"]  # default_model, unchanged from before
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_run_compaction_tags_cost_tracking_with_the_actual_compaction_model(
+    tmp_path: Path,
+):
+    """Regression guard: the cost-tracking call must be tagged with the
+    SAME model the request was actually sent to, not default_model - a
+    mismatch would price the compaction call using the wrong model's rate
+    (or a rate for a model that was never even called)."""
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=_summary_response("Summary of turn 1.")
+    )
+
+    screen, _store, session = _make_screen(
+        tmp_path, keep_recent_turns=1, compaction_model="cheap-model"
+    )
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert screen._client is not None
+
+        await screen._run_compaction("manual")
+        await pilot.pause()
+
+        compaction_turn = next(t for t in session.cost.turns if t.source == "compaction")
+        assert compaction_turn.model == "cheap-model"

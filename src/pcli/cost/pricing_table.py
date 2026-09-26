@@ -34,7 +34,12 @@ DEFAULT_PRICING_TOML = """\
 # pcli model pricing (USD per 1M tokens). Edit freely — entries here override
 # pcli's built-in defaults. Model names support a trailing '*' as a prefix
 # wildcard, e.g. "gpt-4o*". The [default] table is used for any model that
-# matches nothing else.
+# matches nothing else. cached_input_per_1m is optional - the rate for
+# prompt tokens the gateway reports as served from its prompt cache (see
+# llm/models.py's Usage.cached_tokens); omit it if you don't know the
+# model's real cache-discount rate, and cached tokens are priced the same
+# as ordinary input tokens instead (conservative - never undercounts spend,
+# just won't reflect a real discount the gateway might be applying).
 
 [default]
 input_per_1m = 0.0
@@ -42,26 +47,40 @@ output_per_1m = 0.0
 """
 
 # Best-effort starting point; intentionally approximate, user-editable.
-_BUILTIN_MODELS: dict[str, tuple[float, float]] = {
-    "gpt-4o*": (2.50, 10.00),
-    "gpt-4.1*": (2.00, 8.00),
-    "gpt-4-turbo*": (10.00, 30.00),
-    "gpt-3.5*": (0.50, 1.50),
-    "o1*": (15.00, 60.00),
-    "o3*": (2.00, 8.00),
-    "claude-opus*": (15.00, 75.00),
-    "claude-sonnet*": (3.00, 15.00),
-    "claude-haiku*": (0.80, 4.00),
-    "gemini-1.5-pro*": (1.25, 5.00),
-    "gemini-1.5-flash*": (0.075, 0.30),
-    "llama-3*": (0.20, 0.20),
-    "mistral*": (0.25, 0.75),
+# Third element is cached_input_per_1m (None where no well-established
+# cache-discount rate is known for that provider) - OpenAI's documented
+# prompt-caching discount is ~50% of input price, Anthropic's cached-read
+# rate is ~10% of input price; both approximated here consistently rather
+# than guessed per model. Gemini/local models are left at None: real cache
+# pricing exists for some of them too but isn't standardized enough here to
+# approximate with the same confidence.
+_BUILTIN_MODELS: dict[str, tuple[float, float, float | None]] = {
+    "gpt-4o*": (2.50, 10.00, 1.25),
+    "gpt-4.1*": (2.00, 8.00, 1.00),
+    "gpt-4-turbo*": (10.00, 30.00, 5.00),
+    "gpt-3.5*": (0.50, 1.50, 0.25),
+    "o1*": (15.00, 60.00, 7.50),
+    "o3*": (2.00, 8.00, 1.00),
+    "claude-opus*": (15.00, 75.00, 1.50),
+    "claude-sonnet*": (3.00, 15.00, 0.30),
+    "claude-haiku*": (0.80, 4.00, 0.08),
+    "gemini-1.5-pro*": (1.25, 5.00, None),
+    "gemini-1.5-flash*": (0.075, 0.30, None),
+    "llama-3*": (0.20, 0.20, None),
+    "mistral*": (0.25, 0.75, None),
 }
 
 
 class ModelPricing(BaseModel):
     input_per_1m: float = 0.0
     output_per_1m: float = 0.0
+    cached_input_per_1m: float | None = None
+    """Price for prompt tokens the gateway reports as served from its
+    prompt cache (Usage.cached_tokens, a subset of prompt_tokens) - None
+    (the common case, and the only option for a user-supplied pricing.toml
+    entry that doesn't set it) means no cache-specific rate is modeled;
+    cost_usd then falls back to pricing input_per_1m for those tokens too,
+    same as before this field existed."""
 
 
 class PricingTable:
@@ -72,8 +91,8 @@ class PricingTable:
     @classmethod
     def load(cls) -> PricingTable:
         entries = {
-            pattern: ModelPricing(input_per_1m=inp, output_per_1m=out)
-            for pattern, (inp, out) in _BUILTIN_MODELS.items()
+            pattern: ModelPricing(input_per_1m=inp, output_per_1m=out, cached_input_per_1m=cached)
+            for pattern, (inp, out, cached) in _BUILTIN_MODELS.items()
         }
         default = ModelPricing()
 
@@ -92,8 +111,31 @@ class PricingTable:
         match = match_model_pattern(model_name, self._entries)
         return match if match is not None else self._default
 
-    def cost_usd(self, model_name: str, *, prompt_tokens: int, completion_tokens: int) -> float:
+    def cost_usd(
+        self,
+        model_name: str,
+        *,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cached_tokens: int = 0,
+    ) -> float:
+        """cached_tokens is the gateway-reported subset of prompt_tokens
+        served from its prompt cache (Usage.cached_tokens) - priced at the
+        model's cached_input_per_1m rate if known, otherwise at the
+        ordinary input rate (no assumed discount). Clamped to prompt_tokens
+        so a gateway reporting cached_tokens >= prompt_tokens (not
+        guaranteed never to happen across every backend) can't produce a
+        negative uncached-token count."""
         pricing = self.lookup(model_name)
-        return (prompt_tokens / 1_000_000) * pricing.input_per_1m + (
-            completion_tokens / 1_000_000
-        ) * pricing.output_per_1m
+        cached_tokens = min(cached_tokens, prompt_tokens)
+        uncached_tokens = prompt_tokens - cached_tokens
+        cached_rate = (
+            pricing.cached_input_per_1m
+            if pricing.cached_input_per_1m is not None
+            else pricing.input_per_1m
+        )
+        return (
+            (uncached_tokens / 1_000_000) * pricing.input_per_1m
+            + (cached_tokens / 1_000_000) * cached_rate
+            + (completion_tokens / 1_000_000) * pricing.output_per_1m
+        )

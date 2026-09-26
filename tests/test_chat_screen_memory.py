@@ -252,6 +252,67 @@ async def test_compaction_triggers_memory_extraction_and_records_its_cost(tmp_pa
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_memory_extraction_uses_compaction_model_when_configured(tmp_path: Path):
+    """settings.compaction_model (a deliberately cheaper model for
+    compaction summarization and memory extraction - both mechanical,
+    lower-stakes background calls) must actually be the model both of
+    those requests are sent to, and the cost tag recorded for the
+    extraction call must match, not silently stay on default_model."""
+    responses = [
+        _text_response(
+            "Summary of turn 1.", usage={"prompt_tokens": 50, "completion_tokens": 20, "total_tokens": 70}
+        ),
+        _remember_call_response("call_1", "Works as a backend Python developer", "profile"),
+        _text_response(
+            "Done reviewing.", usage={"prompt_tokens": 30, "completion_tokens": 5, "total_tokens": 35}
+        ),
+    ]
+    requested_models: list[str | None] = []
+
+    def _route(request: httpx.Request) -> httpx.Response:
+        requested_models.append(json.loads(request.content)["model"])
+        return responses[len(requested_models) - 1]
+
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(side_effect=_route)
+
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    session = store.new_session(model="fake-model", gateway_base_url="http://fake-gateway.test/v1")
+    session.messages = [
+        Message(role="system", content="system prompt"),
+        Message(role="user", content="turn 1 user"),
+        Message(role="assistant", content="turn 1 assistant"),
+        Message(role="user", content="turn 2 user"),
+        Message(role="assistant", content="turn 2 assistant"),
+    ]
+    settings = Settings(
+        gateway_base_url="http://fake-gateway.test/v1",
+        gateway_api_key="test-key",
+        default_model="fake-model",
+        compaction_model="cheap-model",
+        sandbox_backend="subprocess",
+        auto_compact_keep_recent_turns=1,
+    )
+    screen = ChatScreen(settings, session=session, store=store)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert screen._client is not None
+
+        await screen._run_compaction("auto")
+        await pilot.pause()
+
+        assert requested_models == ["cheap-model", "cheap-model", "cheap-model"]
+
+        memory_turns = [t for t in session.cost.turns if t.source == "memory"]
+        assert len(memory_turns) == 1
+        assert memory_turns[0].model == "cheap-model"
+
+        compaction_turns = [t for t in session.cost.turns if t.source == "compaction"]
+        assert compaction_turns[0].model == "cheap-model"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_busy_indicator_stays_lit_through_memory_extraction(tmp_path: Path):
     """Regression coverage for a real reported bug: status_bar.busy used to
     flip back to False the instant maybe_compact's own summarization call

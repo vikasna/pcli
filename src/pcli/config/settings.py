@@ -95,6 +95,16 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("PCLI_MODEL", "default_model"),
     )
+    compaction_model: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PCLI_COMPACTION_MODEL", "compaction_model"),
+        description="Model used for auto/manual-compaction summarization (agent/compaction.py) "
+        "and memory extraction (memory/extraction.py) instead of default_model, when set. Both "
+        "are mechanical, lower-stakes background calls (summarizing already-had conversation, "
+        "spotting durable facts) rather than the main reasoning loop, so a smaller/cheaper model "
+        "is usually a safe cost cut here even when default_model is a frontier model. Falls back "
+        "to default_model when unset (the previous, only behavior).",
+    )
     default_temperature: float | None = Field(
         default=None,
         validation_alias=AliasChoices("PCLI_DEFAULT_TEMPERATURE", "default_temperature"),

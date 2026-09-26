@@ -8,6 +8,7 @@ import json
 import logging
 import subprocess
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import ClassVar
 
@@ -1505,6 +1506,19 @@ class ChatScreen(Screen):
             invocation.full_result_ref = SessionArtifactStore.blob_name_for(event.artifact_id)
         self._session.tool_invocations.append(invocation)
 
+    def _effective_compaction_model(self) -> str | None:
+        """The model compaction summarization and memory extraction should
+        use - settings.compaction_model if configured (a deliberately
+        cheaper/smaller model for these mechanical, lower-stakes background
+        calls), falling back to the same default_model/session.model chain
+        every other call site here uses when it isn't."""
+        return (
+            self._settings.compaction_model
+            or self._settings.default_model
+            or self._session.model
+            or None
+        )
+
     def _show_decision_notice(self, event: ToolResultEvent) -> None:
         """record_decision results are shown as a distinct, always-visible
         message (not the generic collapsed-by-default tool Collapsible) —
@@ -1565,7 +1579,7 @@ class ChatScreen(Screen):
                 result = await maybe_compact(
                     self._session,
                     gateway_client=self._client,
-                    model=self._settings.default_model or self._session.model or None,
+                    model=self._effective_compaction_model(),
                     artifact_store=self._artifact_store,
                     keep_recent_turns=configured_keep_recent_turns,
                 )
@@ -1588,7 +1602,7 @@ class ChatScreen(Screen):
                             result = await maybe_compact(
                                 self._session,
                                 gateway_client=self._client,
-                                model=self._settings.default_model or self._session.model or None,
+                                model=self._effective_compaction_model(),
                                 artifact_store=self._artifact_store,
                                 keep_recent_turns=smaller,
                             )
@@ -1635,7 +1649,7 @@ class ChatScreen(Screen):
             # same reason subagent usage isn't - the status bar
             # self-corrects on the next real turn's usage report.
             self._cost_tracker.record_turn(
-                self._settings.default_model or self._session.model,
+                self._effective_compaction_model() or "",
                 result.usage,
                 source="compaction",
             )
@@ -1671,16 +1685,17 @@ class ChatScreen(Screen):
         transcript = self._artifact_store.get(artifact_id)
         if not transcript:
             return
+        model = self._effective_compaction_model()
         try:
-            usages = await extract_memory(transcript, self._make_tool_context())
+            extraction_ctx = replace(self._make_tool_context(), model=model)
+            usages = await extract_memory(transcript, extraction_ctx)
         except GatewayError as exc:
             logger.exception("Gateway error during memory extraction: %s", exc.message)
             return
         if not usages:
             return
-        model = self._settings.default_model or self._session.model
         for usage in usages:
-            self._cost_tracker.record_turn(model, usage, source="memory")
+            self._cost_tracker.record_turn(model or "", usage, source="memory")
         self._refresh_cost_display(status_bar)
         self._store.save(self._session)
 

@@ -37,6 +37,7 @@ class CostTracker:
             model,
             prompt_tokens=usage.prompt_tokens,
             completion_tokens=usage.completion_tokens,
+            cached_tokens=usage.cached_tokens or 0,
         )
         turn = TurnCost(
             turn_index=len(self._session.cost.turns),
@@ -59,6 +60,7 @@ class CostTracker:
             "model": turn.model,
             "prompt_tokens": turn.usage.prompt_tokens,
             "completion_tokens": turn.usage.completion_tokens,
+            "cached_tokens": turn.usage.cached_tokens or 0,
             "total_tokens": turn.usage.total_tokens,
             "cost_usd": turn.cost_usd,
             "estimated": turn.estimated,
