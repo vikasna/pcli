@@ -1231,6 +1231,39 @@ verbatim as plain monospace text (`rich.text.Text`), deliberately *not*
 Markdown, since tool output routinely contains underscores/asterisks/etc.
 that Markdown would misinterpret.
 
+### Reloading/resuming a session
+
+Reopening a session — via `/sessions`' `Enter` or `pcli --resume <id>` —
+rebuilds the visible transcript from `session.messages` in
+`ChatScreen._replay_message_history` (`src/pcli/tui/screens/chat.py`, called
+from `on_mount`), using these *same* `add_tool_call`/`add_tool_result`
+helpers rather than a separate, simpler reconstruction. Practically, that
+means a reloaded session looks like the original conversation: an
+assistant turn that only made tool calls (no text reply) still shows its
+`add_tool_call` preview(s), each tool-role message renders as the real
+syntax-highlighted/collapsible result described above (not a flat,
+hard-truncated line), and a mid-conversation `system`-role message —
+notably a compaction summary, which literally replaces the turns it
+summarized in `session.messages` itself (see
+[Auto-compaction](#auto-compaction) below) — is shown too, not silently
+dropped. Each tool-role message is correlated back to the specific
+assistant `tool_call` that produced it via `tool_call_id`, so a
+`record_decision` call replays as the same always-visible notice a live
+turn shows — see [Decision log](#decision-log) below — instead of a raw
+tool-result Collapsible. The leading system-prompt message (index 0) is
+still skipped either way, exactly as before.
+
+One gap is unavoidable: whether a given past tool call actually errored
+isn't retained on `Message` itself — only on the corresponding
+`Session.tool_invocations` entry's `status`, which (unlike
+`session.messages`) is never pruned or compacted, so it can no longer be
+reliably matched back to a specific reconstructed message once either has
+happened. Every tool result shown on reload therefore renders as if it
+succeeded — no `✗`, no red `.tool-result-collapsible.error` border — even
+if the original call actually failed. This is purely a display gap:
+`session.messages` itself, what actually gets resent to the LLM on the
+next turn, is unaffected either way.
+
 ## Model reasoning ("Thinking")
 
 Some models — particularly local "reasoning" models served through an
@@ -1330,7 +1363,12 @@ f"**{decision}**\n\n{rationale}")` — so a logged decision is immediately
 scannable rather than tucked behind a click. In `_stream_response`'s
 `tool_result` handling, this branch fires only for a successful (non-error)
 `record_decision` call; an errored call still falls through to the normal
-`add_tool_result` Collapsible.
+`add_tool_result` Collapsible. The rendering itself lives in a shared
+`_render_decision_notice` helper that `_show_decision_notice` just calls
+into, so [reloading/resuming a session](#reloadingresuming-a-session)
+reconstructs the exact same notice inline, wherever the original
+`record_decision` call still survives in `session.messages` — not a raw
+tool-result Collapsible.
 
 It's labeled `Decision` (`_ROLE_LABELS["decision"]` in
 `src/pcli/tui/widgets/message_view.py`) and styled with a `$secondary` left
@@ -1338,10 +1376,12 @@ border (`.message-decision` in `src/pcli/tui/styles/pcli.tcss`) — distinct
 from `.message-tool`'s `$warning` border and `.message-shell`'s `$accent`
 border.
 
-On `ChatScreen.on_mount`, if the session being opened already has recorded
-decisions (`Session.decisions` non-empty — i.e. resuming a session that has
-some), a `system`-role summary message is added: "Resuming with N recorded
-decision(s):" followed by one `- <decision>` Markdown bullet per entry
+On `ChatScreen.on_mount`, *after* the transcript replay described in
+[Reloading/resuming a session](#reloadingresuming-a-session) above, if the
+session being opened already has recorded decisions (`Session.decisions`
+non-empty — i.e. resuming a session that has some), a `system`-role summary
+message is added on top: "Resuming with N recorded decision(s):" followed
+by one `- <decision>` Markdown bullet per entry
 (`decision` text only, not the `rationale`), built by `render_decisions()`
 in `src/pcli/tools/builtin/decision_tool.py` — a real `"- "` bullet rather
 than a plain `"• "` character, since this message renders through
@@ -1351,6 +1391,13 @@ above) and needs actual list-item syntax to render as separate lines instead
 of one run-on paragraph. This mirrors the existing resume-time summary shown
 for `Session.todos` when it's non-empty, built the same way by
 `render_todos()` in `src/pcli/tools/builtin/todo_tool.py`.
+
+This aggregate summary is unconditional — it lists every entry in
+`Session.decisions` regardless of whether that decision's originating
+`record_decision` call still survives in `session.messages`. So a decision
+made in a turn that's since been compacted away (see
+[Auto-compaction](#auto-compaction) below) no longer appears inline via the
+replay above, but still shows up here.
 
 Also on `on_mount`, right after the `GatewayClient` is constructed, pcli adds
 one more system message reporting the outcome of

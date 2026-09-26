@@ -1326,9 +1326,14 @@ The TUI displays this exact same string (`ToolResultEvent.output` — i.e.
 `chunk.output` in `ChatScreen._stream_response`, the *already*
 archived/truncated value above, not `raw_output`) via
 `MessageView.add_tool_result`, inside an expandable Collapsible — see
-[`tui-guide.md`](tui-guide.md#tool-calls-and-results). The one thing that
-changed is
-that the view layer no longer applies a *second*, smaller truncation on top:
+[`tui-guide.md`](tui-guide.md#tool-calls-and-results). Since this is the
+same string stored as the tool message's `content` in `session.messages`,
+reloading/resuming a session later replays it through this identical
+`add_tool_result` path — including the truncated-preview-plus-`fetch_artifact`-note
+text above when applicable — rather than a separate, lossier reconstruction;
+see [`tui-guide.md`](tui-guide.md#reloadingresuming-a-session). The one thing
+that changed is that the view layer no longer applies a *second*, smaller
+truncation on top:
 previously the TUI cut whatever it was given down to a fixed 2000 characters
 for display; now the Collapsible shows all of `chunk.output` when expanded.
 In practice that mostly matters for results between roughly 2000 chars and
