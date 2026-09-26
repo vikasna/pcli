@@ -157,6 +157,14 @@ def test_prompt_directs_broad_exploration_to_spawn_subagent_for_context():
     assert "self-contained task description" in section
 
 
+def test_prompt_instructs_batching_independent_tool_calls_into_one_response():
+    section_start = BASE_SYSTEM_PROMPT.index("# Managing context")
+    section_end = BASE_SYSTEM_PROMPT.index("# Investigation scripts")
+    section = BASE_SYSTEM_PROMPT[section_start:section_end]
+    assert "request all of those tool calls together" in section
+    assert "genuinely independent" in section
+
+
 def test_prompt_instructs_planning_investigation_scripts_and_narrow_output():
     assert "# Investigation scripts" in BASE_SYSTEM_PROMPT
     section_start = BASE_SYSTEM_PROMPT.index("# Investigation scripts")

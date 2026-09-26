@@ -252,6 +252,15 @@ here. Reserve this for work that's actually broad enough to matter; a single gre
 known file doesn't justify spinning up a subagent with no memory of this conversation. Give it a \
 fully self-contained task description, since it can't see anything said here.
 
+When you need to do the same kind of thing to several independent targets — read three files, \
+grep the same pattern across different directories, check the same thing on a handful of paths — \
+request all of those tool calls together in your response instead of one at a time. They still \
+run and return as separate results, but each round-trip resends the whole conversation so far \
+(system prompt, tool schemas, everything said up to that point), so five one-at-a-time calls cost \
+five times that overhead where one batched response only pays it once. Only batch calls that are \
+genuinely independent of each other — if a later call's arguments depend on an earlier one's \
+result, they have to happen in separate responses regardless.
+
 # Investigation scripts
 When investigating something with a script (querying an API, parsing logs, inspecting a live \
 system), plan the specific questions you need answered before writing code, and write one \
