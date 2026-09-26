@@ -41,7 +41,7 @@ from pcli.cost.pricing_table import ModelPricing, PricingTable
 from pcli.cost.tracker import CostTracker
 from pcli.llm.client import GatewayClient
 from pcli.llm.errors import GatewayError
-from pcli.llm.models import ChatMessage, Usage
+from pcli.llm.models import ChatMessage, ToolCall, Usage
 from pcli.memory.extraction import extract_memory
 from pcli.memory.models import render_memory_list, render_memory_section
 from pcli.memory.store import clear_memory, read_memory, remove_entry
@@ -386,13 +386,9 @@ class ChatScreen(Screen):
         self._activity.subscribe(self._on_activity_changed)
         self._refresh_todo_pane()
 
-        message_view = self.query_one(MessageView)
-        for message in self._session.messages:
-            if message.role in ("user", "assistant") and message.content:
-                message_view.add_message(message.role, message.content)
-            elif message.role == "tool" and message.content:
-                message_view.add_message("tool", f"{message.name}: {message.content[:500]}")
+        self._replay_message_history()
 
+        message_view = self.query_one(MessageView)
         if self._session.todos:
             from pcli.tools.builtin.todo_tool import render_todos
 
@@ -1524,14 +1520,66 @@ class ChatScreen(Screen):
         message (not the generic collapsed-by-default tool Collapsible) —
         the whole point of the decision log is that it's immediately
         scannable, not tucked away."""
+        self._render_decision_notice(event.tool_call.function.arguments)
+
+    def _render_decision_notice(self, arguments_json: str) -> None:
+        """Shared with _replay_message_history, which reconstructs this same
+        notice for a reloaded session from the original record_decision
+        call's arguments rather than re-deriving it some other way."""
         try:
-            arguments = json.loads(event.tool_call.function.arguments or "{}")
+            arguments = json.loads(arguments_json or "{}")
         except json.JSONDecodeError:
             arguments = {}
         decision = arguments.get("decision", "") if isinstance(arguments, dict) else ""
         rationale = arguments.get("rationale", "") if isinstance(arguments, dict) else ""
+        self.query_one(MessageView).add_message("decision", f"**{decision}**\n\n{rationale}")
+
+    def _replay_message_history(self) -> None:
+        """Rebuilds the visible transcript from session.messages using the
+        same rendering helpers a live turn uses (add_tool_call/
+        add_tool_result/_render_decision_notice) — a real reported gap:
+        the previous reload logic only ever showed user/assistant .content
+        and a flat, hard-truncated-to-500-chars line per tool result, so a
+        tool-call-only assistant turn (content=None, tool_calls set) vanished
+        entirely, tool results lost their syntax-highlighted/collapsible
+        rendering, and a mid-conversation system message (notably a
+        compaction summary, which replaces old turns in session.messages
+        itself) wasn't shown at all. Purely cosmetic either way —
+        session.messages itself (what's actually resent to the LLM) is
+        untouched regardless of how it's displayed here.
+
+        One real, unavoidable gap: whether a given past tool call actually
+        errored isn't retained on Message itself (only in
+        Session.tool_invocations, which - unlike session.messages - is never
+        pruned/compacted, so it can't be reliably correlated back to a
+        specific reconstructed message once either has happened). Every
+        reconstructed tool result therefore renders as if it succeeded, even
+        if the original call actually failed."""
         message_view = self.query_one(MessageView)
-        message_view.add_message("decision", f"**{decision}**\n\n{rationale}")
+        messages = self._session.messages
+        skip_leading_system_prompt = bool(messages) and messages[0].role == "system"
+        pending_calls: dict[str, ToolCall] = {}
+
+        for index, message in enumerate(messages):
+            if index == 0 and skip_leading_system_prompt:
+                continue
+            if message.role in ("system", "user") and message.content:
+                message_view.add_message(message.role, message.content)
+            elif message.role == "assistant":
+                if message.content:
+                    message_view.add_message("assistant", message.content)
+                for call in message.tool_calls or []:
+                    pending_calls[call.id] = call
+                    purpose = extract_purpose(call.function.arguments)
+                    message_view.add_tool_call(
+                        call.function.name, call.function.arguments, purpose=purpose
+                    )
+            elif message.role == "tool" and message.content:
+                originating_call = pending_calls.pop(message.tool_call_id or "", None)
+                if message.name == "record_decision" and originating_call is not None:
+                    self._render_decision_notice(originating_call.function.arguments)
+                else:
+                    message_view.add_tool_result(message.name or "tool", message.content, is_error=False)
 
     async def _run_compaction(self, reason: str) -> None:
         """Summarizes and archives the oldest turns of session.messages (see
