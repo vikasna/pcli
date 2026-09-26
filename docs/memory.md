@@ -142,7 +142,12 @@ this" from the user still works regardless of session length, since the
 `remember` tool itself has no such dependency.
 
 `extract_memory(transcript, ctx)` (`src/pcli/memory/extraction.py`) builds the
-extraction sub-loop:
+extraction sub-loop. `ctx.model` is `ChatScreen._effective_compaction_model()`
+— `settings.compaction_model` when set (see
+[`configuration.md`](configuration.md#settings-fields)), otherwise
+`default_model`/`session.model` — the same model the triggering compaction
+summarization call used, so a deliberately cheaper `compaction_model` covers
+both of these background calls, not just compaction:
 
 - System prompt tells the reviewer model to look for durable, cross-session
   facts only — the user's role/domain (`profile`), a recurring

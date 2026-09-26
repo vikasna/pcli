@@ -43,6 +43,7 @@ to `table_key` when reading back, so both shapes round-trip.
 | `telegram_bot_token` | `PCLI_TELEGRAM_BOT_TOKEN` | *(none)* | `telegram_bot_token` | `""` | Bot token for `pcli telegram` (from [@BotFather](https://t.me/BotFather)). Env-var/config-kwarg only, same treatment as `gateway_api_key` — `repr=False` and never written by `update_config_file`, so it's never persisted to `config.toml`. See [`telegram-bot.md`](telegram-bot.md). |
 | `telegram_chat_id` | `PCLI_TELEGRAM_CHAT_ID` | *(none)* | `telegram_chat_id` | `0` | The one Telegram chat `pcli telegram` will talk to — messages from any other chat are silently ignored (personal automation, not a multi-user bot). `0` means unset. See [`telegram-bot.md`](telegram-bot.md). |
 | `default_model` | `PCLI_MODEL` | `--model` | `default_model` | `""` | Model id passed as `model` in chat-completions requests. |
+| `compaction_model` | `PCLI_COMPACTION_MODEL` | *(none)* | `compaction_model` | `None` (unset) | Model used for auto/manual-compaction summarization ([Auto-compaction](#auto-compaction) below) and memory extraction ([`memory.md`](memory.md#autonomous-extraction-derived)) instead of `default_model`, when set. Both are mechanical, lower-stakes background calls (summarizing already-had conversation, spotting durable cross-session facts) distinct from the main reasoning loop, so a smaller/cheaper model is usually a safe cost cut here even when `default_model` is a frontier model. Falls back to `default_model` (then `session.model`) when unset — the previous, only behavior, unchanged by default. |
 | `default_temperature` | `PCLI_DEFAULT_TEMPERATURE` | *(none)* | `default_temperature` | `None` (unset) | Sampling temperature passed as `temperature` in chat-completions requests, via `AgentLoop`/`GatewayClient` (see [Sampling temperature](#sampling-temperature) below). Unset (`None`, the default) means no `temperature` field is sent at all, so the gateway/model's own default applies — this is *not* the same as `0`, which is a real, valid, deterministic setting ("always pick the top token") that *is* sent. Changeable live in the TUI with [`/temperature`](tui-guide.md#slash-commands). |
 | `request_timeout_s` | `PCLI_REQUEST_TIMEOUT_S` | *(none)* | `request_timeout_s` | `120.0` | HTTP timeout applied per-request (chat completions, `/models`, health check) via `GatewayClient`'s `_effective_timeout()` helper, which reads `Settings.effective_request_timeout_s` fresh on every call rather than a value baked into the client at construction — so a change takes effect on the very next gateway request, no restart needed. Changeable live in the TUI with [`/timeout`](tui-guide.md#slash-commands), which persists it to `config.toml` the same way `/models <model-id>` persists `default_model`. See the local-api floor below. |
 | `max_retries` | `PCLI_MAX_RETRIES` | *(none)* | `max_retries` | `4` | Max attempts for `GatewayClient.chat_stream` on retryable failures (network errors, HTTP 429/5xx) — retried only if no stream data has been yielded yet. |
@@ -147,7 +148,14 @@ saved: if `auto_compact_enabled` is true and the fraction is `>=
 auto_compact_threshold` (default 0.8, i.e. 80% of the model's context
 limit), compaction runs automatically. It always leaves the
 `auto_compact_keep_recent_turns` most-recent user turns (default 2)
-untouched and summarizes everything older in one dedicated LLM call.
+untouched and summarizes everything older in one dedicated LLM call. That
+call (and the memory-extraction pass piggybacked on it, see
+[Memory](#memory) below) runs against `compaction_model` when set, via
+`ChatScreen._effective_compaction_model()`, falling back to `default_model`
+(then `session.model`) otherwise — see the `compaction_model` row in the
+table above. The resulting `TurnCost`'s `model` field (and thus its cost)
+always matches whichever model was actually called, never hardcoded to
+`default_model`; see [`sessions-and-cost.md#turncostsource`](sessions-and-cost.md#turncostsource).
 Recompaction needs no special-casing: a later compaction naturally includes
 a prior compaction's own summary message among the older messages it folds
 into a fresh combined summary.
@@ -219,7 +227,10 @@ prompt (and every subagent's), independent of any single `Session`. See
 [auto-compaction](#auto-compaction) above (a successful compaction — automatic
 or `/compact` — also triggers a review of the just-archived transcript for
 anything worth remembering), deduplication/eviction behavior, and the
-[`/memory`](tui-guide.md#slash-commands) command.
+[`/memory`](tui-guide.md#slash-commands) command. The extraction pass's own
+LLM call shares `compaction_model` with the compaction summarization call
+above (also via `ChatScreen._effective_compaction_model()`) — there's no
+separate setting for it.
 
 Like the three auto-compaction settings above, neither has a CLI flag or is
 auto-persisted from one; both are env-var/`config.toml`-only, with no slash

@@ -207,6 +207,33 @@ pricing, so this table is meant to be edited: entries in
 plus an optional `[default]` table used for any model matching nothing else
 (built-in default: `$0`/`$0`).
 
+Each entry (`ModelPricing`) also has an optional `cached_input_per_1m: float
+| None = None` — the rate for prompt tokens the gateway reports as served
+from its own prompt cache (`Usage.cached_tokens`, parsed in
+`llm/streaming.py` off an OpenAI-compatible gateway's
+`prompt_tokens_details.cached_tokens` field). `None` (the default, and what
+a `pricing.toml` entry gets if it doesn't set the key) means no
+cache-specific rate is modeled: cached tokens are then priced the same as
+ordinary input tokens, i.e. no assumed discount — this never *undercounts*
+real spend, it just won't reflect an actual discount the gateway might be
+applying. The built-ins approximate `cached_input_per_1m` for the OpenAI and
+Anthropic families already in the table, using well-established
+industry-wide discount ratios: ~50% of input price for OpenAI models
+(gpt-4o, gpt-4.1, gpt-4-turbo, gpt-3.5, o1, o3), ~10% of input price for
+Anthropic models (claude-opus, claude-sonnet, claude-haiku). The Gemini/
+Llama/Mistral entries are left at `None` — no confident industry-standard
+ratio applied there. `PricingTable.cost_usd(model_name, *, prompt_tokens,
+completion_tokens, cached_tokens=0)` splits the calculation accordingly:
+`cached_tokens` (clamped to `prompt_tokens`, in case a gateway ever reports
+`cached_tokens >= prompt_tokens`) is priced at the cached rate (or the
+ordinary input rate, if unknown for that model), and the remaining
+uncached prompt tokens at the full input rate as before.
+`CostTracker.record_turn` passes `cached_tokens=usage.cached_tokens or 0`
+automatically, so no caller needs to change to benefit from this — before
+this, `Usage.cached_tokens` was already parsed off the wire but never
+consulted anywhere, so pcli's own cost display silently overstated real
+spend on any cache-aware gateway.
+
 `match_model_pattern` (shared with `ContextLimitTable`) resolves a model name
 to an entry: **exact match wins**; otherwise the **longest matching
 `*`-suffixed prefix** pattern.
@@ -236,7 +263,11 @@ the pricing table, appends a `TurnCost` to `Session.cost.turns`, updates
 `session_total_usd`/`total_tokens`, and appends a line to the **global**
 ledger at `cost_ledger_file()` (`data_dir()/cost_ledger.jsonl`) — a
 newline-delimited JSON log spanning all sessions, independent of any single
-session's file.
+session's file. Each ledger line now also carries a `cached_tokens` field
+(the same value threaded into `cost_usd` above, `0` when the gateway
+reported none) alongside `prompt_tokens`/`completion_tokens`/`total_tokens`
+— previously absent, added for transparency into how much of a call's cost
+reflects cache-priced tokens.
 
 A subagent's own LLM usage is folded into the *parent* session's cost the
 same way, via `ToolResult.extra_usage` (see `spawn_subagent` in
@@ -261,7 +292,11 @@ real `record_turn(...)` call sites explicitly:
   conversation the user is having.
 - **`"compaction"`** — `_run_compaction`'s own summarization call, whether
   triggered automatically (crossing `auto_compact_threshold`) or via
-  `/compact`.
+  `/compact`. Tagged with whatever model the call actually used —
+  `ChatScreen._effective_compaction_model()` (`settings.compaction_model`
+  when set, see [`configuration.md`](configuration.md#settings-fields),
+  else `default_model`/`session.model`) — not hardcoded to `default_model`,
+  so this cost tag can't mismatch the model actually billed.
 - **`"subagent"`** — a tool result's `extra_usage`, recorded right after the
   tool-call chunk that produced it. Two cases feed this: a `spawn_subagent`
   or `make_agent_tool`-based tool's nested `AgentLoop` spend, or a tool like
@@ -274,7 +309,8 @@ real `record_turn(...)` call sites explicitly:
   for anything worth remembering about the user (`memory/extraction.py`) —
   see [`memory.md`](memory.md#autonomous-extraction-derived). Recorded once
   per LLM call that sub-loop makes, right after the compaction pass that
-  triggered it finishes.
+  triggered it finishes. Uses the same `_effective_compaction_model()` as
+  the compaction call above, for both the request itself and its cost tag.
 
 **This only changes which entry represents "the main conversation" — it does
 not change cost totals.** `session_total_usd` and `total_tokens` still
