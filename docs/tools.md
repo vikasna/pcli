@@ -23,6 +23,19 @@ concrete to diagnose — see the "Surfacing the reason back to the model"
 section of [`sandbox-and-permissions.md`](sandbox-and-permissions.md#permission-manager)
 for the exact reason strings.
 
+A single assistant message can carry more than one tool call —
+`AgentLoop.run_turn`'s `for call in tool_calls_collected: ...` loop
+(`src/pcli/agent/loop.py`) dispatches each one through
+`_dispatch_tool_call` in turn, all before the next LLM round-trip — and the
+system prompt's `# Managing context` section (`src/pcli/agent/prompt.py`)
+now tells the model to actually make use of that: request several
+genuinely independent tool calls together in one response (e.g. reading a
+few files, or grepping the same pattern across different directories)
+rather than one at a time, since each round-trip resends the whole
+conversation so far (system prompt, tool schemas, growing history) and
+batching only pays that overhead once. Calls whose arguments depend on an
+earlier call's result still have to go in separate responses.
+
 Each entry lists: what it does, its JSON-schema parameters, whether it
 prompts for permission (`needs_permission`), and any guardrail hook.
 
