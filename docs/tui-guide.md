@@ -1445,7 +1445,7 @@ One line normally, growing to two while a subagent is running
 (`StatusBar._sync_height`, `src/pcli/tui/widgets/status_bar.py`):
 
 ```
-[PLAN MODE]   ⠋ Working...   model: gpt-4o   cost: $0.0123   ctx: 3.2k/128.0k (2%)   tokens: 4.1k   tools: 2   sandbox: docker
+[PLAN MODE]   ⠋ Working...   model: gpt-4o   cost: $0.0123   ctx: 3.2k/128.0k (2%)   tokens: 4.1k   tools: 2/25   sandbox: docker
 ⟳ Subagent: investigate failing test — 3 tool call(s), last: run_shell
 ```
 
@@ -1487,7 +1487,16 @@ Line 1:
   tool-call count on line 2 below: a subagent's own internal tool calls are
   never added to this count — only the main loop's own top-level calls are,
   so `spawn_subagent` itself counts here as exactly one call regardless of
-  how much work the subagent does internally.
+  how much work the subagent does internally. Shown as `n/N` (e.g. `2/25`)
+  against `StatusBar.main_tool_calls_limit`, re-read at the start of every
+  turn from `guardrails.max_tool_calls_per_turn` — the same live-editable
+  guardrail [`/max-tool-calls-per-turn`](#slash-commands) views/sets and
+  `AgentLoop.run_turn` enforces as a hard per-turn cap — so you can see how
+  much headroom is left before the guardrail would start denying tool calls
+  this turn. Falls back to the plain `n` (no `/N`) when that guardrail is
+  `0` (unlimited, its own existing convention, e.g. forced in
+  [local-api mode](configuration.md#local-api-mode)), since there's no
+  meaningful `N` to show a ratio against.
 - `sandbox` — the backend actually selected at startup (`docker` or
   `subprocess`), so you always know the isolation level in effect.
 
