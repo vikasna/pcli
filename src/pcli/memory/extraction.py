@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from pcli.agent.loop import AgentLoop
+from pcli.cost.tracker import cost_budget_reason
 from pcli.llm.models import ChatMessage, Usage, UsageEvent
 from pcli.memory.models import render_memory_section
 from pcli.memory.store import read_memory
@@ -69,8 +70,13 @@ async def extract_memory(transcript: str, ctx: ToolContext) -> list[Usage]:
         ChatMessage(role="user", content=transcript),
     ]
 
+    def _budget_check() -> str | None:
+        if ctx.session is None:
+            return None
+        return cost_budget_reason(ctx.session, ctx.max_session_cost_usd)
+
     usages: list[Usage] = []
-    async for event in sub_loop.run_turn(messages):
+    async for event in sub_loop.run_turn(messages, budget_check=_budget_check):
         if isinstance(event, UsageEvent):
             usages.append(event.usage)
     return usages

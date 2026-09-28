@@ -245,3 +245,106 @@ async def test_temperature_command_rejects_non_numeric_and_negative_values(tmp_p
         await pilot.pause()
         assert "0 or greater" in message_view._current_text
         assert settings.default_temperature is None
+
+
+@pytest.mark.asyncio
+async def test_budget_command_updates_settings_live_and_persists_to_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config_path = tmp_path / "config.toml"
+    monkeypatch.setattr(settings_module, "config_file", lambda: config_path)
+
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    session = Session(model="fake-model", gateway_base_url="")
+    settings = Settings(gateway_base_url="", gateway_api_key="")
+
+    screen = ChatScreen(settings, session=session, store=store)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen._handle_command("/budget 5.00")
+        await pilot.pause()
+
+    assert settings.max_session_cost_usd == 5.00
+    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert data["max_session_cost_usd"] == 5.00
+
+
+@pytest.mark.asyncio
+async def test_budget_off_clears_settings_and_removes_the_persisted_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Same remove_config_keys reasoning as /temperature off - update_config_file
+    alone can't express clearing a value back to unset."""
+    config_path = tmp_path / "config.toml"
+    monkeypatch.setattr(settings_module, "config_file", lambda: config_path)
+
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    session = Session(model="fake-model", gateway_base_url="")
+    settings = Settings(gateway_base_url="", gateway_api_key="", max_session_cost_usd=5.00)
+
+    screen = ChatScreen(settings, session=session, store=store)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen._handle_command("/budget 5.00")
+        await pilot.pause()
+        data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        assert data["max_session_cost_usd"] == 5.00
+
+        screen._handle_command("/budget off")
+        await pilot.pause()
+
+    assert settings.max_session_cost_usd is None
+    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert "max_session_cost_usd" not in data
+
+
+@pytest.mark.asyncio
+async def test_budget_command_with_no_argument_reports_current_value_and_spend(
+    tmp_path: Path,
+):
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    session = Session(model="fake-model", gateway_base_url="")
+    session.cost.session_total_usd = 1.2345
+    settings = Settings(gateway_base_url="", gateway_api_key="")
+
+    screen = ChatScreen(settings, session=session, store=store)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        from pcli.tui.widgets.message_view import MessageView
+
+        screen._handle_command("/budget")
+        await pilot.pause()
+
+        message_view = screen.query_one(MessageView)
+        assert "unset" in message_view._current_text
+        assert "$1.2345" in message_view._current_text
+
+
+@pytest.mark.asyncio
+async def test_budget_command_rejects_non_numeric_and_non_positive_values(tmp_path: Path):
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    session = Session(model="fake-model", gateway_base_url="")
+    settings = Settings(gateway_base_url="", gateway_api_key="")
+
+    screen = ChatScreen(settings, session=session, store=store)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        from pcli.tui.widgets.message_view import MessageView
+
+        message_view = screen.query_one(MessageView)
+
+        screen._handle_command("/budget not-a-number")
+        await pilot.pause()
+        assert "valid number" in message_view._current_text
+        assert settings.max_session_cost_usd is None
+
+        screen._handle_command("/budget 0")
+        await pilot.pause()
+        assert "greater than 0" in message_view._current_text
+        assert settings.max_session_cost_usd is None

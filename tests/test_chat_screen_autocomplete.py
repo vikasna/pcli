@@ -85,7 +85,7 @@ def test_every_dispatched_command_has_an_autocomplete_entry():
     sync - a command missing here would silently never autocomplete."""
     dispatched = {
         "sessions", "export", "toolbox", "models", "compact", "timeout",
-        "temperature", "context-limit", "max-tool-iterations", "artifact-threshold",
+        "temperature", "budget", "context-limit", "max-tool-iterations", "artifact-threshold",
         "max-tool-calls-per-turn", "max-tool-calls-per-minute", "allowed-roots",
         "prune-tool-results", "subagent", "memory", "max-response-tokens", "rename",
         "theme", "plan", "build", "help",

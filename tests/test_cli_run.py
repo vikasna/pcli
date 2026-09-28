@@ -5,6 +5,7 @@ this covers the CLI command's own argument handling, error paths, and
 exit-code wiring)."""
 
 import json
+import tomllib
 from pathlib import Path
 
 import httpx
@@ -14,6 +15,7 @@ from typer.testing import CliRunner
 
 from pcli.cli import app
 from pcli.config import settings as settings_module
+from pcli.config.paths import config_file
 from pcli.session.models import Message
 from pcli.session.store import SessionStore
 
@@ -344,3 +346,35 @@ def test_run_notify_telegram_failure_does_not_fail_the_run(
     assert result.exit_code == 0
     assert "the answer" in result.output
     assert "Failed to send the Telegram notification" in result.output
+
+
+@respx.mock
+def test_run_max_cost_stops_the_run_without_persisting_to_config(isolated_store: SessionStore):
+    """--max-cost is a local override (cli.py's run_command uses
+    settings.model_copy, not get_settings(max_session_cost_usd=...) - see
+    its own comment for why) - it must actually stop the run once crossed,
+    and must never touch config.toml. Resuming a session already over the
+    cap (rather than scripting a multi-round-trip turn) is the simplest,
+    most direct way to prove the check runs before the gateway is ever
+    called - real mid-turn accumulation is covered by
+    test_chat_screen_budget.py instead. Also proves --max-cost is combined
+    correctly with --gateway-url/--api-key/--model from the same invocation
+    (_base_args), not clobbering them - see run_command's own comment on
+    why model_copy is used instead of get_settings(max_session_cost_usd=...)."""
+    existing = isolated_store.new_session(model="fake-model", gateway_base_url="http://fake-gateway.test/v1")
+    existing.cost.session_total_usd = 1.50  # already over the $1.00 cap about to be given
+    isolated_store.save(existing)
+
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.mock(return_value=_final_response("should never be seen"))
+
+    result = runner.invoke(
+        app, _base_args("--task", "say hello", "--session", existing.id, "--max-cost", "1.0")
+    )
+
+    assert result.exit_code == 1
+    assert "Reached the session cost budget" in result.output
+    assert route.call_count == 0
+    assert not config_file().exists() or "max_session_cost_usd" not in tomllib.loads(
+        config_file().read_text(encoding="utf-8")
+    )

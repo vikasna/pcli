@@ -102,3 +102,25 @@ def global_cost_report(since: datetime | None = None, *, ledger_path: Path | Non
         "turn_count": turn_count,
         "by_model": dict(by_model),
     }
+
+
+def cost_budget_reason(session: Session, max_session_cost_usd: float | None) -> str | None:
+    """None if there's no cap (max_session_cost_usd unset) or spend is still
+    under it; otherwise a formatted reason string for AgentLoop.run_turn's
+    budget_check to surface as a termination note - the one place that owns
+    this wording, so every call site (main loop, headless/scheduled runs,
+    subagents, memory extraction - see their own run_turn call sites) stays
+    consistent. session.cost.session_total_usd already includes subagent/
+    compaction/memory-extraction spend folded in (CostTracker.record_turn),
+    so this one check covers all of it regardless of which loop is asking."""
+    if max_session_cost_usd is None:
+        return None
+    spent = session.cost.session_total_usd
+    if spent < max_session_cost_usd:
+        return None
+    return (
+        f"Reached the session cost budget (${max_session_cost_usd:.2f}) - spent "
+        f"${spent:.4f} so far. Raise max_session_cost_usd (in the TUI: /budget <amount>; "
+        "otherwise PCLI_MAX_SESSION_COST_USD or config.toml) to continue this session, or "
+        "start a new one."
+    )

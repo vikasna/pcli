@@ -28,7 +28,7 @@ from pcli.agent.loop import AgentLoop
 from pcli.agent.prompt import build_system_prompt
 from pcli.agent.runtime import AgentRuntime, effective_max_tool_iterations, make_tool_context
 from pcli.config.settings import Settings
-from pcli.cost.tracker import CostTracker
+from pcli.cost.tracker import CostTracker, cost_budget_reason
 from pcli.memory.models import render_memory_section
 from pcli.memory.store import read_memory
 from pcli.permissions.manager import AskCallback, PermissionManager
@@ -135,7 +135,11 @@ async def run_headless_task(
         run_again = False
         chat_messages = [m.to_chat_message() for m in session.messages]
         text_parts: list[str] = []
-        async for event in agent_loop.run_turn(chat_messages, ask=ask):
+        async for event in agent_loop.run_turn(
+            chat_messages,
+            ask=ask,
+            budget_check=lambda: cost_budget_reason(session, settings.max_session_cost_usd),
+        ):
             if event.kind == "text_delta":
                 text_parts.append(event.text)
             elif event.kind == "usage":

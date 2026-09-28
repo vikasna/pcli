@@ -65,6 +65,13 @@ class ToolContext:
     session: Session | None = None
     """The live Session object, for tools that read/mutate session-level state
     directly (namely write_todos)."""
+    max_session_cost_usd: float | None = None
+    """Settings.max_session_cost_usd, threaded through so a nested AgentLoop
+    (spawn_subagent, memory extraction) can build the same cost/tracker.py
+    cost_budget_reason(session, max_session_cost_usd) check the parent loop
+    uses, instead of a subagent blowing straight through the session's
+    budget while the parent's own check is paused waiting for it to
+    return."""
     artifact_store: ArtifactStore | None = None
     """Where large tool outputs get archived (see agent/loop.py's automatic
     truncation) and where fetch_artifact reads them back from."""

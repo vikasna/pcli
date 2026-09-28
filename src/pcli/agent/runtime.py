@@ -180,6 +180,7 @@ def make_tool_context(
         max_tool_iterations=effective_max_tool_iterations(settings),
         subagent_max_iterations=settings.subagent_max_iterations,
         session=session,
+        max_session_cost_usd=settings.max_session_cost_usd,
         artifact_store=artifact_store,
         toolbox_manager=runtime.toolbox_manager,
         plan_mode=plan_mode,

@@ -73,6 +73,58 @@ async def test_run_due_jobs_fires_a_due_job(tmp_path, monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
+async def test_run_due_jobs_applies_a_per_job_max_cost_override(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """job.max_cost_usd overrides max_session_cost_usd for just this job's
+    own run (via settings.model_copy in _run_one_job), without mutating the
+    shared Settings object other jobs/the daemon loop itself use."""
+    add_job(
+        ScheduleJob(
+            cron="* * * * *",
+            task="x",
+            max_cost_usd=2.50,
+            next_run_at=datetime.now(UTC) - timedelta(minutes=1),
+        )
+    )
+    seen_max_costs: list[float | None] = []
+
+    async def fake_run_task_once(task, *, settings, **kwargs):
+        seen_max_costs.append(settings.max_session_cost_usd)
+        session = Session(id="sess_x", model="fake-model", gateway_base_url="http://x")
+        return HeadlessTurnResult(session=session, final_text="done", terminated_early=False)
+
+    monkeypatch.setattr(daemon_module, "run_task_once", fake_run_task_once)
+
+    shared_settings = _settings()
+    assert shared_settings.max_session_cost_usd is None
+    await _run_due_jobs(shared_settings, SessionStore(base_dir=tmp_path / "sessions"), tmp_path, on_job_run=None)
+
+    assert seen_max_costs == [2.50]
+    assert shared_settings.max_session_cost_usd is None  # unmutated
+
+
+@pytest.mark.asyncio
+async def test_run_due_jobs_without_a_per_job_max_cost_uses_the_shared_settings(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    add_job(
+        ScheduleJob(cron="* * * * *", task="x", next_run_at=datetime.now(UTC) - timedelta(minutes=1))
+    )
+    seen_max_costs: list[float | None] = []
+
+    async def fake_run_task_once(task, *, settings, **kwargs):
+        seen_max_costs.append(settings.max_session_cost_usd)
+        session = Session(id="sess_x", model="fake-model", gateway_base_url="http://x")
+        return HeadlessTurnResult(session=session, final_text="done", terminated_early=False)
+
+    monkeypatch.setattr(daemon_module, "run_task_once", fake_run_task_once)
+
+    settings_with_cap = _settings().model_copy(update={"max_session_cost_usd": 5.0})
+    await _run_due_jobs(settings_with_cap, SessionStore(base_dir=tmp_path / "sessions"), tmp_path, on_job_run=None)
+
+    assert seen_max_costs == [5.0]
+
+
+@pytest.mark.asyncio
 async def test_run_due_jobs_skips_a_not_due_job(tmp_path, monkeypatch: pytest.MonkeyPatch):
     add_job(
         ScheduleJob(

@@ -168,14 +168,22 @@ def run_command(
         "finishes (see 'pcli telegram --help'). Requires telegram_bot_token/telegram_chat_id "
         "to already be configured - skipped with a warning otherwise, never a hard failure.",
     ),
+    max_cost: float | None = typer.Option(
+        None,
+        "--max-cost",
+        help="Hard cap on this run's total spend (USD), overriding max_session_cost_usd for "
+        "just this invocation - never persisted to config.toml, never affects the TUI or any "
+        "other run. Omit to use whatever max_session_cost_usd is already configured (unset by "
+        "default - no cap).",
+    ),
 ) -> None:
     """Runs a single task non-interactively and exits - no TUI. Meant to be
-    invoked by an OS scheduler (cron / Task Scheduler) for a task you've
-    already worked out interactively once; pcli itself doesn't schedule
-    anything. Anything not already granted "Always Allow" (see the TUI's
-    permission prompt) is refused rather than prompted for, since there's
-    no one here to ask - set those up interactively first if this task
-    needs them."""
+    invoked by an OS scheduler (cron / Task Scheduler) or pcli's own
+    scheduler (`pcli schedule`) for a task you've already worked out
+    interactively once. Anything not already granted "Always Allow" (see
+    the TUI's permission prompt) is refused rather than prompted for, since
+    there's no one here to ask - set those up interactively first if this
+    task needs them."""
     if bool(task) == bool(task_file):
         typer.echo("Provide exactly one of --task or --task-file.", err=True)
         raise typer.Exit(code=1)
@@ -192,6 +200,15 @@ def run_command(
                 err=True,
             )
             raise typer.Exit(code=1)
+        if max_cost is not None:
+            # A local override, not get_settings(max_session_cost_usd=...) -
+            # that helper rebuilds the whole cached Settings singleton from
+            # scratch using only the given overrides (config/settings.py's
+            # get_settings), which would silently drop --gateway-url/--api-key/
+            # --model overrides _root's own callback already applied earlier
+            # in this same invocation. model_copy starts from the already-
+            # fully-resolved settings instead, so only this one field changes.
+            settings = settings.model_copy(update={"max_session_cost_usd": max_cost})
 
         store = SessionStore()
         cwd = Path.cwd()
@@ -404,6 +421,12 @@ def schedule_add(
         True, "--quiet/--no-quiet", help="Only keep the final answer in the run's progress "
         "log, not tool-call-by-tool-call output."
     ),
+    max_cost: float | None = typer.Option(
+        None, "--max-cost", help="Hard cap on this job's own runs (USD), overriding "
+        "max_session_cost_usd just for it - never persisted to config.toml, never affects "
+        "other jobs or the TUI. Omit to use whatever max_session_cost_usd is already "
+        "configured (unset by default - no cap)."
+    ),
 ) -> None:
     """Adds a new recurring job. Nothing runs until 'pcli schedule run' (the
     daemon) is actually started - adding a job only saves it."""
@@ -428,6 +451,7 @@ def schedule_add(
         headed=headed,
         notify_telegram=notify_telegram_flag,
         quiet=quiet,
+        max_cost_usd=max_cost,
     )
     add_job(job)
     typer.echo(f"Added job {job.id} ({cron}). Start 'pcli schedule run' to begin executing it.")

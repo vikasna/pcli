@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from pcli.cost.pricing_table import ModelPricing, PricingTable
-from pcli.cost.tracker import CostTracker, global_cost_report
+from pcli.cost.tracker import CostTracker, cost_budget_reason, global_cost_report
 from pcli.llm.models import Usage
 from pcli.session.models import Session, TurnCost
 
@@ -249,3 +249,38 @@ def test_global_cost_report_aggregates_across_sessions(tmp_path: Path):
     assert report["total_cost_usd"] == 6.0
     assert report["total_tokens"] == 2_000_000
     assert report["by_model"]["fake-model"] == 6.0
+
+
+def test_cost_budget_reason_none_when_no_cap_set():
+    session = Session(model="fake-model")
+    session.cost.session_total_usd = 999.0
+    assert cost_budget_reason(session, None) is None
+
+
+def test_cost_budget_reason_none_when_under_budget():
+    session = Session(model="fake-model")
+    session.cost.session_total_usd = 0.50
+    assert cost_budget_reason(session, 1.00) is None
+
+
+def test_cost_budget_reason_set_when_at_or_over_budget():
+    session = Session(model="fake-model")
+    session.cost.session_total_usd = 1.00
+    reason = cost_budget_reason(session, 1.00)
+    assert reason is not None
+    assert "$1.00" in reason
+    assert "$1.0000" in reason
+
+    session.cost.session_total_usd = 1.50
+    reason = cost_budget_reason(session, 1.00)
+    assert reason is not None
+    assert "$1.50" in reason
+
+
+def test_cost_budget_reason_mentions_how_to_raise_it():
+    session = Session(model="fake-model")
+    session.cost.session_total_usd = 2.0
+    reason = cost_budget_reason(session, 1.00)
+    assert reason is not None
+    assert "/budget" in reason
+    assert "PCLI_MAX_SESSION_COST_USD" in reason

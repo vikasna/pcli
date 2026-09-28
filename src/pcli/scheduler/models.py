@@ -33,6 +33,13 @@ class ScheduleJob(BaseModel):
     headed: bool = False
     notify_telegram: bool = False
     quiet: bool = True
+    max_cost_usd: float | None = None
+    """Per-job hard spend cap (USD), overriding Settings.max_session_cost_usd
+    for just this job's own runs - mirrors `pcli run --max-cost`, applied the
+    same way (scheduler/daemon.py's _run_one_job): never persisted to
+    config.toml, never affects other jobs or the TUI. None (the default)
+    means this job falls back to whatever max_session_cost_usd is already
+    configured (unset by default - no cap)."""
     enabled: bool = True
     created_at: datetime = Field(default_factory=_utcnow)
     next_run_at: datetime | None = None

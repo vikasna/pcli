@@ -94,12 +94,19 @@ async def _run_one_job(
         task = Path(job.task_file).read_text(encoding="utf-8")
     assert task is not None  # ScheduleJob guarantees exactly one of task/task_file is set
 
+    job_settings = settings
+    if job.max_cost_usd is not None:
+        # A local override for just this job's own runs, same reasoning as
+        # `pcli run --max-cost` (cli.py's run_command) - never mutates the
+        # shared settings object other jobs/the daemon loop itself use.
+        job_settings = settings.model_copy(update={"max_session_cost_usd": job.max_cost_usd})
+
     result: HeadlessTurnResult | None = None
     error: Exception | None = None
     try:
         result = await run_task_once(
             task,
-            settings=settings,
+            settings=job_settings,
             store=store,
             cwd=cwd,
             session_id=job.session_id,

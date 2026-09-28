@@ -177,3 +177,25 @@ def test_schedule_run_requires_a_configured_gateway(isolated_paths: Path):
     result = runner.invoke(app, ["schedule", "run"])
     assert result.exit_code == 1
     assert "Gateway not configured" in result.output
+
+
+def test_schedule_add_saves_a_per_job_max_cost(isolated_paths: Path):
+    """--max-cost is per-job (ScheduleJob.max_cost_usd), overriding
+    max_session_cost_usd for just this job's own runs - see
+    scheduler/daemon.py's _run_one_job for how it's applied."""
+    result = runner.invoke(
+        app,
+        ["schedule", "add", "--cron", "* * * * *", "--task", "x", "--max-cost", "2.50"],
+    )
+    assert result.exit_code == 0
+
+    jobs = read_schedule().jobs
+    assert jobs[0].max_cost_usd == 2.50
+
+
+def test_schedule_add_without_max_cost_leaves_it_unset(isolated_paths: Path):
+    result = runner.invoke(app, ["schedule", "add", "--cron", "* * * * *", "--task", "x"])
+    assert result.exit_code == 0
+
+    jobs = read_schedule().jobs
+    assert jobs[0].max_cost_usd is None

@@ -7,6 +7,7 @@ helpers, since extraction drives a real tool-calling AgentLoop, unlike
 compaction's own single collect() call."""
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -20,6 +21,7 @@ from pcli.memory.store import read_memory
 from pcli.permissions.guardrails import GuardrailsConfig
 from pcli.permissions.manager import PermissionManager
 from pcli.sandbox.base import ExecRequest, ExecResult, Sandbox, SandboxCapabilities
+from pcli.session.models import Session
 from pcli.tools.base import ToolContext
 
 
@@ -120,6 +122,30 @@ async def test_extract_memory_makes_no_calls_when_nothing_is_worth_remembering(t
     async with GatewayClient(_settings()) as client:
         await extract_memory("--- user ---\nfix the typo on line 4", _ctx(tmp_path, client))
 
+    assert read_memory().entries == []
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_extract_memory_respects_the_session_cost_budget(tmp_path: Path):
+    """extract_memory's own sub_loop.run_turn must also consult the
+    session-scoped budget (ctx.session/ctx.max_session_cost_usd) - it's a
+    real gateway call like any other, already folded into
+    session.cost.session_total_usd by ChatScreen._extract_memory_from's own
+    record_turn call, so it shouldn't be a silent gap in enforcement just
+    because it's a background pass."""
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.mock(return_value=_text_response("should never be seen"))
+
+    session = Session(model="fake-model", gateway_base_url="http://fake-gateway.test/v1")
+    session.cost.session_total_usd = 1.50  # already over the $1.00 cap below
+
+    async with GatewayClient(_settings()) as client:
+        ctx = replace(_ctx(tmp_path, client), session=session, max_session_cost_usd=1.00)
+        usages = await extract_memory("some transcript", ctx)
+
+    assert usages == []
+    assert route.call_count == 0  # stopped before ever calling the gateway
     assert read_memory().entries == []
 
 

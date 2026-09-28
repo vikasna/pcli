@@ -184,8 +184,21 @@ class AgentLoop:
         self._temperature = temperature
 
     async def run_turn(
-        self, messages: list[ChatMessage], *, ask: AskCallback | None = None
+        self,
+        messages: list[ChatMessage],
+        *,
+        ask: AskCallback | None = None,
+        budget_check: Callable[[], str | None] | None = None,
     ) -> AsyncIterator[AgentEvent]:
+        """budget_check, if given, is called at the top of every loop
+        iteration (same spot as the max_tool_iterations check below) -
+        returning None means proceed, a reason string means stop the turn
+        the same way max_tool_iterations does. A plain injected callable
+        (not a raw Session/cap value) rather than importing Session here -
+        matches the existing ask/tool_context_factory injection pattern and
+        keeps this module decoupled from what a "budget" even is (see the
+        module docstring); the caller closes over its own Session/Settings
+        to build it - see cost/tracker.py's cost_budget_reason."""
         tools = self._tool_registry.to_openai_tools() if self._tool_registry else None
         working_messages = list(messages)
         original_len = len(working_messages)
@@ -203,6 +216,14 @@ class AgentLoop:
 
         while True:
             iterations += 1
+            if budget_check is not None:
+                budget_reason = budget_check()
+                if budget_reason is not None:
+                    note = f"\n[pcli] {budget_reason}"
+                    yield TextDelta(text=note)
+                    working_messages.append(ChatMessage(role="assistant", content=note))
+                    terminated_early = True
+                    break
             if self._max_tool_iterations is not None and iterations > self._max_tool_iterations:
                 note = (
                     f"\n[pcli] Reached the max tool-call iteration limit "

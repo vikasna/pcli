@@ -105,6 +105,18 @@ class Settings(BaseSettings):
         "is usually a safe cost cut here even when default_model is a frontier model. Falls back "
         "to default_model when unset (the previous, only behavior).",
     )
+    max_session_cost_usd: float | None = Field(
+        default=None,
+        validation_alias=AliasChoices("PCLI_MAX_SESSION_COST_USD", "max_session_cost_usd"),
+        description="Hard cap on a single session's total spend (Session.cost.session_total_usd, "
+        "which already includes subagent/compaction/memory-extraction usage folded into it). "
+        "Checked at the start of every internal LLM round-trip (agent/loop.py's AgentLoop."
+        "run_turn), not just once per turn, so a single tool-call-heavy turn can't blow straight "
+        "through it. None (the default) means no cap - spend is tracked and reported but never "
+        "enforced, the previous, only behavior. Changeable live in the TUI with /budget; "
+        "overridable for a single headless run without touching this persisted value via "
+        "'pcli run --max-cost'.",
+    )
     default_temperature: float | None = Field(
         default=None,
         validation_alias=AliasChoices("PCLI_DEFAULT_TEMPERATURE", "default_temperature"),

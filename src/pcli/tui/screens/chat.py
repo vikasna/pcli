@@ -38,7 +38,7 @@ from pcli.cost.context import (
     set_model_context_limit,
 )
 from pcli.cost.pricing_table import ModelPricing, PricingTable
-from pcli.cost.tracker import CostTracker
+from pcli.cost.tracker import CostTracker, cost_budget_reason
 from pcli.llm.client import GatewayClient
 from pcli.llm.errors import GatewayError
 from pcli.llm.models import ChatMessage, ToolCall, Usage
@@ -125,6 +125,9 @@ gateway.
 - **/temperature [value|off]** — view or set the sampling temperature sent \
 with each request; `off` clears it so no temperature field is sent at all \
 (gateway/model default applies).
+- **/budget [amount|off]** — view or set a hard cap on this session's total \
+spend; the agent loop stops itself (with a clear notice) once spend reaches \
+it, rather than only reporting cost after the fact. `off` clears it (no cap).
 - **/context-limit [tokens]** — view or set the context window pcli assumes \
 for the current model (used for the context-usage display and \
 auto-compaction).
@@ -211,6 +214,7 @@ _SLASH_COMMANDS: list[tuple[str, str]] = [
     ("compact", "Summarize the conversation so far to free up context."),
     ("timeout", "View or set the per-request gateway timeout."),
     ("temperature", "View or set the sampling temperature."),
+    ("budget", "View or set a hard cap on this session's total spend."),
     ("context-limit", "View or set the assumed context window for this model."),
     ("max-tool-iterations", "View or set the per-turn tool-call iteration cap."),
     ("artifact-threshold", "View or set the tool-output archiving threshold."),
@@ -545,6 +549,7 @@ class ChatScreen(Screen):
             max_response_tokens=self._agent_loop.max_response_tokens if self._agent_loop else None,
             temperature=self._agent_loop.temperature if self._agent_loop else None,
             session=self._session,
+            max_session_cost_usd=self._settings.max_session_cost_usd,
             artifact_store=self._artifact_store,
             activity=self._activity,
             toolbox_manager=self._toolbox_manager,
@@ -723,6 +728,8 @@ class ChatScreen(Screen):
             self._handle_timeout_command(rest or None)
         elif command == "temperature":
             self._handle_temperature_command(rest or None)
+        elif command == "budget":
+            self._handle_budget_command(rest or None)
         elif command == "context-limit":
             self._handle_context_limit_command(rest or None)
         elif command == "max-tool-iterations":
@@ -842,6 +849,54 @@ class ChatScreen(Screen):
             self._agent_loop.set_temperature(value)
         message_view.add_message(
             "system", f"default_temperature set to {value:g} — takes effect on the next turn."
+        )
+
+    def _handle_budget_command(self, arg: str | None) -> None:
+        """`/budget [amount|off]` — views or sets Settings.max_session_cost_usd,
+        a hard cap on this session's total spend (agent/loop.py's
+        AgentLoop.run_turn consults it, via cost/tracker.py's
+        cost_budget_reason, at the top of every internal LLM round-trip - see
+        that function's own docstring). Same persistence shape as /temperature:
+        `off` needs remove_config_keys, not update_config_file, since the
+        latter deliberately skips writing a None value rather than persisting
+        a removal. Takes effect on the very next round-trip, no restart - the
+        budget_check closure reads self._settings fresh each time it's
+        called."""
+        message_view = self.query_one(MessageView)
+        spent = self._session.cost.session_total_usd
+        if not arg:
+            current = self._settings.max_session_cost_usd
+            text = f"${current:.2f}" if current is not None else "unset (no cap)"
+            message_view.add_message(
+                "system",
+                f"max_session_cost_usd is currently {text} (spent so far: ${spent:.4f}). "
+                "Usage: /budget <amount>|off",
+            )
+            return
+
+        if arg == "off":
+            self._settings.max_session_cost_usd = None
+            remove_config_keys("max_session_cost_usd")
+            message_view.add_message("system", "max_session_cost_usd cleared — no cap.")
+            return
+
+        try:
+            value = float(arg)
+        except ValueError:
+            message_view.add_message("system", f"'{arg}' isn't a valid number, or 'off'.")
+            return
+        if value <= 0:
+            message_view.add_message(
+                "system", "Budget must be greater than 0 (use /budget off to clear it)."
+            )
+            return
+
+        self._settings.max_session_cost_usd = value
+        update_config_file(max_session_cost_usd=value)
+        message_view.add_message(
+            "system",
+            f"max_session_cost_usd set to ${value:.2f} (spent so far: ${spent:.4f}) — takes "
+            "effect on the next round-trip.",
         )
 
     def _handle_context_limit_command(self, arg: str | None) -> None:
@@ -1866,7 +1921,13 @@ class ChatScreen(Screen):
             chat_messages = [m.to_chat_message() for m in self._session.messages]
             if self._plan_mode:
                 chat_messages.append(ChatMessage(role="system", content=_PLAN_MODE_REINFORCEMENT))
-            async for chunk in self._agent_loop.run_turn(chat_messages, ask=ask):
+            async for chunk in self._agent_loop.run_turn(
+                chat_messages,
+                ask=ask,
+                budget_check=lambda: cost_budget_reason(
+                    self._session, self._settings.max_session_cost_usd
+                ),
+            ):
                 if chunk.kind == "text_delta":
                     had_any_content = True
                     flush_reasoning()

@@ -598,6 +598,99 @@ async def test_agent_loop_turn_complete_not_terminated_early_when_model_stops_on
     assert turn_complete.response_truncated is False
 
 
+@pytest.mark.asyncio
+@respx.mock
+async def test_agent_loop_budget_check_stops_the_turn(tmp_path: Path):
+    """budget_check is consulted at the top of every iteration, same spot as
+    max_tool_iterations - a reason string stops the turn before it makes any
+    gateway call at all (checked before the first chat_stream too, not just
+    on later round-trips)."""
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.mock(return_value=httpx.Response(200, content=_sse(*_final_text_chunks("done"))))
+
+    async with GatewayClient(_settings()) as client:
+        loop = AgentLoop(
+            client,
+            tool_registry=ToolRegistry(),
+            permission_manager=PermissionManager(
+                guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+            ),
+            tool_context_factory=lambda: ToolContext(
+                sandbox=FakeSandbox(), guardrails=GuardrailsConfig(), cwd=tmp_path
+            ),
+        )
+        events = []
+        async for event in loop.run_turn(
+            [ChatMessage(role="user", content="hi")],
+            budget_check=lambda: "Reached the session cost budget ($1.00) - spent $1.0000 so far.",
+        ):
+            events.append(event)
+
+    turn_complete = next(e for e in events if isinstance(e, TurnCompleteEvent))
+    note = turn_complete.new_messages[-1].content
+    assert "Reached the session cost budget" in note
+    assert turn_complete.terminated_early is True
+    assert route.call_count == 0  # stopped before ever calling the gateway
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_agent_loop_budget_check_none_reason_does_not_stop_the_turn(tmp_path: Path):
+    """A budget_check that keeps returning None (still under budget) must
+    not interfere with an otherwise-normal turn."""
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=httpx.Response(200, content=_sse(*_final_text_chunks("done")))
+    )
+
+    async with GatewayClient(_settings()) as client:
+        loop = AgentLoop(
+            client,
+            tool_registry=ToolRegistry(),
+            permission_manager=PermissionManager(
+                guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+            ),
+            tool_context_factory=lambda: ToolContext(
+                sandbox=FakeSandbox(), guardrails=GuardrailsConfig(), cwd=tmp_path
+            ),
+        )
+        events = []
+        async for event in loop.run_turn(
+            [ChatMessage(role="user", content="hi")], budget_check=lambda: None
+        ):
+            events.append(event)
+
+    turn_complete = next(e for e in events if isinstance(e, TurnCompleteEvent))
+    assert turn_complete.terminated_early is False
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_agent_loop_no_budget_check_is_a_no_op(tmp_path: Path):
+    """budget_check=None (the default - every pre-existing caller that
+    never passes it) must behave exactly as before this parameter existed."""
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=httpx.Response(200, content=_sse(*_final_text_chunks("done")))
+    )
+
+    async with GatewayClient(_settings()) as client:
+        loop = AgentLoop(
+            client,
+            tool_registry=ToolRegistry(),
+            permission_manager=PermissionManager(
+                guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+            ),
+            tool_context_factory=lambda: ToolContext(
+                sandbox=FakeSandbox(), guardrails=GuardrailsConfig(), cwd=tmp_path
+            ),
+        )
+        events = []
+        async for event in loop.run_turn([ChatMessage(role="user", content="hi")]):
+            events.append(event)
+
+    turn_complete = next(e for e in events if isinstance(e, TurnCompleteEvent))
+    assert turn_complete.terminated_early is False
+
+
 async def _run_turn_events(tmp_path: Path, tool_registry: ToolRegistry | None = None) -> list:
     async with GatewayClient(_settings()) as client:
         loop = AgentLoop(

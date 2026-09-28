@@ -14,6 +14,7 @@ from dataclasses import dataclass, field, replace
 from pcli.agent.loop import AgentLoop, ToolResultEvent, ToolStartEvent, TurnCompleteEvent
 from pcli.agent.prompt import environment_section
 from pcli.cost.context import ContextLimitTable, ContextUsage
+from pcli.cost.tracker import cost_budget_reason
 from pcli.llm.models import ChatMessage, Usage, UsageEvent
 from pcli.memory.models import render_memory_section
 from pcli.memory.store import read_memory
@@ -135,8 +136,14 @@ async def run_nested_agent(
     usages: list[Usage] = []
     if ctx.activity is not None:
         ctx.activity.start_subagent(activity_label)
+
+    def _budget_check() -> str | None:
+        if ctx.session is None:
+            return None
+        return cost_budget_reason(ctx.session, ctx.max_session_cost_usd)
+
     try:
-        async for event in sub_loop.run_turn(messages, ask=ctx.ask):
+        async for event in sub_loop.run_turn(messages, ask=ctx.ask, budget_check=_budget_check):
             if isinstance(event, UsageEvent):
                 usages.append(event.usage)
             elif isinstance(event, ToolStartEvent):

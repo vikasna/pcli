@@ -15,6 +15,7 @@ from pcli.permissions.guardrails import GuardrailsConfig
 from pcli.permissions.manager import PermissionManager
 from pcli.permissions.policy import PermissionPolicy
 from pcli.sandbox.base import ExecRequest, ExecResult, Sandbox, SandboxCapabilities
+from pcli.session.models import Session
 from pcli.tools.base import ToolContext
 from pcli.tools.builtin.subagent_tool import SPAWN_SUBAGENT, SPAWN_SUBAGENT_TOOL_NAME
 from pcli.tools.registry import ToolRegistry
@@ -520,6 +521,40 @@ async def test_spawn_subagent_marks_hitting_the_iteration_cap_as_an_error(tmp_pa
     assert "DID NOT FINISH" in result.output
     assert "INCOMPLETE" in result.output
     assert route.call_count == 2  # stopped exactly at the cap
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_spawn_subagent_respects_the_parent_sessions_cost_budget(tmp_path: Path):
+    """A subagent's own nested AgentLoop must consult the same session-scoped
+    budget the parent loop does (ctx.session/ctx.max_session_cost_usd,
+    threaded through by make_tool_context/ChatScreen._make_tool_context) -
+    otherwise it could blow straight through the cap in its own internal
+    iterations while the parent's own check is paused waiting for it to
+    return. Same DID NOT FINISH/INCOMPLETE treatment as hitting the
+    iteration cap - a budget stop is also not a normal completion."""
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.mock(return_value=httpx.Response(200, content=_sse(*_tool_call_round("call_1"))))
+
+    permission_manager = PermissionManager(
+        guardrails=GuardrailsConfig(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    registry = _make_registry_with_echo_and_subagent()
+    session = Session(model="fake-model", gateway_base_url="http://fake-gateway.test/v1")
+    session.cost.session_total_usd = 1.50  # already over the $1.00 cap below
+
+    async with GatewayClient(_settings()) as client:
+        ctx = replace(
+            _make_ctx(tmp_path, registry, client, permission_manager),
+            session=session,
+            max_session_cost_usd=1.00,
+        )
+        result = await SPAWN_SUBAGENT.handler({"task": "echo forever"}, ctx)
+
+    assert result.is_error is True
+    assert "DID NOT FINISH" in result.output
+    assert "INCOMPLETE" in result.output
+    assert route.call_count == 0  # stopped before ever calling the gateway
 
 
 @pytest.mark.asyncio
