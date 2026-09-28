@@ -62,6 +62,12 @@ class StatusBar(Static):
     # are its own isolated count, not part of this one (spawn_subagent
     # itself counts here as a single call).
     main_tool_calls: reactive[int] = reactive(0)
+    # guardrails.max_tool_calls_per_turn as of the start of the current turn
+    # (re-read fresh each turn, since it's live-editable via /max-tool-calls
+    # -per-turn) - the denominator for the "n/N" display below. 0 means
+    # unlimited (same convention the guardrail itself uses, e.g. local-api
+    # mode), in which case only "n" is shown - there's no N to divide by.
+    main_tool_calls_limit: reactive[int] = reactive(0)
     # Second line, shown only while non-None: a running subagent's progress.
     subagent_task: reactive[str | None] = reactive(None)
     subagent_tool_calls: reactive[int] = reactive(0)
@@ -99,6 +105,11 @@ class StatusBar(Static):
             )
         spinner_part = f"{_SPINNER_FRAMES[self._spinner_index]} Working...   " if self.busy else ""
         plan_part = "[PLAN MODE]   " if self.plan_mode else ""
+        tools_part = (
+            f"{self.main_tool_calls}/{self.main_tool_calls_limit}"
+            if self.main_tool_calls_limit > 0
+            else str(self.main_tool_calls)
+        )
         return (
             f"{plan_part}"
             f"{spinner_part}"
@@ -106,7 +117,7 @@ class StatusBar(Static):
             f"cost: ${self.session_cost_usd:.4f}   "
             f"{context_part}"
             f"tokens: {format_token_count(self.total_tokens)}   "
-            f"tools: {self.main_tool_calls}   "
+            f"tools: {tools_part}   "
             f"sandbox: {self.sandbox_backend}"
         )
 

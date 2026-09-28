@@ -45,3 +45,24 @@ def test_status_bar_renders_main_agent_tool_call_count():
 
 def test_status_bar_main_tool_calls_defaults_to_zero():
     assert StatusBar().main_tool_calls == 0
+
+
+def test_status_bar_shows_n_of_n_format_when_a_limit_is_set():
+    """Shows what's left, not just how many so far - main_tool_calls_limit
+    is guardrails.max_tool_calls_per_turn as of the start of the current
+    turn (see ChatScreen._run_one_turn)."""
+    status_bar = StatusBar()
+    status_bar.main_tool_calls = 3
+    status_bar.main_tool_calls_limit = 25
+    assert "tools: 3/25" in status_bar._render_line1()
+
+
+def test_status_bar_falls_back_to_plain_count_when_limit_is_unlimited():
+    """0 means unlimited (the guardrail's own convention, e.g. local-api
+    mode) - there's no N to show a ratio against, so just the raw count."""
+    status_bar = StatusBar()
+    status_bar.main_tool_calls = 3
+    status_bar.main_tool_calls_limit = 0
+    line = status_bar._render_line1()
+    assert "tools: 3   " in line
+    assert "tools: 3/" not in line

@@ -1885,6 +1885,7 @@ class ChatScreen(Screen):
         self._current_ask_question = ask_question
         status_bar.busy = True
         status_bar.main_tool_calls = 0
+        status_bar.main_tool_calls_limit = self._permission_manager.guardrails.max_tool_calls_per_turn
 
         # Reasoning models stream their chain-of-thought under a channel
         # separate from the actual reply (see llm/streaming.py) — buffered

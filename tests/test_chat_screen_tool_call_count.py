@@ -131,6 +131,9 @@ async def test_main_tool_calls_counts_the_current_turns_own_tool_calls_and_reset
             await pilot.pause()
 
         assert status_bar.main_tool_calls == 2
+        # guardrails.max_tool_calls_per_turn's default - the "N" half of the
+        # status bar's "n/N" display (see status_bar.py's _render_line1).
+        assert status_bar.main_tool_calls_limit == 25
 
         field.text = "just a question"
         await pilot.press("enter")
