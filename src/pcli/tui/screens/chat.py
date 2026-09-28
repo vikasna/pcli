@@ -2000,7 +2000,13 @@ class ChatScreen(Screen):
             logger.exception("Gateway error during turn: %s", exc.message)
             flush_reasoning()
             message_view.finish_streaming()
-            message_view.add_message("system", f"Gateway error: {exc.message}")
+            message_view.add_message(
+                "system",
+                f"Gateway error: {exc.message}\n\n"
+                "**Note:** the message you just sent is still part of this session and will "
+                "be resent as context on your next turn - a failed attempt doesn't discard "
+                "it, it isn't silently skipped.",
+            )
             self._store.save(self._session)
             # A GatewayError this far into a turn is often exactly a context-
             # length overflow (see llm/client.py's _http_status_hint) - the

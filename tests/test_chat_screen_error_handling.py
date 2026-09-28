@@ -95,6 +95,45 @@ async def test_gateway_error_still_shows_in_the_message_view(tmp_path: Path):
         assert "Gateway error" in message_view._current_text
 
 
+@pytest.mark.asyncio
+@respx.mock
+async def test_gateway_error_notice_warns_the_message_will_be_resent(tmp_path: Path):
+    """Real reported UX gap: on_chat_input_submitted appends the user's
+    message to session.messages *before* the turn even starts, so a failed
+    attempt does NOT discard it - the next turn resends it as context along
+    with whatever the user types next. Users commonly assume a failed turn
+    means the message was skipped, so the error notice must say otherwise
+    explicitly rather than leaving that retention silent."""
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=httpx.Response(401, content=b'{"error": "unauthorized"}')
+    )
+
+    screen, session, _store = _make_screen(tmp_path)
+    app = _HostApp(screen)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        from pcli.tui.widgets.message_view import MessageView
+
+        screen._session.messages.append(Message(role="user", content="hello"))
+        screen._stream_response()
+        for _ in range(10):
+            await pilot.pause()
+
+        message_view = screen.query_one(MessageView)
+        # Bold Markdown (**Note:**) so it actually catches the eye instead of
+        # blending into the rest of the notice - rendered through Markdown()
+        # like every other system message, so this is real emphasis, not
+        # just a plain-text label.
+        assert "**Note:**" in message_view._current_text
+        assert "still part of this session" in message_view._current_text
+        assert "resent as context" in message_view._current_text
+
+        # The claim in the notice is actually true - the message really is
+        # still there, not silently dropped.
+        assert any(m.role == "user" and m.content == "hello" for m in session.messages)
+
+
 def test_ctrl_c_is_not_declared_as_a_chat_screen_binding():
     """Regression test for a discovered dead binding: Textual's own App
     reserves ctrl+c as a "press ctrl+q to quit" hint (App.action_help_quit)
