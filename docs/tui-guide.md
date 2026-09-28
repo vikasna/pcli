@@ -381,6 +381,17 @@ command — not just a plain chat turn. `/compact` and `/toolbox discover`
 also used to crash uncaught on a gateway failure; both now report the error
 as a normal system message instead.
 
+For a plain chat turn specifically, `ChatScreen.on_chat_input_submitted`
+appends the user's message to `session.messages` *before* the turn even
+starts, unconditionally — so a `GatewayError` doesn't discard it. Users
+naturally assume a failed turn means their message was skipped, when in
+fact it's still sitting in history and gets resent as context on the very
+next turn, alongside whatever's typed next. The `Gateway error: <message>`
+notice now says this explicitly, with a bold `**Note:**` (rendered through
+Markdown like every other system message, so this is real emphasis, not
+just a plain-text label) so it actually catches the eye instead of
+blending into the rest of the notice.
+
 A `GatewayError` partway through a plain chat turn is also often exactly a
 context-length overflow — an internal round-trip within the turn getting
 rejected by the gateway for being too large, sometimes right after the
