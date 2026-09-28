@@ -68,6 +68,7 @@ pcli run --task "..." --session <id>
 pcli run --task "..." --quiet
 pcli run --task "..." --headed
 pcli run --task "..." --notify-telegram
+pcli run --task "..." --max-cost 5.00
 ```
 
 | Flag | Behavior |
@@ -78,6 +79,7 @@ pcli run --task "..." --notify-telegram
 | `--quiet` | Print only the final answer text, not tool-call progress lines — for a clean cron-job log. |
 | `--headed` | Show the browser window if any `browser_*` tool gets used, instead of the headless default. See [`browser-automation.md`](browser-automation.md#headed-vs-headless) for why `pcli run` defaults to headless while the TUI defaults to headed. |
 | `--notify-telegram` | After the run finishes, also send the final answer text to the configured Telegram chat — a lightweight one-off message (`notify_telegram`, `telegram/bot.py`), not the full `pcli telegram` daemon/polling machinery. If `telegram_bot_token`/`telegram_chat_id` aren't configured, this prints a warning and skips rather than failing the run; if sending itself fails (network, bad token, ...), that's also just a warning. See [`telegram-bot.md`](telegram-bot.md#pcli-run---notify-telegram). |
+| `--max-cost AMOUNT` | Hard cap on this run's total spend (USD), overriding `max_session_cost_usd` for just this one invocation — never persisted to `config.toml`, never affects the TUI or any other run. Omit to use whatever `max_session_cost_usd` is already configured (unset by default — no cap). Applied via `settings.model_copy(update={"max_session_cost_usd": max_cost})` rather than rebuilding `Settings` from scratch, so it composes correctly with any `--gateway-url`/`--api-key`/`--model` overrides given in the same invocation instead of silently dropping them. See [Session cost-budget enforcement](sessions-and-cost.md#session-cost-budget-enforcement). |
 
 Passing both or neither of `--task`/`--task-file` is a usage error (exit
 code 1, "Provide exactly one of --task or --task-file."). All the normal

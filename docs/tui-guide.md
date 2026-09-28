@@ -485,6 +485,23 @@ reads as over `auto_compact_threshold`.
   this key and go back to unset" — `remove_config_keys` exists specifically
   to fill that gap. Rejects non-numeric input (other than `off`) and negative
   values.
+- **`/budget [amount|off]`** — view or set `max_session_cost_usd` (see
+  [`configuration.md`](configuration.md#settings-fields)), a hard cap on this
+  session's total spend (`Session.cost.session_total_usd`, which already
+  folds in subagent/compaction/memory-extraction spend). With no argument,
+  reports the current cap (or `"unset (no cap)"`) plus spend so far. With an
+  argument (`/budget 5.00`), sets it — any value `> 0` is accepted — and
+  persists it to `config.toml` via `update_config_file`, the same way
+  `/temperature` persists `default_temperature`. `AgentLoop.run_turn`
+  consults it at the top of every internal round-trip, not just once per
+  turn (see [Session cost-budget
+  enforcement](sessions-and-cost.md#session-cost-budget-enforcement)), so it
+  takes effect starting with the very next round-trip, no restart needed.
+  `off` clears it back to unset the same way `/temperature off` does — via
+  `remove_config_keys("max_session_cost_usd")` rather than
+  `update_config_file`, since the latter deliberately skips writing a `None`
+  value rather than persisting a removal. Rejects non-numeric input (other
+  than `off`) and values that aren't greater than 0.
 - **`/context-limit [tokens]`** — with no argument, reports the context-
   window size pcli currently assumes for the active model (the session's
   model, falling back to `default_model`) — see

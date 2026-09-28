@@ -50,6 +50,7 @@ per recurring job:
 | `headed` | Show the browser window if a `browser_*` tool gets used, instead of the headless default. |
 | `notify_telegram` | Send the final answer to the configured Telegram chat after each run — same mechanism as [`pcli run --notify-telegram`](telegram-bot.md#pcli-run---notify-telegram). |
 | `quiet` | Only keep the final answer in the run's progress output, not tool-call-by-tool-call lines. Defaults to `True` (unlike `pcli run`, which defaults to verbose) — a scheduled job's output normally just goes to a log. |
+| `max_cost_usd` | Per-job hard spend cap (USD), overriding `max_session_cost_usd` for just this job's own runs — mirrors `pcli run --max-cost`, applied the same way (`scheduler/daemon.py`'s `_run_one_job`, via `settings.model_copy`): never persisted to `config.toml`, never affects other jobs or the TUI. `None` (the default) means this job falls back to whatever `max_session_cost_usd` is already configured (unset by default — no cap). See [`configuration.md`](configuration.md#settings-fields) and [`headless-and-scheduled-runs.md`](headless-and-scheduled-runs.md#pcli-run-one-shot-task-execution). |
 | `enabled` | Disabled jobs are skipped by the daemon entirely, but stay listed (and keep their `last_run_at`/`last_status` history) so re-enabling doesn't lose anything. |
 | `created_at` | Set once, at creation. |
 | `next_run_at` | The next time this job is due. Left unset (`None`) at creation on purpose — computed lazily by the daemon the first time it sees the job (`croniter(cron, base=now).get_next(datetime)`), so a job added while the daemon isn't running doesn't carry a stale "next run" computed from whenever `schedule add` happened to execute rather than from whenever the daemon actually starts watching it. |
@@ -93,6 +94,7 @@ pcli schedule add --cron "*/15 * * * *" (--task "..." | --task-file path) [optio
 | `--headed` | Show the browser window if used. |
 | `--notify-telegram` | Notify Telegram after each run. |
 | `--quiet` / `--no-quiet` | Defaults to `--quiet` (unlike `pcli run`, which defaults to verbose progress output). |
+| `--max-cost AMOUNT` | Hard cap on this job's own runs (USD), overriding `max_session_cost_usd` just for it — never persisted to `config.toml`, never affects other jobs or the TUI. Omit to use whatever `max_session_cost_usd` is already configured (unset by default — no cap). Stored as the job's `max_cost_usd` field (table above). |
 
 Prints the new job's id on success (`Added job job_xxxx (<cron>). Start
 'pcli schedule run' to begin executing it.`). **Adding a job only saves

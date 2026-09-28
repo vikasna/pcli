@@ -330,6 +330,77 @@ the real turn finishes) or a subagent's usage (possible in an edge case)
 could stand in for the main conversation's size, even though it reflects a
 completely unrelated conversation.
 
+### Session cost-budget enforcement
+
+Everything above only *reports* cost. `Settings.max_session_cost_usd`
+(`src/pcli/config/settings.py`, env var `PCLI_MAX_SESSION_COST_USD`) is a
+hard cap on `Session.cost.session_total_usd` — the same running total
+described above, which already includes subagent/compaction/memory-
+extraction spend folded in. `None` (the default) means no cap: spend is
+still tracked and reported exactly as before, just never enforced — this is
+session-scoped only, not a daily or cross-session budget against the global
+ledger (`cost_ledger_file()`).
+
+`cost_budget_reason(session, max_session_cost_usd) -> str | None`
+(`src/pcli/cost/tracker.py`) is the one place that owns the check and its
+wording: `None` if there's no cap or spend is still under it, otherwise a
+formatted reason naming the amount spent, the cap, and how to raise it
+(`/budget <amount>` in the TUI, otherwise `PCLI_MAX_SESSION_COST_USD` or
+`config.toml`).
+
+`AgentLoop.run_turn` (`src/pcli/agent/loop.py`) takes an optional
+`budget_check: Callable[[], str | None] | None = None` parameter, consulted
+at the **top of every internal loop iteration** — the same `while True:`
+spot as the pre-existing `max_tool_iterations` check — not just once per
+turn. This matters because a single tool-call-heavy turn can accumulate a
+lot of spend across many internal round-trips before ever returning control
+to the caller. When `budget_check()` returns a reason, `run_turn` stops the
+turn exactly the way the `max_tool_iterations` check does: yields a
+`TextDelta` with the note, appends it as an assistant `ChatMessage`, sets
+`terminated_early = True`, and breaks the loop. Because of this,
+`HeadlessTurnResult.terminated_early`, `pcli run`'s non-zero exit code, and
+`ScheduleJob.last_status` all react to a budget stop automatically, with no
+new plumbing needed.
+
+`budget_check` is a plain injected callable (matching the existing
+`ask`/`tool_context_factory` injection pattern) rather than `AgentLoop`
+importing `Session`/`Settings` itself — each caller closes over its own
+`Session` and cap to build one via `cost_budget_reason`. It's threaded into
+all four places that construct an `AgentLoop` and call `run_turn`:
+
+- **The main TUI loop** — `ChatScreen._run_one_turn` (`tui/screens/chat.py`),
+  closing over `self._session` and `self._settings.max_session_cost_usd`.
+- **Headless/scheduled runs** — `run_headless_task` (`agent/headless.py`),
+  closing over `session` and `settings.max_session_cost_usd`.
+- **A subagent's own nested loop** — `run_nested_agent`
+  (`tools/_nested_agent.py`), via `ctx.session`/`ctx.max_session_cost_usd`.
+- **Memory extraction** — `extract_memory` (`memory/extraction.py`), the
+  same `ctx.session`/`ctx.max_session_cost_usd` shape.
+
+The latter two matter as much as the first two: subagent and memory-
+extraction spend already fold into the *same* `session.cost.session_total_usd`
+(see "Recording cost" above), so without their own `budget_check`, a
+subagent could blow straight through the budget in its own internal
+iterations while the parent loop's own check sits paused, waiting for that
+tool call to return.
+
+`ToolContext` (`tools/base.py`) carries `max_session_cost_usd: float | None
+= None` for exactly this purpose — how a subagent's or memory-extraction's
+nested loop gets the same cap the parent loop was given. It's populated by
+`make_tool_context` (`agent/runtime.py`) and `ChatScreen._make_tool_context`
+from `settings.max_session_cost_usd`.
+
+**Changing the cap:**
+
+- In the TUI, `/budget [amount|off]` (see
+  [`tui-guide.md`](tui-guide.md#slash-commands)) views or sets it live,
+  persisting to `config.toml` the same way `/temperature` does.
+- For a single headless/scheduled invocation without touching the persisted
+  setting, `pcli run --max-cost <amount>` and `pcli schedule add --max-cost
+  <amount>` (`ScheduleJob.max_cost_usd`) apply a local override for just that
+  run/job — see [`headless-and-scheduled-runs.md`](headless-and-scheduled-runs.md#pcli-run-one-shot-task-execution)
+  and [`scheduling.md`](scheduling.md).
+
 ### `pcli cost report`
 
 `global_cost_report(since=None)` (`cost/tracker.py`) scans the global ledger
