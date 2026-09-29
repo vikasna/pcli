@@ -1126,13 +1126,15 @@ class ChatScreen(Screen):
         only has room for a one-line summary (last tool name); Ctrl+G
         (action_show_subagent_activity) opens the same detail as a
         live-updating panel instead of a static snapshot, for anyone
-        actively watching rather than checking in once."""
-        message_view = self.query_one(MessageView)
+        actively watching rather than checking in once. The "nothing
+        running" case is a toast - trivially re-checked by rerunning the
+        command; the activity dump itself stays in the transcript since
+        it's genuine reference content worth scrolling back to."""
         sub = self._activity.subagent
         if sub is None:
-            message_view.add_message("system", _NO_SUBAGENT_RUNNING_MESSAGE)
+            self.notify(_NO_SUBAGENT_RUNNING_MESSAGE)
             return
-        message_view.add_message("system", format_subagent_activity(sub))
+        self.query_one(MessageView).add_message("system", format_subagent_activity(sub))
 
     def _handle_memory_command(self, rest: str) -> None:
         """`/memory` — lists pcli's global, cross-session memory of this
@@ -1143,49 +1145,56 @@ class ChatScreen(Screen):
         clear` wipes it. This is the transparency/control surface for
         memory/extraction.py's autonomous derivation - what got remembered
         should always be visible and correctable, never a silent background
-        process."""
-        message_view = self.query_one(MessageView)
+        process. The no-arg listing stays in the transcript (reference
+        content worth scrolling back to, same as /toolbox list); every
+        other branch here is a toast - a quick confirmation or error,
+        trivially re-checked by rerunning /memory."""
         sub_command, _, arg = rest.partition(" ")
         sub_command = sub_command.strip().lower()
         arg = arg.strip()
 
         if not sub_command:
-            message_view.add_message("system", render_memory_list(read_memory().entries))
+            self.query_one(MessageView).add_message(
+                "system", render_memory_list(read_memory().entries)
+            )
             return
 
         if sub_command == "clear":
             clear_memory()
-            message_view.add_message("system", "Cleared all memory entries.")
+            self.notify("Cleared all memory entries.")
             return
 
         if sub_command == "forget":
             if not arg:
-                message_view.add_message("system", "Usage: /memory forget <id>")
+                self.notify("Usage: /memory forget <id>", severity="warning")
                 return
             matches = [e for e in read_memory().entries if e.id.endswith(arg)]
             if not matches:
-                message_view.add_message("system", f"No memory entry found matching '{arg}'.")
+                self.notify(f"No memory entry found matching '{arg}'.", severity="warning")
                 return
             if len(matches) > 1:
-                message_view.add_message(
-                    "system", f"'{arg}' matches more than one entry — use a longer id."
+                self.notify(
+                    f"'{arg}' matches more than one entry — use a longer id.",
+                    severity="warning",
                 )
                 return
             remove_entry(matches[0].id)
-            message_view.add_message("system", f"Forgot: {matches[0].content}")
+            self.notify(f"Forgot: {matches[0].content}")
             return
 
-        message_view.add_message(
-            "system", f"Unknown /memory subcommand: '{sub_command}'. Use /memory, /memory forget "
-            "<id>, or /memory clear."
+        self.notify(
+            f"Unknown /memory subcommand: '{sub_command}'. Use /memory, /memory forget "
+            "<id>, or /memory clear.",
+            severity="warning",
         )
 
     def action_show_subagent_activity(self) -> None:
         """Ctrl+G — opens a live-updating view of the current subagent's
         task/tool-call history (SubagentActivityModal), or just reports
-        there's nothing running yet, same message /subagent gives."""
+        there's nothing running yet, same message /subagent gives (also a
+        toast, same reasoning)."""
         if self._activity.subagent is None:
-            self.query_one(MessageView).add_message("system", _NO_SUBAGENT_RUNNING_MESSAGE)
+            self.notify(_NO_SUBAGENT_RUNNING_MESSAGE)
             return
         self.app.push_screen(SubagentActivityModal(self._activity))
 
@@ -1391,7 +1400,6 @@ class ChatScreen(Screen):
         message_view.add_message("system", _HELP_TEXT)
 
     def _handle_toolbox_command(self, rest: str) -> None:
-        message_view = self.query_one(MessageView)
         sub, _, arg = rest.partition(" ")
         arg = arg.strip()
 
@@ -1406,18 +1414,24 @@ class ChatScreen(Screen):
         elif sub == "remove" and arg:
             self._toolbox_remove(arg)
         else:
-            message_view.add_message(
-                "system",
+            self.notify(
                 "Usage: /toolbox discover <name> [path] | /toolbox list | /toolbox remove <name>",
+                severity="warning",
             )
 
     @work(exclusive=True)
     async def _toolbox_discover(self, name: str, path: str | None = None) -> None:
+        """Discovery's own failure and success summary stay in the
+        transcript (genuine, potentially detailed reference content); the
+        "isn't available" guard and the "Discovering..." progress ping are
+        toasts - the ping is superseded within moments by one of the two
+        transcript outcomes above, so keeping it around permanently would
+        just be a stray duplicate."""
         message_view = self.query_one(MessageView)
         if self._toolbox_manager is None:
-            message_view.add_message("system", "Toolbox isn't available (gateway/sandbox not set up).")
+            self.notify("Toolbox isn't available (gateway/sandbox not set up).", severity="warning")
             return
-        message_view.add_message("system", f"Discovering '{name}'...")
+        self.notify(f"Discovering '{name}'...")
         try:
             summary = await self._toolbox_manager.discover(
                 name, gateway_client=self._client, model=self._settings.default_model or None, path=path
@@ -1437,42 +1451,42 @@ class ChatScreen(Screen):
 
     @work(exclusive=True)
     async def _toolbox_list(self) -> None:
-        message_view = self.query_one(MessageView)
         if self._toolbox_manager is None:
-            message_view.add_message("system", "Toolbox isn't available (gateway/sandbox not set up).")
+            self.notify("Toolbox isn't available (gateway/sandbox not set up).", severity="warning")
             return
         entries = self._toolbox_manager.list_discovered()
         if not entries:
-            message_view.add_message("system", "No software discovered yet. Try /toolbox discover <name>.")
+            self.notify("No software discovered yet. Try /toolbox discover <name>.")
             return
         lines = [
             f"- **{name}** [{entry['source']}] {entry.get('version', '?')} - "
             f"{entry.get('tool_count', 0)} tool(s)"
             for name, entry in entries.items()
         ]
-        message_view.add_message("system", "\n".join(lines))
+        self.query_one(MessageView).add_message("system", "\n".join(lines))
 
     @work(exclusive=True)
     async def _toolbox_remove(self, name: str) -> None:
-        message_view = self.query_one(MessageView)
         if self._toolbox_manager is None:
-            message_view.add_message("system", "Toolbox isn't available (gateway/sandbox not set up).")
+            self.notify("Toolbox isn't available (gateway/sandbox not set up).", severity="warning")
             return
         self._toolbox_manager.remove(name)
-        message_view.add_message("system", f"Removed '{name}' from the toolbox.")
+        self.notify(f"Removed '{name}' from the toolbox.")
 
     @work(exclusive=True)
     async def _handle_models_command(self, arg: str | None) -> None:
-        message_view = self.query_one(MessageView)
-
+        """"Failed to list models" stays in the transcript as a real,
+        investigable failure; everything else here is a toast - a quick
+        confirmation or a state the user can just retry."""
         if arg:
             self._set_model(arg)
-            message_view.add_message("system", f"Model set to '{arg}'.")
+            self.notify(f"Model set to '{arg}'.")
             return
 
         if not self._settings.gateway_base_url:
-            message_view.add_message(
-                "system", "No gateway URL configured. Set PCLI_GATEWAY_URL and restart pcli."
+            self.notify(
+                "No gateway URL configured. Set PCLI_GATEWAY_URL and restart pcli.",
+                severity="warning",
             )
             return
 
@@ -1484,14 +1498,14 @@ class ChatScreen(Screen):
         try:
             models = await client.list_models()
         except GatewayError as exc:
-            message_view.add_message("system", f"Failed to list models: {exc.message}")
+            self.query_one(MessageView).add_message("system", f"Failed to list models: {exc.message}")
             return
         finally:
             if owns_client:
                 await client.aclose()
 
         if not models:
-            message_view.add_message("system", "Gateway returned no models.")
+            self.notify("Gateway returned no models.", severity="warning")
             return
 
         from pcli.tui.screens.models import ModelListScreen
@@ -1500,7 +1514,7 @@ class ChatScreen(Screen):
         selected = await self.app.push_screen_wait(ModelListScreen(models, current))
         if selected:
             self._set_model(selected)
-            message_view.add_message("system", f"Model set to '{selected}'.")
+            self.notify(f"Model set to '{selected}'.")
 
     def _set_model(self, model: str) -> None:
         self._settings.default_model = model

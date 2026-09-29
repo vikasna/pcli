@@ -742,8 +742,9 @@ async def test_subagent_command_with_none_running_reports_that(tmp_path: Path):
         screen._handle_command("/subagent")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "No subagent is currently running" in message_view._current_text
+        assert any(
+            "No subagent is currently running" in m for m in _notification_messages(app)
+        )
 
 
 @pytest.mark.asyncio

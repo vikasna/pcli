@@ -11,7 +11,6 @@ from pcli.config.settings import Settings
 from pcli.session.store import SessionStore
 from pcli.tui.screens.chat import ChatScreen
 from pcli.tui.screens.subagent_activity_modal import SubagentActivityModal
-from pcli.tui.widgets.message_view import MessageView
 
 
 class _HostApp(App):
@@ -46,8 +45,9 @@ async def test_ctrl_g_with_no_subagent_running_reports_that_in_chat(tmp_path: Pa
         await pilot.press("ctrl+g")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "No subagent is currently running" in message_view._current_text
+        assert any(
+            "No subagent is currently running" in n.message for n in app._notifications
+        )
         assert not isinstance(app.screen, SubagentActivityModal)
 
 

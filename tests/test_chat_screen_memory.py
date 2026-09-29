@@ -30,6 +30,13 @@ class _HostApp(App):
         self.push_screen(self._initial_screen)
 
 
+def _notification_messages(app) -> list[str]:
+    """Toast messages currently shown (App._notifications) - see chat.py's
+    self.notify(...) calls, Textual's built-in transient-notice mechanism
+    used for ephemeral command confirmations instead of the transcript."""
+    return [n.message for n in app._notifications]
+
+
 def _sse(*chunks: dict) -> bytes:
     body = "".join(f"data: {json.dumps(c)}\n\n" for c in chunks)
     return (body + "data: [DONE]\n\n").encode()
@@ -168,7 +175,7 @@ async def test_memory_forget_removes_by_short_id(tmp_path: Path):
         await pilot.pause()
 
         assert read_memory().entries == []
-        assert "Forgot:" in screen.query_one(MessageView)._current_text
+        assert any("Forgot:" in m for m in _notification_messages(app))
 
 
 @pytest.mark.asyncio
@@ -180,7 +187,7 @@ async def test_memory_forget_with_unknown_id_reports_no_match(tmp_path: Path):
         screen._handle_command("/memory forget zzzz")
         await pilot.pause()
 
-        assert "No memory entry found" in screen.query_one(MessageView)._current_text
+        assert any("No memory entry found" in m for m in _notification_messages(app))
 
 
 @pytest.mark.asyncio
@@ -196,7 +203,7 @@ async def test_memory_clear_wipes_the_store(tmp_path: Path):
         await pilot.pause()
 
         assert read_memory().entries == []
-        assert "Cleared all memory entries." in screen.query_one(MessageView)._current_text
+        assert any("Cleared all memory entries." in m for m in _notification_messages(app))
 
 
 # --- end-to-end: compaction triggers extraction ---
