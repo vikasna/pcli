@@ -280,10 +280,11 @@ fix in both sandbox backends is for — see
 — without it a cancelled turn's shell command would keep running in the
 background, orphaned.
 
-- **A single Escape press** just shows a hint in the transcript — "Press Esc
-  again to cancel the current turn." — and does nothing else, so a reflexive
-  or stray Escape (e.g. dismissing a thought) can't accidentally kill real
-  work.
+- **A single Escape press** just shows a toast notification — "Press Esc
+  again to cancel the current turn." — rather than a transcript message
+  (purely instructional, nothing worth a permanent scrollback record), and
+  does nothing else, so a reflexive or stray Escape (e.g. dismissing a
+  thought) can't accidentally kill real work.
 - **Escape with no turn running** is a silent no-op.
 - After cancelling, a system message "Turn cancelled." appears in the chat.
   If one or more follow-up messages had been queued mid-turn (see "Submitting
@@ -471,7 +472,12 @@ reads as over `auto_compact_threshold`.
   reads it fresh on every request, so the new value applies starting with the
   very next gateway call, no restart needed — and persists it to
   `config.toml`, the same way `/models <model-id>` persists `default_model`.
-  Rejects non-numeric input and values that aren't greater than 0.
+  Rejects non-numeric input and values that aren't greater than 0. Both the
+  report and the set-confirmation are shown as a toast notification
+  (Textual's built-in `self.notify`) rather than a permanent transcript
+  message — quick, glanceable feedback that's trivially re-checked by running
+  the command again; most of the settings commands below follow this same
+  convention.
 - **`/temperature [value|off]`** — view or set `default_temperature` (see
   [`configuration.md`](configuration.md#settings-fields)), the sampling
   temperature sent with each request. With no argument, reports the current
@@ -495,7 +501,8 @@ reads as over `auto_compact_threshold`.
   accidentally clear a saved preference) and so has no way to express "delete
   this key and go back to unset" — `remove_config_keys` exists specifically
   to fill that gap. Rejects non-numeric input (other than `off`) and negative
-  values.
+  values. Shown as a toast, not a transcript message, same as `/timeout`
+  above.
 - **`/budget [amount|off]`** — view or set `max_session_cost_usd` (see
   [`configuration.md`](configuration.md#settings-fields)), a hard cap on this
   session's total spend (`Session.cost.session_total_usd`, which already
@@ -512,7 +519,8 @@ reads as over `auto_compact_threshold`.
   `remove_config_keys("max_session_cost_usd")` rather than
   `update_config_file`, since the latter deliberately skips writing a `None`
   value rather than persisting a removal. Rejects non-numeric input (other
-  than `off`) and values that aren't greater than 0.
+  than `off`) and values that aren't greater than 0. Shown as a toast, not a
+  transcript message, same as `/timeout` above.
 - **`/context-limit [tokens]`** — with no argument, reports the context-
   window size pcli currently assumes for the active model (the session's
   model, falling back to `default_model`) — see
@@ -529,7 +537,8 @@ reads as over `auto_compact_threshold`.
   already target. The running `ContextLimitTable` is reloaded immediately
   after, so the corrected value applies starting with the very next turn, no
   restart needed. Rejects non-numeric input and values that aren't greater
-  than 0.
+  than 0. Shown as a toast, not a transcript message, same as `/timeout`
+  above.
 - **`/max-tool-iterations [n]`** — with no argument, reports the current
   `max_tool_iterations` (default 25), which caps how many tool-call
   round-trips a single turn can make before `AgentLoop.run_turn`'s iteration
@@ -545,7 +554,8 @@ reads as over `auto_compact_threshold`.
   mode, where the response says as much ("This session is in local-api mode,
   so it stays uncapped until that changes.") and the value is still saved
   for whenever local-api mode is off. Rejects non-numeric input and values
-  that aren't greater than 0.
+  that aren't greater than 0. Shown as a toast, not a transcript message,
+  same as `/timeout` above.
 - **`/artifact-threshold [chars]`** — with no argument, reports the current
   `artifact_threshold_chars` (default 4000) — the tool-output length beyond
   which a result is truncated out of the live conversation and archived to
@@ -557,7 +567,8 @@ reads as over `auto_compact_threshold`.
   live into the running `AgentLoop` via
   `AgentLoop.set_artifact_threshold_chars()` so it applies starting with the
   very next tool result, no restart needed. Rejects non-numeric input and
-  values that aren't greater than 0.
+  values that aren't greater than 0. Shown as a toast, not a transcript
+  message, same as `/timeout` above.
 - **`/max-tool-calls-per-turn [n]`** — with no argument, reports the current
   `max_tool_calls_per_turn` (default 25, `GuardrailsConfig`,
   `src/pcli/permissions/guardrails.py`) — a hard guardrail cap
@@ -585,7 +596,10 @@ reads as over `auto_compact_threshold`.
   local-api mode it's still saved to `guardrails.toml` for later, but the
   response says the session "stays unlimited until that changes" rather than
   implying it took effect. Rejects non-numeric input and negative values (0
-  is allowed).
+  is allowed). The view/set report is shown as a toast, not a transcript
+  message, same as `/timeout` above — unlike the "reached the guardrail
+  limit..." notice above, which is a genuine turn-ending event and still
+  appears in the transcript.
 - **`/max-tool-calls-per-minute [n]`** — same view/set shape as
   `/max-tool-calls-per-turn` above, but for `max_tool_calls_per_minute`
   (default 60) — a sliding 60-second-window rate cap enforced by
@@ -599,7 +613,8 @@ reads as over `auto_compact_threshold`.
   until that changes" after a set). Outside local-api mode, a new value
   applies live and takes effect on the next tool call rather than the next
   turn, since a rate limit has no per-turn boundary. Rejects non-numeric
-  input and negative values (0 is allowed).
+  input and negative values (0 is allowed). Shown as a toast, not a
+  transcript message, same as `/timeout` above.
 - **`/allowed-roots [add|remove] [path]`** — view or live-edit the
   filesystem guardrail's `allowed_roots` list (`GuardrailsConfig.fs_allowed_roots`,
   default: `["."]`, just the working directory) — the `[fs]` counterpart to
@@ -630,6 +645,12 @@ reads as over `auto_compact_threshold`.
   - An unrecognized subcommand reports `"Unknown /allowed-roots subcommand:
     '{sub_command}'. Use /allowed-roots, /allowed-roots add <path>, or
     /allowed-roots remove <path>."`.
+
+  Every branch above — including the no-argument listing — is shown as a
+  toast, not a transcript message; unlike [`/theme`](#slash-commands)'s
+  no-argument listing (below), which stays in the transcript since it dumps
+  the full available-themes list, `allowed_roots` is normally short enough to
+  fall into the same "glance and maybe retype" category as `/timeout` above.
 - **`/prune-tool-results [off|on|<n>]`** — view/toggle/set the automatic
   tool-result pruning pass (`agent/context_pruning.py`'s
   `prune_old_tool_results`, run every turn from `ChatScreen._run_one_turn`
@@ -646,7 +667,8 @@ reads as over `auto_compact_threshold`.
   the very next turn, since `_run_one_turn` reads these settings fresh each
   time — no restart needed. Rejects anything that isn't `off`, `on`, or a
   positive integer (zero and negative values are rejected, with a message
-  pointing at `off` instead of `0` to disable pruning).
+  pointing at `off` instead of `0` to disable pruning). Shown as a toast, not
+  a transcript message, same as `/timeout` above.
 - **`/subagent`** — shows the currently-running subagent's full detail: its
   task, every tool call made so far (name + arguments, not just the last
   tool name the status bar's second line shows — see [Status
@@ -695,7 +717,8 @@ reads as over `auto_compact_threshold`.
   persists `request_timeout_s`, and take effect on the next turn (the cap is
   computed once per turn, not live mid-turn). Rejects anything that isn't
   `off`, `on`, or a positive integer (zero and negative values are rejected,
-  with a message pointing at `off` instead of `0` to disable the cap).
+  with a message pointing at `off` instead of `0` to disable the cap). Shown
+  as a toast, not a transcript message, same as `/timeout` above.
 - **`/rename [name]`** — with no argument, reports the session's current
   title (`Session.derive_title()` — the value shown in `/sessions`'s list).
   With an argument (`/rename my-feature-branch`), sets `Session.title`
@@ -703,7 +726,8 @@ reads as over `auto_compact_threshold`.
   (`ChatScreen._handle_rename_command`, `src/pcli/tui/screens/chat.py`).
   `derive_title()` prefers an explicitly-set title over the auto-derived
   snippet of the first message, so a renamed session keeps that name in the
-  session list even as the conversation moves on.
+  session list even as the conversation moves on. Shown as a toast, not a
+  transcript message, same as `/timeout` above.
 - **`/theme [name]`** — with no argument, lists every theme registered on
   the running `App` (`self.app.available_themes`) as a bulleted list,
   marking the currently-active one `(active)`. With an argument (`/theme
@@ -711,11 +735,14 @@ reads as over `auto_compact_threshold`.
   `self.app.theme = name` repaints every CSS design-token-based style
   immediately, no restart — and persists the choice to `config.toml`
   (`update_config_file(ui_theme=name)`, same pattern as `/rename`), so it's
-  remembered next launch. An unknown `name` reports "Unknown theme
-  '`name`'." followed by the same available-themes list, rather than
-  silently failing (`ChatScreen._handle_theme_command`,
-  `src/pcli/tui/screens/chat.py`). Available themes are Textual's own
-  builtins (`textual-dark`, `textual-light`, `gruvbox`, `nord`, `dracula`,
+  remembered next launch — this set-confirmation is shown as a toast, not a
+  transcript message, same as `/timeout` above. An unknown `name` reports
+  "Unknown theme '`name`'." followed by the same available-themes list,
+  rather than silently failing (`ChatScreen._handle_theme_command`,
+  `src/pcli/tui/screens/chat.py`) — this listing, like the no-argument
+  listing above, stays in the transcript rather than a toast, since it's
+  reference content worth scrolling back to. Available themes are Textual's
+  own builtins (`textual-dark`, `textual-light`, `gruvbox`, `nord`, `dracula`,
   `monokai`, `catppuccin-*`, `solarized-*`, `tokyo-night`, `flexoki`,
   `rose-pine-*`, `atom-one-*`, `ansi-*`, ...) plus five pcli-specific
   themes approximating classic bundled vim colorschemes not already
@@ -731,7 +758,9 @@ reads as over `auto_compact_threshold`.
   investigating and proposing an approach without the model being able to
   make any changes. See [Plan mode](#plan-mode) below for the full behavior.
 
-Any other `/word` prints "Unknown command: /word".
+Any other `/word` shows a toast notification, "Unknown command: /word",
+rather than a transcript message — a mistyped command isn't worth a
+permanent scrollback record.
 
 ## Plan mode
 
@@ -1081,12 +1110,12 @@ Behavior differs from `!`/`!!` everywhere interactivity matters:
 - A `shell`-role message is shown before handoff — `→ Handing off terminal
   to: command` — and another after the command returns — `$ command  (ran
   interactively) [exit_code=N]`.
-- Typing `!!!` with nothing after it prints a usage message instead of doing
-  anything.
+- Typing `!!!` with nothing after it shows a usage toast instead of doing
+  anything, rather than a transcript message.
 - If the environment doesn't support suspending
   (`textual.app.SuspendNotSupported` — e.g. not supported in Textual Web), a
-  plain fallback `system` message is shown instead of crashing: "Interactive
-  shell handoff isn't supported in this terminal environment."
+  toast is shown instead of crashing: "Interactive shell handoff isn't
+  supported in this terminal environment." — also not a transcript message.
 
 Like `!`/`!!`, `!!!` bypasses the LLM, the sandbox, permissions, and
 session/artifact recording entirely. It's documented in the `/help` output
@@ -1347,9 +1376,12 @@ above.
 
 ## Collapsible slash-command and shell output
 
-Long `system`-role messages (this covers virtually every slash-command
-output — `/help`, `/memory`, `/subagent`, `/toolbox list`, config-view
-commands like `/timeout` with no argument, etc.) and `shell`-role messages
+Long `system`-role messages (this covers most of the reference-style
+slash-command output that still lands in the transcript — `/help`,
+`/memory`, `/subagent`, `/toolbox list`, `/theme`'s no-argument theme
+listing, etc. — the quick "glance and maybe retype" config-view/confirmation
+commands like `/timeout` now show as toast notifications instead, see
+[Slash commands](#slash-commands) above) and `shell`-role messages
 (`!command`/`!!command` output — see [Shell
 passthrough](#shell-passthrough-command-command-and-command) above) are
 wrapped in a Textual `Collapsible` once the text reaches
