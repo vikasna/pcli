@@ -1527,7 +1527,10 @@ class ChatScreen(Screen):
 
     @work(exclusive=True)
     async def _export_current(self, out_path_arg: str | None) -> None:
-        message_view = self.query_one(MessageView)
+        """A toast, not a transcript message - same "glance and maybe
+        retype" reasoning as /timeout above; the exported path is right
+        there in the notification and the file itself is the durable
+        record, not this confirmation."""
         from pcli.config.paths import data_dir
 
         out_path = (
@@ -1536,7 +1539,7 @@ class ChatScreen(Screen):
             else data_dir() / "exports" / f"{self._session.id}.pcli-session.json"
         )
         export_session(self._session, out_path, store=self._store)
-        message_view.add_message("system", f"Exported session to {out_path}")
+        self.notify(f"Exported session to {out_path}")
 
     def _record_tool_invocation(self, event: ToolResultEvent) -> None:
         try:
@@ -1645,13 +1648,18 @@ class ChatScreen(Screen):
         (not @work) so _stream_response can just await it directly while
         already inside its own worker; /compact reaches it via the small
         @work-wrapped _manual_compact below, same pattern as every other
-        synchronously-dispatched command in this file."""
+        synchronously-dispatched command in this file. The "isn't
+        available"/"still working"/"nothing to compact yet" guards below
+        are toasts - trivially re-checked by rerunning /compact; a real
+        failure and the actual success notice both stay in the transcript
+        as genuine, investigable records."""
         message_view = self.query_one(MessageView)
         status_bar = self.query_one(StatusBar)
         if self._client is None or self._agent_loop is None:
             if reason == "manual":
-                message_view.add_message(
-                    "system", "Compaction isn't available (gateway/sandbox not set up)."
+                self.notify(
+                    "Compaction isn't available (gateway/sandbox not set up).",
+                    severity="warning",
                 )
             return
 
@@ -1662,8 +1670,9 @@ class ChatScreen(Screen):
             # The "auto" trigger is never at risk of this: it only ever runs
             # sequentially, awaited from inside _run_one_turn itself, after
             # that turn has already finished.
-            message_view.add_message(
-                "system", "Still working on the current turn — try /compact again once it's done."
+            self.notify(
+                "Still working on the current turn — try /compact again once it's done.",
+                severity="warning",
             )
             return
 
@@ -1729,7 +1738,7 @@ class ChatScreen(Screen):
 
             if result is None:
                 if reason == "manual":
-                    message_view.add_message("system", "Nothing to compact yet.")
+                    self.notify("Nothing to compact yet.")
                 return
 
             # Reuses ToolInvocation.full_result_ref purely so export_session

@@ -37,6 +37,13 @@ class _HostApp(App):
         self.push_screen(self._initial_screen)
 
 
+def _notification_messages(app) -> list[str]:
+    """Toast messages currently shown (App._notifications) - see chat.py's
+    self.notify(...) calls, Textual's built-in transient-notice mechanism
+    used for ephemeral command confirmations instead of the transcript."""
+    return [n.message for n in app._notifications]
+
+
 def _sse(*chunks: dict) -> bytes:
     body = "".join(f"data: {json.dumps(c)}\n\n" for c in chunks)
     return (body + "data: [DONE]\n\n").encode()
@@ -219,10 +226,8 @@ async def test_run_compaction_manual_reports_nothing_to_compact(tmp_path: Path):
         await screen._run_compaction("manual")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        # The "nothing to compact" notice was the last thing added.
-        assert message_view._current_role == "system"
-        assert "Nothing to compact yet." in message_view._current_text
+        # The "nothing to compact" notice is a toast, not a transcript message.
+        assert any("Nothing to compact yet." in m for m in _notification_messages(app))
 
 
 @pytest.mark.asyncio

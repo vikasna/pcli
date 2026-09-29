@@ -193,8 +193,6 @@ async def test_manual_compact_is_rejected_while_a_turn_is_in_progress(tmp_path: 
         await pilot.pause()
         assert screen._client is not None
 
-        from pcli.tui.widgets.message_view import MessageView
-
         field = screen.query_one(ChatInput)
         field.focus()
         field.text = "hello"
@@ -203,9 +201,11 @@ async def test_manual_compact_is_rejected_while_a_turn_is_in_progress(tmp_path: 
             await pilot.pause()
         assert screen._turn_in_progress is True
 
-        message_view = screen.query_one(MessageView)
         await screen._run_compaction("manual")
-        assert "still working on the current turn" in message_view._current_text.lower()
+        await pilot.pause()
+        # Toast, not a transcript message.
+        notifications = [n.message.lower() for n in app._notifications]
+        assert any("still working on the current turn" in m for m in notifications)
 
         release_first.set()
         for _ in range(20):
