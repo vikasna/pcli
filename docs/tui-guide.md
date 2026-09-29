@@ -305,10 +305,12 @@ bound in `ChatScreen.BINDINGS` at line 175) — a live companion to
 point-in-time snapshot into the chat transcript.
 
 - **If no subagent is running**, Ctrl+G shows the same message `/subagent`
-  shows — "No subagent is currently running." — and opens nothing.
-  Both code paths read this text from the same module-level constant,
-  `_NO_SUBAGENT_RUNNING_MESSAGE` (`src/pcli/tui/screens/chat.py:72`), so they
-  can't drift out of sync with each other.
+  shows — "No subagent is currently running." — and opens nothing. Both are
+  shown as a toast notification, not a transcript message (trivially
+  re-checked by pressing Ctrl+G or retyping `/subagent`), reading the same
+  text from the same module-level constant, `_NO_SUBAGENT_RUNNING_MESSAGE`
+  (`src/pcli/tui/screens/chat.py:72`), so they can't drift out of sync with
+  each other.
 - **If a subagent is running**, Ctrl+G pushes `SubagentActivityModal`
   (`src/pcli/tui/screens/subagent_activity_modal.py`), a read-only
   `ModalScreen`. On mount it subscribes to the same shared `ActivityTracker`
@@ -438,13 +440,31 @@ reads as over `auto_compact_threshold`.
   <name>`** — in-TUI equivalents of the `pcli toolbox ...` CLI subcommands;
   see [`toolbox-plugins.md`](toolbox-plugins.md). `discover`/`remove`
   additionally reload the tool registry so newly discovered tools are usable
-  immediately.
+  immediately. All three share a "Toolbox isn't available (gateway/sandbox
+  not set up)." guard, shown as a toast, not a transcript message; a
+  dispatcher-level usage hint ("Usage: /toolbox discover... | /toolbox list |
+  /toolbox remove...") for an unrecognized form is also a toast.
+  `discover`'s own "Discovering '{name}'..." progress ping is a toast too —
+  it's superseded moments later by the real outcome — but that outcome
+  itself (the failure message or the success summary) stays in the
+  transcript as genuine reference content — see also [Gateway
+  errors](#gateway-errors) above, which covers `/toolbox discover`'s own
+  gateway-failure reporting. `list`'s "No software discovered
+  yet..." is a toast; its actual listing when there are discovered tools
+  stays in the transcript. `remove`'s "Removed '{name}' from the toolbox."
+  success is a toast.
 - **`/models`** — with no argument, fetches the gateway's `GET /models` and
   opens a picker screen (`ModelListScreen`) to select interactively; with an
   argument (`/models <model-id>`), sets the model directly without a round
   trip. Either way the choice updates the running session, the status bar,
   and is persisted to `config.toml` (`update_config_file(default_model=...)`)
-  so a bare `pcli` picks it up next time.
+  so a bare `pcli` picks it up next time. The "Model set to '...'"
+  confirmation is a toast, not a transcript message, whether the model was
+  set directly by name or picked from the list screen — as are "No gateway
+  URL configured. Set PCLI_GATEWAY_URL and restart pcli." and "Gateway
+  returned no models." A "Failed to list models: ..." gateway failure is
+  unchanged — still a transcript message, same as other real gateway errors
+  (see [Gateway errors](#gateway-errors) below).
 - **`/compact`** — manually summarizes and archives the oldest conversation
   history right now (see [`tools.md`](tools.md#auto-compaction)), bypassing
   the `auto_compact_threshold` check entirely. Still subject to
@@ -681,7 +701,11 @@ reads as over `auto_compact_threshold`.
   subagent is currently running." if `ActivityTracker.subagent` is `None` —
   either none has run yet this session, or the last one already finished
   (only its final text and tool-call count ever reach the main conversation
-  — see [`tools.md#spawn_subagent`](tools.md#spawn_subagent)). Takes no
+  — see [`tools.md#spawn_subagent`](tools.md#spawn_subagent)) — shown as a
+  toast, not a transcript message (same text, same toast treatment, as
+  Ctrl+G's "nothing running" case above). The activity dump itself, when a
+  subagent *is* running, is unchanged — still a transcript message, since
+  it's genuine reference content worth scrolling back to. Takes no
   argument. For the same information kept live instead of retyping
   `/subagent` for a fresh snapshot, press
   [Ctrl+G](#ctrlg-subagent-activity-panel) instead.
@@ -693,10 +717,18 @@ reads as over `auto_compact_threshold`.
   session ids, and an `(explicit)` marker on entries the user asked directly
   to be remembered — rendered as a real Markdown list (`render_memory_list`,
   [`memory.md`](memory.md#the-memory-command)) with each id in a backtick
-  code span, rather than the run-on wall of text it used to print.
-  `/memory forget <id>` resolves the id by suffix match —
-  reporting no-match or ambiguous-match instead of guessing — and removes
-  that one entry; `/memory clear` wipes everything. Grows automatically from
+  code span, rather than the run-on wall of text it used to print. This
+  no-arg listing stays in the transcript — reference content worth
+  scrolling back to, same as `/toolbox list`'s listing above. Every other
+  branch here is a toast, not a transcript message: `/memory clear`'s
+  "Cleared all memory entries." confirmation; `/memory forget <id>`'s
+  "Forgot: ..." success, its "No memory entry found matching '...'."
+  no-match case, and its ambiguous-match case ("'...' matches more than
+  one entry — use a longer id."); `/memory forget`'s own no-argument usage
+  hint ("Usage: /memory forget <id>"); and an unrecognized subcommand's
+  "Unknown /memory subcommand: '...'." `/memory forget <id>` resolves the
+  id by suffix match against every entry's full id, rather than guessing,
+  before removing it; `/memory clear` wipes everything. Grows automatically from
   what's explicitly asked to be remembered (any session, any length) and,
   once a session gets long enough to auto-compact, from what pcli notices
   worth keeping on its own — see [Auto-compaction](#auto-compaction) below
