@@ -101,8 +101,7 @@ async def test_single_escape_shows_hint_and_does_not_cancel(tmp_path: Path):
         await pilot.pause()
 
         assert screen._turn_in_progress is True  # not cancelled
-        message_view = screen.query_one(MessageView)
-        assert "Press Esc again" in message_view._current_text
+        assert any("Press Esc again" in n.message for n in app._notifications)
 
         # Let the turn actually finish so the test doesn't leak a worker.
         release_event.set()

@@ -596,9 +596,10 @@ class ChatScreen(Screen):
             message_view.add_message("system", note)
         else:
             self._last_escape_at = now
-            self.query_one(MessageView).add_message(
-                "system", "Press Esc again to cancel the current turn."
-            )
+            # A toast, not a transcript message - purely instructional, no
+            # value in a permanent scrollback record (unlike "Turn
+            # cancelled." above, a real conversational event).
+            self.notify("Press Esc again to cancel the current turn.")
 
     def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         text = event.value.strip()
@@ -656,8 +657,11 @@ class ChatScreen(Screen):
         workaround."""
         message_view = self.query_one(MessageView)
         if not command:
-            message_view.add_message(
-                "system", "Usage: !!!<command> to run a command with a real interactive terminal"
+            # A toast, not a transcript message - a usage hint, same "glance
+            # and maybe retype" reasoning as /timeout above.
+            self.notify(
+                "Usage: !!!<command> to run a command with a real interactive terminal",
+                severity="warning",
             )
             return
 
@@ -668,8 +672,9 @@ class ChatScreen(Screen):
                     command, shell=True, cwd=str(self._cwd), check=False
                 ).returncode
         except SuspendNotSupported:
-            message_view.add_message(
-                "system", "Interactive shell handoff isn't supported in this terminal environment."
+            self.notify(
+                "Interactive shell handoff isn't supported in this terminal environment.",
+                severity="warning",
             )
             return
         message_view.add_message(
@@ -686,8 +691,11 @@ class ChatScreen(Screen):
         quiet = raw.startswith("!!")
         command = raw[2:].strip() if quiet else raw[1:].strip()
         if not command:
-            message_view.add_message(
-                "system", "Usage: !<command> to run a shell command (!!<command> to hide the result)"
+            # A toast, not a transcript message - same "glance and maybe
+            # retype" reasoning as /timeout above.
+            self.notify(
+                "Usage: !<command> to run a shell command (!!<command> to hide the result)",
+                severity="warning",
             )
             return
 
@@ -706,7 +714,6 @@ class ChatScreen(Screen):
         message_view.add_message("shell", f"$ {command}\n{output}{footer}")
 
     def _handle_command(self, text: str) -> None:
-        message_view = self.query_one(MessageView)
         command, _, rest = text[1:].partition(" ")
         rest = rest.strip()
 
@@ -773,38 +780,38 @@ class ChatScreen(Screen):
         elif command == "help":
             self._handle_help_command()
         else:
-            message_view.add_message("system", f"Unknown command: /{command}")
+            # A toast, not a transcript message - a mistyped command isn't
+            # worth a permanent scrollback record.
+            self.notify(f"Unknown command: /{command}", severity="warning")
 
     def _handle_timeout_command(self, arg: str | None) -> None:
         """`/timeout [seconds]` — GatewayClient reads request_timeout_s fresh
         on every request (see llm/client.py's per-request timeout override),
         so changing it here takes effect on the very next gateway call, no
         restart needed. Persisted the same way /models persists a
-        selection, so it's remembered next time too."""
-        message_view = self.query_one(MessageView)
+        selection, so it's remembered next time too. A toast, not a
+        transcript message - see the "Split system notices" design note:
+        this is exactly the "glance and maybe retype" class of confirmation,
+        trivially re-checked by running /timeout again with no argument."""
         if not arg:
             current = self._settings.request_timeout_s
             effective = self._settings.effective_request_timeout_s
             note = f" (effective: {effective:g}s — floored for local-api)" if effective != current else ""
-            message_view.add_message(
-                "system", f"request_timeout_s is currently {current:g}s{note}. Usage: /timeout <seconds>"
-            )
+            self.notify(f"request_timeout_s is currently {current:g}s{note}. Usage: /timeout <seconds>")
             return
 
         try:
             seconds = float(arg)
         except ValueError:
-            message_view.add_message("system", f"'{arg}' isn't a valid number of seconds.")
+            self.notify(f"'{arg}' isn't a valid number of seconds.", severity="warning")
             return
         if seconds <= 0:
-            message_view.add_message("system", "request_timeout_s must be greater than 0.")
+            self.notify("request_timeout_s must be greater than 0.", severity="warning")
             return
 
         self._settings.request_timeout_s = seconds
         update_config_file(request_timeout_s=seconds)
-        message_view.add_message(
-            "system", f"request_timeout_s set to {seconds:g}s — takes effect on the next gateway request."
-        )
+        self.notify(f"request_timeout_s set to {seconds:g}s — takes effect on the next gateway request.")
 
     def _handle_temperature_command(self, arg: str | None) -> None:
         """`/temperature [value|off]` — sets the sampling temperature sent
@@ -814,14 +821,12 @@ class ChatScreen(Screen):
         all, so the gateway/model's own default applies) — this needs
         remove_config_keys, not update_config_file, since update_config_file
         deliberately skips writing a None value rather than persisting the
-        removal."""
-        message_view = self.query_one(MessageView)
+        removal. A toast, not a transcript message - same "glance and
+        maybe retype" reasoning as /timeout above."""
         if not arg:
             current = self._settings.default_temperature
             text = f"{current:g}" if current is not None else "unset (gateway/model default)"
-            message_view.add_message(
-                "system", f"default_temperature is currently {text}. Usage: /temperature <value>|off"
-            )
+            self.notify(f"default_temperature is currently {text}. Usage: /temperature <value>|off")
             return
 
         if arg == "off":
@@ -829,27 +834,23 @@ class ChatScreen(Screen):
             remove_config_keys("default_temperature")
             if self._agent_loop is not None:
                 self._agent_loop.set_temperature(None)
-            message_view.add_message(
-                "system", "default_temperature cleared — gateway/model default applies."
-            )
+            self.notify("default_temperature cleared — gateway/model default applies.")
             return
 
         try:
             value = float(arg)
         except ValueError:
-            message_view.add_message("system", f"'{arg}' isn't a valid number, or 'off'.")
+            self.notify(f"'{arg}' isn't a valid number, or 'off'.", severity="warning")
             return
         if value < 0:
-            message_view.add_message("system", "Temperature must be 0 or greater.")
+            self.notify("Temperature must be 0 or greater.", severity="warning")
             return
 
         self._settings.default_temperature = value
         update_config_file(default_temperature=value)
         if self._agent_loop is not None:
             self._agent_loop.set_temperature(value)
-        message_view.add_message(
-            "system", f"default_temperature set to {value:g} — takes effect on the next turn."
-        )
+        self.notify(f"default_temperature set to {value:g} — takes effect on the next turn.")
 
     def _handle_budget_command(self, arg: str | None) -> None:
         """`/budget [amount|off]` — views or sets Settings.max_session_cost_usd,
@@ -861,42 +862,40 @@ class ChatScreen(Screen):
         latter deliberately skips writing a None value rather than persisting
         a removal. Takes effect on the very next round-trip, no restart - the
         budget_check closure reads self._settings fresh each time it's
-        called."""
-        message_view = self.query_one(MessageView)
+        called. A toast, not a transcript message - same "glance and maybe
+        retype" reasoning as /timeout above."""
         spent = self._session.cost.session_total_usd
         if not arg:
             current = self._settings.max_session_cost_usd
             text = f"${current:.2f}" if current is not None else "unset (no cap)"
-            message_view.add_message(
-                "system",
+            self.notify(
                 f"max_session_cost_usd is currently {text} (spent so far: ${spent:.4f}). "
-                "Usage: /budget <amount>|off",
+                "Usage: /budget <amount>|off"
             )
             return
 
         if arg == "off":
             self._settings.max_session_cost_usd = None
             remove_config_keys("max_session_cost_usd")
-            message_view.add_message("system", "max_session_cost_usd cleared — no cap.")
+            self.notify("max_session_cost_usd cleared — no cap.")
             return
 
         try:
             value = float(arg)
         except ValueError:
-            message_view.add_message("system", f"'{arg}' isn't a valid number, or 'off'.")
+            self.notify(f"'{arg}' isn't a valid number, or 'off'.", severity="warning")
             return
         if value <= 0:
-            message_view.add_message(
-                "system", "Budget must be greater than 0 (use /budget off to clear it)."
+            self.notify(
+                "Budget must be greater than 0 (use /budget off to clear it).", severity="warning"
             )
             return
 
         self._settings.max_session_cost_usd = value
         update_config_file(max_session_cost_usd=value)
-        message_view.add_message(
-            "system",
+        self.notify(
             f"max_session_cost_usd set to ${value:.2f} (spent so far: ${spent:.4f}) — takes "
-            "effect on the next round-trip.",
+            "effect on the next round-trip."
         )
 
     def _handle_context_limit_command(self, arg: str | None) -> None:
@@ -907,59 +906,59 @@ class ChatScreen(Screen):
         disables auto-compaction for a model with a much smaller real
         window — see the context-ceiling notice in _run_one_turn, which
         points here. Persists to context_limits.toml and reloads the table
-        immediately, so it takes effect without a restart."""
-        message_view = self.query_one(MessageView)
+        immediately, so it takes effect without a restart. A toast, not a
+        transcript message - same "glance and maybe retype" reasoning as
+        /timeout above."""
         model = self._session.model or self._settings.default_model
         if not model:
-            message_view.add_message("system", "No model configured to set a context limit for.")
+            self.notify("No model configured to set a context limit for.", severity="warning")
             return
 
         if not arg:
             current = self._context_limit_table.lookup(model)
-            message_view.add_message(
-                "system",
+            self.notify(
                 f"Assumed context limit for '{model}': {current:,} tokens. Usage: "
-                "/context-limit <tokens>",
+                "/context-limit <tokens>"
             )
             return
 
         try:
             limit = int(arg)
         except ValueError:
-            message_view.add_message("system", f"'{arg}' isn't a valid number of tokens.")
+            self.notify(f"'{arg}' isn't a valid number of tokens.", severity="warning")
             return
         if limit <= 0:
-            message_view.add_message("system", "Context limit must be greater than 0.")
+            self.notify("Context limit must be greater than 0.", severity="warning")
             return
 
         set_model_context_limit(model, limit)
         self._context_limit_table = ContextLimitTable.load()
-        message_view.add_message("system", f"Context limit for '{model}' set to {limit:,} tokens.")
+        self.notify(f"Context limit for '{model}' set to {limit:,} tokens.")
 
     def _handle_max_tool_iterations_command(self, arg: str | None) -> None:
         """`/max-tool-iterations [n]` — caps how many tool-call round-trips
         a single turn can make before it's cut off (see AgentLoop.run_turn's
         iteration guardrail). Ignored in local-api mode, which always runs
         uncapped (_effective_max_tool_iterations returns None there) —
-        still saved for whenever local-api mode is off."""
-        message_view = self.query_one(MessageView)
+        still saved for whenever local-api mode is off. A toast, not a
+        transcript message - same "glance and maybe retype" reasoning as
+        /timeout above."""
         if not arg:
             current = self._settings.max_tool_iterations
             note = " (currently uncapped: local-api mode)" if self._settings.is_local_api() else ""
-            message_view.add_message(
-                "system",
+            self.notify(
                 f"max_tool_iterations is currently {current}{note}. Usage: "
-                "/max-tool-iterations <n>",
+                "/max-tool-iterations <n>"
             )
             return
 
         try:
             iterations = int(arg)
         except ValueError:
-            message_view.add_message("system", f"'{arg}' isn't a valid number of iterations.")
+            self.notify(f"'{arg}' isn't a valid number of iterations.", severity="warning")
             return
         if iterations <= 0:
-            message_view.add_message("system", "max_tool_iterations must be greater than 0.")
+            self.notify("max_tool_iterations must be greater than 0.", severity="warning")
             return
 
         self._settings.max_tool_iterations = iterations
@@ -971,43 +970,38 @@ class ChatScreen(Screen):
             if self._settings.is_local_api()
             else " Takes effect on the next turn."
         )
-        message_view.add_message(
-            "system", f"max_tool_iterations set to {iterations}.{note}"
-        )
+        self.notify(f"max_tool_iterations set to {iterations}.{note}")
 
     def _handle_artifact_threshold_command(self, arg: str | None) -> None:
         """`/artifact-threshold [chars]` — tool results longer than this are
         truncated out of the live conversation and archived to the artifact
         library, retrievable via fetch_artifact (see AgentLoop._archive_if_large
         and Settings.artifact_threshold_chars). Persisted the same way
-        /timeout persists request_timeout_s."""
-        message_view = self.query_one(MessageView)
+        /timeout persists request_timeout_s. A toast, not a transcript
+        message - same "glance and maybe retype" reasoning as /timeout
+        above."""
         if not arg:
             current = self._settings.artifact_threshold_chars
-            message_view.add_message(
-                "system",
+            self.notify(
                 f"artifact_threshold_chars is currently {current:,}. Usage: "
-                "/artifact-threshold <chars>",
+                "/artifact-threshold <chars>"
             )
             return
 
         try:
             threshold = int(arg)
         except ValueError:
-            message_view.add_message("system", f"'{arg}' isn't a valid number of characters.")
+            self.notify(f"'{arg}' isn't a valid number of characters.", severity="warning")
             return
         if threshold <= 0:
-            message_view.add_message("system", "artifact_threshold_chars must be greater than 0.")
+            self.notify("artifact_threshold_chars must be greater than 0.", severity="warning")
             return
 
         self._settings.artifact_threshold_chars = threshold
         update_config_file(artifact_threshold_chars=threshold)
         if self._agent_loop is not None:
             self._agent_loop.set_artifact_threshold_chars(threshold)
-        message_view.add_message(
-            "system",
-            f"artifact_threshold_chars set to {threshold:,}. Takes effect on the next tool result.",
-        )
+        self.notify(f"artifact_threshold_chars set to {threshold:,}. Takes effect on the next tool result.")
 
     def _handle_guardrail_rate_limit_command(
         self, arg: str | None, *, attr_name: str, config_key: str, command_name: str, window: str
@@ -1022,8 +1016,9 @@ class ChatScreen(Screen):
         these to 0 (unlimited) for the live guardrails instance — a new
         value is still persisted here for whenever local-api mode is off,
         but isn't applied live, so the response says as much rather than
-        implying it silently took effect."""
-        message_view = self.query_one(MessageView)
+        implying it silently took effect. A toast, not a transcript
+        message - same "glance and maybe retype" reasoning as /timeout
+        above."""
         guardrails = self._permission_manager.guardrails
         if not arg:
             current = getattr(guardrails, attr_name)
@@ -1033,21 +1028,18 @@ class ChatScreen(Screen):
                 note = " (0 = unlimited)"
             else:
                 note = ""
-            message_view.add_message(
-                "system",
-                f"{config_key} is currently {current}{note}. Usage: /{command_name} <n> (0 = unlimited)",
+            self.notify(
+                f"{config_key} is currently {current}{note}. Usage: /{command_name} <n> (0 = unlimited)"
             )
             return
 
         try:
             value = int(arg)
         except ValueError:
-            message_view.add_message("system", f"'{arg}' isn't a valid number.")
+            self.notify(f"'{arg}' isn't a valid number.", severity="warning")
             return
         if value < 0:
-            message_view.add_message(
-                "system", f"{config_key} must be 0 or greater (0 means unlimited)."
-            )
+            self.notify(f"{config_key} must be 0 or greater (0 means unlimited).", severity="warning")
             return
 
         update_guardrails_limits(**{config_key: value})
@@ -1058,7 +1050,7 @@ class ChatScreen(Screen):
         else:
             setattr(guardrails, attr_name, value)
             note = f" Takes effect on the next {window}."
-        message_view.add_message("system", f"{config_key} set to {value}.{note}")
+        self.notify(f"{config_key} set to {value}.{note}")
 
     def _handle_allowed_roots_command(self, rest: str) -> None:
         """`/allowed-roots [add|remove] <path>` — view or live-edit
@@ -1072,63 +1064,58 @@ class ChatScreen(Screen):
         what the agent can reach, not something to route around via a
         prompt. Mirrors _handle_guardrail_rate_limit_command's persist-
         then-hot-reload shape, but for a list-valued [fs] key instead of a
-        scalar [limits] one."""
-        message_view = self.query_one(MessageView)
+        scalar [limits] one. A toast, not a transcript message - same
+        "glance and maybe retype" reasoning as /timeout above."""
         guardrails = self._permission_manager.guardrails
         sub_command, _, arg = rest.partition(" ")
         sub_command = sub_command.strip().lower()
         arg = arg.strip()
 
         if not sub_command:
-            roots = "\n".join(f"- `{root}`" for root in guardrails.fs_allowed_roots)
-            message_view.add_message(
-                "system",
-                f"**Current allowed_roots:**\n{roots}\n\nUsage: /allowed-roots add <path> | "
-                "/allowed-roots remove <path>",
+            roots = "\n".join(f"- {root}" for root in guardrails.fs_allowed_roots)
+            self.notify(
+                f"Current allowed_roots:\n{roots}\n\nUsage: /allowed-roots add <path> | "
+                "/allowed-roots remove <path>"
             )
             return
 
         if sub_command == "add":
             if not arg:
-                message_view.add_message("system", "Usage: /allowed-roots add <path>")
+                self.notify("Usage: /allowed-roots add <path>", severity="warning")
                 return
             if arg in guardrails.fs_allowed_roots:
-                message_view.add_message("system", f"'{arg}' is already in allowed_roots.")
+                self.notify(f"'{arg}' is already in allowed_roots.", severity="warning")
                 return
             new_roots = [*guardrails.fs_allowed_roots, arg]
             update_guardrails_fs_allowed_roots(new_roots)
             guardrails.fs_allowed_roots = new_roots
-            message_view.add_message(
-                "system", f"Added '{arg}' to allowed_roots. Takes effect immediately."
-            )
+            self.notify(f"Added '{arg}' to allowed_roots. Takes effect immediately.")
             return
 
         if sub_command == "remove":
             if not arg:
-                message_view.add_message("system", "Usage: /allowed-roots remove <path>")
+                self.notify("Usage: /allowed-roots remove <path>", severity="warning")
                 return
             if arg not in guardrails.fs_allowed_roots:
-                message_view.add_message("system", f"'{arg}' isn't in allowed_roots.")
+                self.notify(f"'{arg}' isn't in allowed_roots.", severity="warning")
                 return
             if len(guardrails.fs_allowed_roots) == 1:
-                message_view.add_message(
-                    "system",
+                self.notify(
                     "Refusing to remove the last allowed_roots entry — the agent needs at "
                     "least one, or every filesystem tool call would be denied.",
+                    severity="warning",
                 )
                 return
             new_roots = [root for root in guardrails.fs_allowed_roots if root != arg]
             update_guardrails_fs_allowed_roots(new_roots)
             guardrails.fs_allowed_roots = new_roots
-            message_view.add_message(
-                "system", f"Removed '{arg}' from allowed_roots. Takes effect immediately."
-            )
+            self.notify(f"Removed '{arg}' from allowed_roots. Takes effect immediately.")
             return
 
-        message_view.add_message(
-            "system",
+        self.notify(
             f"Unknown /allowed-roots subcommand: '{sub_command}'. Use /allowed-roots, "
             "/allowed-roots add <path>, or /allowed-roots remove <path>.",
+            severity="warning",
         )
 
     def _handle_subagent_command(self) -> None:
@@ -1211,40 +1198,40 @@ class ChatScreen(Screen):
         A positive integer sets prune_tool_results_keep_recent_turns and
         implicitly re-enables it. Persisted to config.toml the same way
         /timeout persists request_timeout_s; applied live since
-        _run_one_turn reads these settings fresh every turn."""
-        message_view = self.query_one(MessageView)
+        _run_one_turn reads these settings fresh every turn. A toast, not a
+        transcript message - same "glance and maybe retype" reasoning as
+        /timeout above."""
         if not arg:
             state = "enabled" if self._settings.prune_tool_results_enabled else "disabled"
-            message_view.add_message(
-                "system",
+            self.notify(
                 f"prune_tool_results is {state}, keeping the most recent "
                 f"{self._settings.prune_tool_results_keep_recent_turns} turn(s) verbatim. "
-                "Usage: /prune-tool-results off|on|<n>",
+                "Usage: /prune-tool-results off|on|<n>"
             )
             return
 
         if arg == "off":
             self._settings.prune_tool_results_enabled = False
             update_config_file(prune_tool_results_enabled=False)
-            message_view.add_message("system", "prune_tool_results disabled.")
+            self.notify("prune_tool_results disabled.")
             return
 
         if arg == "on":
             self._settings.prune_tool_results_enabled = True
             update_config_file(prune_tool_results_enabled=True)
-            message_view.add_message("system", "prune_tool_results enabled.")
+            self.notify("prune_tool_results enabled.")
             return
 
         try:
             keep_recent_turns = int(arg)
         except ValueError:
-            message_view.add_message("system", f"'{arg}' isn't 'off', 'on', or a valid number.")
+            self.notify(f"'{arg}' isn't 'off', 'on', or a valid number.", severity="warning")
             return
         if keep_recent_turns <= 0:
-            message_view.add_message(
-                "system",
+            self.notify(
                 "keep_recent_turns must be greater than 0 (use /prune-tool-results off to "
                 "disable pruning entirely).",
+                severity="warning",
             )
             return
 
@@ -1254,10 +1241,9 @@ class ChatScreen(Screen):
             prune_tool_results_enabled=True,
             prune_tool_results_keep_recent_turns=keep_recent_turns,
         )
-        message_view.add_message(
-            "system",
+        self.notify(
             f"prune_tool_results_keep_recent_turns set to {keep_recent_turns}. "
-            "Takes effect on the next turn.",
+            "Takes effect on the next turn."
         )
 
     def _handle_max_response_tokens_command(self, arg: str | None) -> None:
@@ -1271,8 +1257,9 @@ class ChatScreen(Screen):
         compute to. `off`/`on` toggles max_response_tokens_enabled. A
         positive integer sets max_response_tokens_safety_margin (tokens of
         headroom reserved below the model's context limit) and implicitly
-        re-enables it. Persisted to config.toml, applied live."""
-        message_view = self.query_one(MessageView)
+        re-enables it. Persisted to config.toml, applied live. A toast, not
+        a transcript message - same "glance and maybe retype" reasoning as
+        /timeout above."""
         if not arg:
             state = "enabled" if self._settings.max_response_tokens_enabled else "disabled"
             current = compute_max_response_tokens(
@@ -1281,36 +1268,35 @@ class ChatScreen(Screen):
                 safety_margin=self._settings.max_response_tokens_safety_margin,
             )
             current_text = f"{current:,} tokens" if current is not None else "no cap (not yet computable)"
-            message_view.add_message(
-                "system",
+            self.notify(
                 f"max_response_tokens is {state}, safety margin "
                 f"{self._settings.max_response_tokens_safety_margin:,} tokens. Would currently "
-                f"send max_tokens={current_text}. Usage: /max-response-tokens off|on|<margin>",
+                f"send max_tokens={current_text}. Usage: /max-response-tokens off|on|<margin>"
             )
             return
 
         if arg == "off":
             self._settings.max_response_tokens_enabled = False
             update_config_file(max_response_tokens_enabled=False)
-            message_view.add_message("system", "max_response_tokens disabled.")
+            self.notify("max_response_tokens disabled.")
             return
 
         if arg == "on":
             self._settings.max_response_tokens_enabled = True
             update_config_file(max_response_tokens_enabled=True)
-            message_view.add_message("system", "max_response_tokens enabled.")
+            self.notify("max_response_tokens enabled.")
             return
 
         try:
             safety_margin = int(arg)
         except ValueError:
-            message_view.add_message("system", f"'{arg}' isn't 'off', 'on', or a valid number.")
+            self.notify(f"'{arg}' isn't 'off', 'on', or a valid number.", severity="warning")
             return
         if safety_margin <= 0:
-            message_view.add_message(
-                "system",
+            self.notify(
                 "safety margin must be greater than 0 (use /max-response-tokens off to "
                 "disable the cap entirely).",
+                severity="warning",
             )
             return
 
@@ -1320,26 +1306,24 @@ class ChatScreen(Screen):
             max_response_tokens_enabled=True,
             max_response_tokens_safety_margin=safety_margin,
         )
-        message_view.add_message(
-            "system",
+        self.notify(
             f"max_response_tokens_safety_margin set to {safety_margin:,}. Takes effect on the "
-            "next turn.",
+            "next turn."
         )
 
     def _handle_rename_command(self, arg: str | None) -> None:
         """`/rename [name]` — sets Session.title, which derive_title() (used
         by the /sessions list) prefers over the auto-derived first-message
-        snippet. No-arg shows the current title."""
-        message_view = self.query_one(MessageView)
+        snippet. No-arg shows the current title. A toast, not a transcript
+        message - same "glance and maybe retype" reasoning as /timeout
+        above."""
         if not arg:
-            message_view.add_message(
-                "system", f"Current session title: '{self._session.derive_title()}'. Usage: /rename <name>"
-            )
+            self.notify(f"Current session title: '{self._session.derive_title()}'. Usage: /rename <name>")
             return
 
         self._session.title = arg
         self._store.save(self._session)
-        message_view.add_message("system", f"Session renamed to '{arg}'.")
+        self.notify(f"Session renamed to '{arg}'.")
 
     def _handle_theme_command(self, arg: str | None) -> None:
         """`/theme [name]` — App.theme is the actual switch (Textual repaints
@@ -1349,7 +1333,11 @@ class ChatScreen(Screen):
         settings.ui_theme at startup). No-arg lists every registered theme
         (Textual's own builtins plus pcli's vim-* ones from tui/themes.py),
         marking the active one — also the fallback shown for an unknown
-        name, rather than silently doing nothing."""
+        name, rather than silently doing nothing. The set-confirmation is a
+        toast (same "glance and maybe retype" reasoning as /timeout above);
+        the listing branches stay in the transcript since they dump the
+        full theme list, same reasoning as /memory's/`/toolbox list`'s own
+        listing output."""
         message_view = self.query_one(MessageView)
         available = sorted(self.app.available_themes)
         current = self.app.theme
@@ -1358,7 +1346,7 @@ class ChatScreen(Screen):
             self.app.theme = arg
             self._settings.ui_theme = arg
             update_config_file(ui_theme=arg)
-            message_view.add_message("system", f"Theme set to '{arg}'.")
+            self.notify(f"Theme set to '{arg}'.")
             return
 
         listing = "\n".join(f"- `{name}`{' (active)' if name == current else ''}" for name in available)

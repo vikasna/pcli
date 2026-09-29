@@ -40,6 +40,13 @@ def _sse(*chunks: dict) -> bytes:
     return (body + "data: [DONE]\n\n").encode()
 
 
+def _notification_messages(app) -> list[str]:
+    """Toast messages currently shown (App._notifications) - see chat.py's
+    self.notify(...) calls, Textual's built-in transient-notice mechanism
+    used for ephemeral command confirmations instead of the transcript."""
+    return [n.message for n in app._notifications]
+
+
 def _make_screen(tmp_path: Path):
     store = SessionStore(base_dir=tmp_path / "sessions")
     session = store.new_session(model="fake-model", gateway_base_url="http://fake-gateway.test/v1")
@@ -152,9 +159,9 @@ async def test_context_limit_command_with_no_argument_reports_current_value(tmp_
         screen._handle_command("/context-limit")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "128,000" in message_view._current_text  # the generic default
-        assert "fake-model" in message_view._current_text
+        notifications = _notification_messages(app)
+        assert any("128,000" in m for m in notifications)  # the generic default
+        assert any("fake-model" in m for m in notifications)
 
 
 @pytest.mark.asyncio
@@ -172,8 +179,7 @@ async def test_context_limit_command_sets_and_persists(tmp_path: Path, monkeypat
         screen._handle_command("/context-limit 16384")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "16,384" in message_view._current_text
+        assert any("16,384" in m for m in _notification_messages(app))
 
         # Persisted to disk...
         raw = tomllib.loads(limits_path.read_text(encoding="utf-8"))
@@ -190,12 +196,12 @@ async def test_context_limit_command_rejects_invalid_input(tmp_path: Path):
     app = _HostApp(screen)
     async with app.run_test() as pilot:
         await pilot.pause()
-        message_view = screen.query_one(MessageView)
 
         screen._handle_command("/context-limit not-a-number")
         await pilot.pause()
-        assert "valid number" in message_view._current_text
+        assert any("valid number" in m for m in _notification_messages(app))
+        app.clear_notifications()
 
         screen._handle_command("/context-limit -5")
         await pilot.pause()
-        assert "greater than 0" in message_view._current_text
+        assert any("greater than 0" in m for m in _notification_messages(app))

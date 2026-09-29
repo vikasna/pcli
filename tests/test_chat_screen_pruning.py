@@ -18,7 +18,6 @@ from pcli.session.store import SessionStore
 from pcli.tools.base import ToolContext, ToolResult, ToolSpec
 from pcli.tui.screens.chat import ChatScreen
 from pcli.tui.widgets.chat_input import ChatInput
-from pcli.tui.widgets.message_view import MessageView
 
 
 async def _probe_handler(arguments: dict, ctx: ToolContext) -> ToolResult:
@@ -51,6 +50,13 @@ class _HostApp(App):
 def _sse(*chunks: dict) -> bytes:
     body = "".join(f"data: {json.dumps(c)}\n\n" for c in chunks)
     return (body + "data: [DONE]\n\n").encode()
+
+
+def _notification_messages(app) -> list[str]:
+    """Toast messages currently shown (App._notifications) - see chat.py's
+    self.notify(...) calls, Textual's built-in transient-notice mechanism
+    used for ephemeral command confirmations instead of the transcript."""
+    return [n.message for n in app._notifications]
 
 
 def _text_response(text: str) -> httpx.Response:
@@ -87,9 +93,9 @@ async def test_prune_tool_results_with_no_argument_reports_current_state(tmp_pat
         screen._handle_command("/prune-tool-results")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "enabled" in message_view._current_text
-        assert "1" in message_view._current_text  # Settings' default keep_recent_turns
+        notifications = _notification_messages(app)
+        assert any("enabled" in m for m in notifications)
+        assert any("1" in m for m in notifications)  # Settings' default keep_recent_turns
 
 
 @pytest.mark.asyncio
@@ -102,8 +108,7 @@ async def test_prune_tool_results_off_disables_and_persists(tmp_path: Path):
         screen._handle_command("/prune-tool-results off")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "disabled" in message_view._current_text
+        assert any("disabled" in m for m in _notification_messages(app))
         assert screen._settings.prune_tool_results_enabled is False
 
         # False must actually be written, not silently skipped as falsy.
@@ -120,11 +125,11 @@ async def test_prune_tool_results_on_re_enables(tmp_path: Path):
 
         screen._handle_command("/prune-tool-results off")
         await pilot.pause()
+        app.clear_notifications()
         screen._handle_command("/prune-tool-results on")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "enabled" in message_view._current_text
+        assert any("enabled" in m for m in _notification_messages(app))
         assert screen._settings.prune_tool_results_enabled is True
 
         raw = tomllib.loads(config_file().read_text(encoding="utf-8"))
@@ -141,8 +146,7 @@ async def test_prune_tool_results_sets_keep_recent_turns_and_persists(tmp_path: 
         screen._handle_command("/prune-tool-results 3")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "3" in message_view._current_text
+        assert any("3" in m for m in _notification_messages(app))
         assert screen._settings.prune_tool_results_keep_recent_turns == 3
         assert screen._settings.prune_tool_results_enabled is True  # implicitly re-enabled
 
@@ -157,19 +161,20 @@ async def test_prune_tool_results_rejects_invalid_input(tmp_path: Path):
     app = _HostApp(screen)
     async with app.run_test() as pilot:
         await pilot.pause()
-        message_view = screen.query_one(MessageView)
 
         screen._handle_command("/prune-tool-results maybe")
         await pilot.pause()
-        assert "valid number" in message_view._current_text
+        assert any("valid number" in m for m in _notification_messages(app))
+        app.clear_notifications()
 
         screen._handle_command("/prune-tool-results 0")
         await pilot.pause()
-        assert "greater than 0" in message_view._current_text
+        assert any("greater than 0" in m for m in _notification_messages(app))
+        app.clear_notifications()
 
         screen._handle_command("/prune-tool-results -1")
         await pilot.pause()
-        assert "greater than 0" in message_view._current_text
+        assert any("greater than 0" in m for m in _notification_messages(app))
 
 
 # --- end-to-end wiring into _run_one_turn ---

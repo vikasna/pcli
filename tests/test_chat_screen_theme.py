@@ -68,8 +68,12 @@ async def test_theme_switches_live_and_persists(tmp_path: Path):
         screen._handle_command("/theme gruvbox")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "Theme set to 'gruvbox'." in message_view._current_text
+        # The set-confirmation is a toast (App._notifications), not a
+        # transcript message - see chat.py's self.notify(...) call and the
+        # "Split system notices" design note; unlike the listing branches
+        # below, which stay in the transcript since they dump the full
+        # theme list.
+        assert any("Theme set to 'gruvbox'." in n.message for n in app._notifications)
         assert app.theme == "gruvbox"
         assert screen._settings.ui_theme == "gruvbox"
 

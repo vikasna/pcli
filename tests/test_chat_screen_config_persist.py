@@ -20,6 +20,13 @@ class _HostApp(App):
         self.push_screen(self._initial_screen)
 
 
+def _notification_messages(app) -> list[str]:
+    """Toast messages currently shown (App._notifications) - see chat.py's
+    self.notify(...) calls, Textual's built-in transient-notice mechanism
+    used for ephemeral command confirmations instead of the transcript."""
+    return [n.message for n in app._notifications]
+
+
 @pytest.mark.asyncio
 async def test_models_command_persists_selection_to_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -85,13 +92,10 @@ async def test_timeout_command_with_no_argument_reports_current_value(tmp_path: 
     async with app.run_test() as pilot:
         await pilot.pause()
 
-        from pcli.tui.widgets.message_view import MessageView
-
         screen._handle_command("/timeout")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "120" in message_view._current_text
+        assert any("120" in m for m in _notification_messages(app))
         assert settings.request_timeout_s == 120.0  # unchanged
 
 
@@ -111,14 +115,12 @@ async def test_timeout_command_notes_the_local_api_floor_when_it_applies(tmp_pat
     async with app.run_test() as pilot:
         await pilot.pause()
 
-        from pcli.tui.widgets.message_view import MessageView
-
         screen._handle_command("/timeout")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "120" in message_view._current_text
-        assert "600" in message_view._current_text  # the floored effective value
+        notifications = _notification_messages(app)
+        assert any("120" in m for m in notifications)
+        assert any("600" in m for m in notifications)  # the floored effective value
 
 
 @pytest.mark.asyncio
@@ -132,18 +134,15 @@ async def test_timeout_command_rejects_non_numeric_and_non_positive_values(tmp_p
     async with app.run_test() as pilot:
         await pilot.pause()
 
-        from pcli.tui.widgets.message_view import MessageView
-
-        message_view = screen.query_one(MessageView)
-
         screen._handle_command("/timeout not-a-number")
         await pilot.pause()
-        assert "valid number" in message_view._current_text
+        assert any("valid number" in m for m in _notification_messages(app))
         assert settings.request_timeout_s == 120.0
+        app.clear_notifications()
 
         screen._handle_command("/timeout -5")
         await pilot.pause()
-        assert "greater than 0" in message_view._current_text
+        assert any("greater than 0" in m for m in _notification_messages(app))
         assert settings.request_timeout_s == 120.0
 
 
@@ -212,13 +211,10 @@ async def test_temperature_command_with_no_argument_reports_current_value(tmp_pa
     async with app.run_test() as pilot:
         await pilot.pause()
 
-        from pcli.tui.widgets.message_view import MessageView
-
         screen._handle_command("/temperature")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "unset" in message_view._current_text
+        assert any("unset" in m for m in _notification_messages(app))
 
 
 @pytest.mark.asyncio
@@ -232,18 +228,15 @@ async def test_temperature_command_rejects_non_numeric_and_negative_values(tmp_p
     async with app.run_test() as pilot:
         await pilot.pause()
 
-        from pcli.tui.widgets.message_view import MessageView
-
-        message_view = screen.query_one(MessageView)
-
         screen._handle_command("/temperature not-a-number")
         await pilot.pause()
-        assert "valid number" in message_view._current_text
+        assert any("valid number" in m for m in _notification_messages(app))
         assert settings.default_temperature is None
+        app.clear_notifications()
 
         screen._handle_command("/temperature -1")
         await pilot.pause()
-        assert "0 or greater" in message_view._current_text
+        assert any("0 or greater" in m for m in _notification_messages(app))
         assert settings.default_temperature is None
 
 
@@ -314,14 +307,12 @@ async def test_budget_command_with_no_argument_reports_current_value_and_spend(
     async with app.run_test() as pilot:
         await pilot.pause()
 
-        from pcli.tui.widgets.message_view import MessageView
-
         screen._handle_command("/budget")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "unset" in message_view._current_text
-        assert "$1.2345" in message_view._current_text
+        notifications = _notification_messages(app)
+        assert any("unset" in m for m in notifications)
+        assert any("$1.2345" in m for m in notifications)
 
 
 @pytest.mark.asyncio
@@ -335,16 +326,13 @@ async def test_budget_command_rejects_non_numeric_and_non_positive_values(tmp_pa
     async with app.run_test() as pilot:
         await pilot.pause()
 
-        from pcli.tui.widgets.message_view import MessageView
-
-        message_view = screen.query_one(MessageView)
-
         screen._handle_command("/budget not-a-number")
         await pilot.pause()
-        assert "valid number" in message_view._current_text
+        assert any("valid number" in m for m in _notification_messages(app))
         assert settings.max_session_cost_usd is None
+        app.clear_notifications()
 
         screen._handle_command("/budget 0")
         await pilot.pause()
-        assert "greater than 0" in message_view._current_text
+        assert any("greater than 0" in m for m in _notification_messages(app))
         assert settings.max_session_cost_usd is None

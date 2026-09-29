@@ -32,6 +32,13 @@ class _HostApp(App):
         self.push_screen(self._initial_screen)
 
 
+def _notification_messages(app) -> list[str]:
+    """Toast messages currently shown (App._notifications) - see chat.py's
+    self.notify(...) calls, Textual's built-in transient-notice mechanism
+    used for ephemeral command confirmations instead of the transcript."""
+    return [n.message for n in app._notifications]
+
+
 def _make_screen(tmp_path: Path, **settings_overrides):
     store = SessionStore(base_dir=tmp_path / "sessions")
     session = store.new_session(model="fake-model", gateway_base_url="http://fake-gateway.test/v1")
@@ -59,8 +66,7 @@ async def test_max_tool_iterations_with_no_argument_reports_current_value(tmp_pa
         screen._handle_command("/max-tool-iterations")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "25" in message_view._current_text  # Settings' default
+        assert any("25" in m for m in _notification_messages(app))  # Settings' default
 
 
 @pytest.mark.asyncio
@@ -74,8 +80,7 @@ async def test_max_tool_iterations_sets_persists_and_takes_effect_live(tmp_path:
         screen._handle_command("/max-tool-iterations 10")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "10" in message_view._current_text
+        assert any("10" in m for m in _notification_messages(app))
         assert screen._settings.max_tool_iterations == 10
         assert screen._agent_loop._max_tool_iterations == 10
 
@@ -89,15 +94,15 @@ async def test_max_tool_iterations_rejects_invalid_input(tmp_path: Path):
     app = _HostApp(screen)
     async with app.run_test() as pilot:
         await pilot.pause()
-        message_view = screen.query_one(MessageView)
 
         screen._handle_command("/max-tool-iterations not-a-number")
         await pilot.pause()
-        assert "valid number" in message_view._current_text
+        assert any("valid number" in m for m in _notification_messages(app))
+        app.clear_notifications()
 
         screen._handle_command("/max-tool-iterations -5")
         await pilot.pause()
-        assert "greater than 0" in message_view._current_text
+        assert any("greater than 0" in m for m in _notification_messages(app))
 
 
 @pytest.mark.asyncio
@@ -113,8 +118,7 @@ async def test_max_tool_iterations_notes_it_is_ignored_in_local_api_mode(tmp_pat
         screen._handle_command("/max-tool-iterations 10")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "uncapped" in message_view._current_text.lower()
+        assert any("uncapped" in m.lower() for m in _notification_messages(app))
         # Saved anyway, even though it won't take effect while local-api.
         assert screen._settings.max_tool_iterations == 10
         assert screen._agent_loop._max_tool_iterations is None
@@ -133,8 +137,7 @@ async def test_artifact_threshold_with_no_argument_reports_current_value(tmp_pat
         screen._handle_command("/artifact-threshold")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "4,000" in message_view._current_text  # Settings' default
+        assert any("4,000" in m for m in _notification_messages(app))  # Settings' default
 
 
 @pytest.mark.asyncio
@@ -148,8 +151,7 @@ async def test_artifact_threshold_sets_persists_and_takes_effect_live(tmp_path: 
         screen._handle_command("/artifact-threshold 8000")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "8,000" in message_view._current_text
+        assert any("8,000" in m for m in _notification_messages(app))
         assert screen._settings.artifact_threshold_chars == 8000
         assert screen._agent_loop._artifact_threshold_chars == 8000
 
@@ -163,15 +165,15 @@ async def test_artifact_threshold_rejects_invalid_input(tmp_path: Path):
     app = _HostApp(screen)
     async with app.run_test() as pilot:
         await pilot.pause()
-        message_view = screen.query_one(MessageView)
 
         screen._handle_command("/artifact-threshold not-a-number")
         await pilot.pause()
-        assert "valid number" in message_view._current_text
+        assert any("valid number" in m for m in _notification_messages(app))
+        app.clear_notifications()
 
         screen._handle_command("/artifact-threshold -5")
         await pilot.pause()
-        assert "greater than 0" in message_view._current_text
+        assert any("greater than 0" in m for m in _notification_messages(app))
 
 
 # --- /max-tool-calls-per-turn ---
@@ -187,8 +189,7 @@ async def test_max_tool_calls_per_turn_with_no_argument_reports_current_value(tm
         screen._handle_command("/max-tool-calls-per-turn")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "25" in message_view._current_text  # GuardrailsConfig's default
+        assert any("25" in m for m in _notification_messages(app))  # GuardrailsConfig's default
 
 
 @pytest.mark.asyncio
@@ -201,8 +202,7 @@ async def test_max_tool_calls_per_turn_sets_persists_and_takes_effect_live(tmp_p
         screen._handle_command("/max-tool-calls-per-turn 5")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "5" in message_view._current_text
+        assert any("5" in m for m in _notification_messages(app))
         assert screen._permission_manager.guardrails.max_tool_calls_per_turn == 5
 
         reloaded = GuardrailsConfig.load()
@@ -219,8 +219,7 @@ async def test_max_tool_calls_per_turn_accepts_zero_as_unlimited(tmp_path: Path)
         screen._handle_command("/max-tool-calls-per-turn 0")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "set to 0" in message_view._current_text
+        assert any("set to 0" in m for m in _notification_messages(app))
         assert screen._permission_manager.guardrails.max_tool_calls_per_turn == 0
 
 
@@ -230,15 +229,15 @@ async def test_max_tool_calls_per_turn_rejects_invalid_input(tmp_path: Path):
     app = _HostApp(screen)
     async with app.run_test() as pilot:
         await pilot.pause()
-        message_view = screen.query_one(MessageView)
 
         screen._handle_command("/max-tool-calls-per-turn not-a-number")
         await pilot.pause()
-        assert "valid number" in message_view._current_text
+        assert any("valid number" in m for m in _notification_messages(app))
+        app.clear_notifications()
 
         screen._handle_command("/max-tool-calls-per-turn -5")
         await pilot.pause()
-        assert "0 or greater" in message_view._current_text
+        assert any("0 or greater" in m for m in _notification_messages(app))
 
 
 @pytest.mark.asyncio
@@ -255,8 +254,7 @@ async def test_max_tool_calls_per_turn_notes_it_is_ignored_in_local_api_mode(tmp
         screen._handle_command("/max-tool-calls-per-turn 5")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "local-api mode" in message_view._current_text
+        assert any("local-api mode" in m for m in _notification_messages(app))
         # Not applied live - still forced unlimited for this session.
         assert screen._permission_manager.guardrails.max_tool_calls_per_turn == 0
         # But persisted for whenever local-api mode is off.
@@ -277,8 +275,7 @@ async def test_max_tool_calls_per_minute_with_no_argument_reports_current_value(
         screen._handle_command("/max-tool-calls-per-minute")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "60" in message_view._current_text  # GuardrailsConfig's default
+        assert any("60" in m for m in _notification_messages(app))  # GuardrailsConfig's default
 
 
 @pytest.mark.asyncio
@@ -291,8 +288,7 @@ async def test_max_tool_calls_per_minute_sets_persists_and_takes_effect_live(tmp
         screen._handle_command("/max-tool-calls-per-minute 15")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "15" in message_view._current_text
+        assert any("15" in m for m in _notification_messages(app))
         assert screen._permission_manager.guardrails.max_tool_calls_per_minute == 15
 
         reloaded = GuardrailsConfig.load()
@@ -305,15 +301,15 @@ async def test_max_tool_calls_per_minute_rejects_invalid_input(tmp_path: Path):
     app = _HostApp(screen)
     async with app.run_test() as pilot:
         await pilot.pause()
-        message_view = screen.query_one(MessageView)
 
         screen._handle_command("/max-tool-calls-per-minute not-a-number")
         await pilot.pause()
-        assert "valid number" in message_view._current_text
+        assert any("valid number" in m for m in _notification_messages(app))
+        app.clear_notifications()
 
         screen._handle_command("/max-tool-calls-per-minute -5")
         await pilot.pause()
-        assert "0 or greater" in message_view._current_text
+        assert any("0 or greater" in m for m in _notification_messages(app))
 
 
 @pytest.mark.asyncio
@@ -329,8 +325,7 @@ async def test_max_tool_calls_per_minute_notes_it_is_ignored_in_local_api_mode(t
         screen._handle_command("/max-tool-calls-per-minute 15")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "local-api mode" in message_view._current_text
+        assert any("local-api mode" in m for m in _notification_messages(app))
         assert screen._permission_manager.guardrails.max_tool_calls_per_minute == 0
         reloaded = GuardrailsConfig.load()
         assert reloaded.max_tool_calls_per_minute == 15
@@ -349,9 +344,9 @@ async def test_allowed_roots_with_no_argument_lists_current_roots(tmp_path: Path
         screen._handle_command("/allowed-roots")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "." in message_view._current_text  # GuardrailsConfig's default
-        assert "/allowed-roots add" in message_view._current_text
+        notifications = _notification_messages(app)
+        assert any("." in m for m in notifications)  # GuardrailsConfig's default
+        assert any("/allowed-roots add" in m for m in notifications)
 
 
 @pytest.mark.asyncio
@@ -364,8 +359,7 @@ async def test_allowed_roots_add_persists_and_takes_effect_live(tmp_path: Path):
         screen._handle_command(f"/allowed-roots add {tmp_path}")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "Added" in message_view._current_text
+        assert any("Added" in m for m in _notification_messages(app))
         assert str(tmp_path) in screen._permission_manager.guardrails.fs_allowed_roots
 
         reloaded = GuardrailsConfig.load()
@@ -384,8 +378,7 @@ async def test_allowed_roots_add_rejects_a_duplicate(tmp_path: Path):
         screen._handle_command("/allowed-roots add .")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "already in allowed_roots" in message_view._current_text
+        assert any("already in allowed_roots" in m for m in _notification_messages(app))
         assert screen._permission_manager.guardrails.fs_allowed_roots == ["."]
 
 
@@ -397,12 +390,12 @@ async def test_allowed_roots_remove_persists_and_takes_effect_live(tmp_path: Pat
         await pilot.pause()
         screen._handle_command(f"/allowed-roots add {tmp_path}")
         await pilot.pause()
+        app.clear_notifications()
 
         screen._handle_command("/allowed-roots remove .")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "Removed" in message_view._current_text
+        assert any("Removed" in m for m in _notification_messages(app))
         assert "." not in screen._permission_manager.guardrails.fs_allowed_roots
         assert str(tmp_path) in screen._permission_manager.guardrails.fs_allowed_roots
 
@@ -420,8 +413,7 @@ async def test_allowed_roots_remove_rejects_an_unknown_entry(tmp_path: Path):
         screen._handle_command("/allowed-roots remove /never/added")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "isn't in allowed_roots" in message_view._current_text
+        assert any("isn't in allowed_roots" in m for m in _notification_messages(app))
 
 
 @pytest.mark.asyncio
@@ -437,8 +429,7 @@ async def test_allowed_roots_refuses_to_remove_the_last_entry(tmp_path: Path):
         screen._handle_command("/allowed-roots remove .")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "Refusing" in message_view._current_text
+        assert any("Refusing" in m for m in _notification_messages(app))
         assert screen._permission_manager.guardrails.fs_allowed_roots == ["."]
 
 
@@ -452,8 +443,7 @@ async def test_allowed_roots_unknown_subcommand_reports_usage(tmp_path: Path):
         screen._handle_command("/allowed-roots frobnicate")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "Unknown /allowed-roots subcommand" in message_view._current_text
+        assert any("Unknown /allowed-roots subcommand" in m for m in _notification_messages(app))
 
 
 # --- /max-response-tokens ---
@@ -469,10 +459,10 @@ async def test_max_response_tokens_with_no_argument_reports_current_state(tmp_pa
         screen._handle_command("/max-response-tokens")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "enabled" in message_view._current_text
-        assert "512" in message_view._current_text  # Settings' default margin
-        assert "no cap (not yet computable)" in message_view._current_text  # no turns yet
+        notifications = _notification_messages(app)
+        assert any("enabled" in m for m in notifications)
+        assert any("512" in m for m in notifications)  # Settings' default margin
+        assert any("no cap (not yet computable)" in m for m in notifications)  # no turns yet
 
 
 @pytest.mark.asyncio
@@ -484,15 +474,15 @@ async def test_max_response_tokens_off_then_on(tmp_path: Path):
 
         screen._handle_command("/max-response-tokens off")
         await pilot.pause()
-        message_view = screen.query_one(MessageView)
-        assert "disabled" in message_view._current_text
+        assert any("disabled" in m for m in _notification_messages(app))
         assert screen._settings.max_response_tokens_enabled is False
         raw = tomllib.loads(config_file().read_text(encoding="utf-8"))
         assert raw["max_response_tokens_enabled"] is False
+        app.clear_notifications()
 
         screen._handle_command("/max-response-tokens on")
         await pilot.pause()
-        assert "enabled" in message_view._current_text
+        assert any("enabled" in m for m in _notification_messages(app))
         assert screen._settings.max_response_tokens_enabled is True
 
 
@@ -506,8 +496,7 @@ async def test_max_response_tokens_sets_the_safety_margin_and_persists(tmp_path:
         screen._handle_command("/max-response-tokens 2000")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "2,000" in message_view._current_text
+        assert any("2,000" in m for m in _notification_messages(app))
         assert screen._settings.max_response_tokens_enabled is True
         assert screen._settings.max_response_tokens_safety_margin == 2000
 
@@ -522,15 +511,17 @@ async def test_max_response_tokens_rejects_invalid_input(tmp_path: Path):
     app = _HostApp(screen)
     async with app.run_test() as pilot:
         await pilot.pause()
-        message_view = screen.query_one(MessageView)
 
         screen._handle_command("/max-response-tokens not-a-number")
         await pilot.pause()
-        assert "isn't 'off', 'on', or a valid number" in message_view._current_text
+        assert any(
+            "isn't 'off', 'on', or a valid number" in m for m in _notification_messages(app)
+        )
+        app.clear_notifications()
 
         screen._handle_command("/max-response-tokens -5")
         await pilot.pause()
-        assert "greater than 0" in message_view._current_text
+        assert any("greater than 0" in m for m in _notification_messages(app))
 
 
 @pytest.mark.asyncio
@@ -556,9 +547,8 @@ async def test_max_response_tokens_reports_the_currently_computable_cap(tmp_path
         screen._handle_command("/max-response-tokens")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
         expected = 128_000 - 1100 - 512  # default limit - used - default margin
-        assert f"{expected:,}" in message_view._current_text
+        assert any(f"{expected:,}" in m for m in _notification_messages(app))
 
 
 @pytest.mark.asyncio
@@ -658,8 +648,7 @@ async def test_temperature_sets_persists_and_takes_effect_on_the_live_agent_loop
         screen._handle_command("/temperature 0.9")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "0.9" in message_view._current_text
+        assert any("0.9" in m for m in _notification_messages(app))
         assert screen._settings.default_temperature == 0.9
         assert screen._agent_loop._temperature == 0.9
 

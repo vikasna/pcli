@@ -9,7 +9,6 @@ from textual.app import App
 from pcli.config.settings import Settings
 from pcli.session.store import SessionStore
 from pcli.tui.screens.chat import ChatScreen
-from pcli.tui.widgets.message_view import MessageView
 
 
 class _HostApp(App):
@@ -19,6 +18,13 @@ class _HostApp(App):
 
     def on_mount(self) -> None:
         self.push_screen(self._initial_screen)
+
+
+def _notification_messages(app) -> list[str]:
+    """Toast messages currently shown (App._notifications) - see chat.py's
+    self.notify(...) calls, Textual's built-in transient-notice mechanism
+    used for ephemeral command confirmations instead of the transcript."""
+    return [n.message for n in app._notifications]
 
 
 def _make_screen(tmp_path: Path):
@@ -44,8 +50,7 @@ async def test_rename_with_no_argument_reports_current_title(tmp_path: Path):
         screen._handle_command("/rename")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "New session" in message_view._current_text  # the derived default
+        assert any("New session" in m for m in _notification_messages(app))  # the derived default
 
 
 @pytest.mark.asyncio
@@ -58,8 +63,7 @@ async def test_rename_sets_title_and_persists(tmp_path: Path):
         screen._handle_command("/rename Investigating flaky CI")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "Investigating flaky CI" in message_view._current_text
+        assert any("Investigating flaky CI" in m for m in _notification_messages(app))
         assert session.title == "Investigating flaky CI"
 
         # Persisted to the session index, which /sessions reads from.
@@ -77,8 +81,8 @@ async def test_rename_then_no_argument_shows_the_new_title(tmp_path: Path):
 
         screen._handle_command("/rename my custom title")
         await pilot.pause()
+        app.clear_notifications()
         screen._handle_command("/rename")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert "my custom title" in message_view._current_text
+        assert any("my custom title" in m for m in _notification_messages(app))

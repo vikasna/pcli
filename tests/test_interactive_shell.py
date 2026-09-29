@@ -14,7 +14,6 @@ from textual.app import App
 from pcli.config.settings import Settings
 from pcli.session.store import SessionStore
 from pcli.tui.screens.chat import ChatScreen
-from pcli.tui.widgets.message_view import MessageView
 
 
 class _HostApp(App):
@@ -42,9 +41,7 @@ async def test_bare_triple_bang_shows_usage(tmp_path: Path):
         screen._run_interactive_shell("")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert message_view._current_role == "system"
-        assert "Usage: !!!<command>" in message_view._current_text
+        assert any("Usage: !!!<command>" in n.message for n in app._notifications)
 
 
 @pytest.mark.asyncio
@@ -59,9 +56,10 @@ async def test_suspend_not_supported_shows_graceful_message(tmp_path: Path):
         screen._run_interactive_shell("echo hi")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
-        assert message_view._current_role == "system"
-        assert "isn't supported in this terminal environment" in message_view._current_text
+        assert any(
+            "isn't supported in this terminal environment" in n.message
+            for n in app._notifications
+        )
 
 
 @pytest.mark.asyncio
@@ -77,10 +75,11 @@ async def test_triple_bang_dispatches_to_interactive_not_passthrough(tmp_path: P
         await pilot.press("enter")
         await pilot.pause()
 
-        message_view = screen.query_one(MessageView)
         # Reached _run_interactive_shell's "handing off" message (or, since
         # suspend isn't supported headlessly, the graceful fallback) —
         # either way, proof it took the !!! path, not the piped one (which
         # would show "$ echo hi\nhi\n[exit_code=0]" instead).
-        assert message_view._current_role == "system"
-        assert "isn't supported in this terminal environment" in message_view._current_text
+        assert any(
+            "isn't supported in this terminal environment" in n.message
+            for n in app._notifications
+        )
