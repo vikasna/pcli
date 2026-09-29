@@ -436,6 +436,9 @@ reads as over `auto_compact_threshold`.
   never triggers this warning.
 - **`/export [path]`** — exports the *current* session via `export_session`
   to `path` if given, else `<data_dir>/exports/<session_id>.pcli-session.json`.
+  The "Exported session to ..." confirmation is a toast, not a transcript
+  message — the exported path is right there in the notification, and the
+  file itself is the durable record, not this confirmation.
 - **`/toolbox discover <name>`**, **`/toolbox list`**, **`/toolbox remove
   <name>`** — in-TUI equivalents of the `pcli toolbox ...` CLI subcommands;
   see [`toolbox-plugins.md`](toolbox-plugins.md). `discover`/`remove`
@@ -467,7 +470,9 @@ reads as over `auto_compact_threshold`.
   (see [Gateway errors](#gateway-errors) below).
 - **`/compact`** — manually summarizes and archives the oldest conversation
   history right now (see [`tools.md`](tools.md#auto-compaction)), bypassing
-  the `auto_compact_threshold` check entirely. Still subject to
+  the `auto_compact_threshold` check entirely. If the gateway/sandbox isn't
+  set up yet, it shows "Compaction isn't available (gateway/sandbox not set
+  up)." instead. Still subject to
   `maybe_compact`'s own "not enough history yet" guard, reporting "Nothing to
   compact yet." if there isn't more history than
   `auto_compact_keep_recent_turns` turns — or, for a session made up of a
@@ -482,7 +487,12 @@ reads as over `auto_compact_threshold`.
   current turn — try /compact again once it's done." instead — just try
   again once it finishes. This
   doesn't affect auto-compaction (below), which always runs sequentially
-  after a turn ends anyway.
+  after a turn ends anyway. All three of those guards — "isn't available",
+  "still working on the current turn", and "Nothing to compact yet." — are
+  shown as toasts, not transcript messages, trivially re-checked by rerunning
+  `/compact`. A real failure ("Compaction failed: ...") and the actual
+  success notice (see [Auto-compaction](#auto-compaction) below) are
+  unchanged — both stay in the transcript as genuine, investigable records.
 - **`/timeout [seconds]`** — with no argument, reports the current
   `request_timeout_s` (see [`configuration.md`](configuration.md)), plus an
   "(effective: Ns — floored for local-api)" note when the
@@ -1420,8 +1430,12 @@ wrapped in a Textual `Collapsible` once the text reaches
 `_COLLAPSIBLE_MESSAGE_THRESHOLD_CHARS` (300 characters) —
 `MessageView.add_message`, `src/pcli/tui/widgets/message_view.py`. Below that
 threshold a message still prints as a plain, permanent line exactly as
-before — a short confirmation like `Model set to 'gpt-4'.` never grows a
-collapse affordance.
+before — a short notice like `Turn cancelled.` never grows a collapse
+affordance. Most of pcli's short, "glance and maybe retype" command
+confirmations (`/timeout`, `/models`, `/compact`'s guards, `/export`, etc.)
+don't reach this codepath at all anymore — see [Slash
+commands](#slash-commands) above — since they're shown as toast
+notifications instead of transcript messages in the first place.
 
 This addresses a real complaint: verbose output from `/help`, `/memory`, a
 busy `/subagent`, or a long `!command` used to just pile up permanently in
