@@ -274,6 +274,15 @@ persisted via a slash command: [`/prune-tool-results`](tui-guide.md#slash-comman
 writes them to `config.toml` through `update_config_file` and applies them
 live on the very next turn, no restart needed.
 
+Both this and auto-compaction above rewrite the content of an
+already-sent message, which is not free on a local gateway: it invalidates
+whatever prefix/KV-cache the inference engine was holding for the
+conversation from that point on, so the next request reprocesses that part
+of the prompt from scratch instead of reusing it. See [The prefix-cache cost
+of pruning and
+compaction](tui-guide.md#the-prefix-cache-cost-of-pruning-and-compaction) for
+the full explanation of the trade-off.
+
 ## Dynamic response cap
 
 `max_response_tokens_enabled` and `max_response_tokens_safety_margin` (table

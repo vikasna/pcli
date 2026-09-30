@@ -234,6 +234,16 @@ this, `Usage.cached_tokens` was already parsed off the wire but never
 consulted anywhere, so pcli's own cost display silently overstated real
 spend on any cache-aware gateway.
 
+Whether a request gets any `cached_tokens` back at all depends on the prompt
+sent still sharing a prefix with something the gateway/inference engine
+already has resident — tool-result pruning and auto-compaction both save
+context by rewriting already-sent message content, which breaks that
+sharing from the rewritten point onward. See [The prefix-cache cost of
+pruning and
+compaction](tui-guide.md#the-prefix-cache-cost-of-pruning-and-compaction) for
+the full trade-off — it's most visible as added latency (not just cost) on
+a local inference engine.
+
 `match_model_pattern` (shared with `ContextLimitTable`) resolves a model name
 to an entry: **exact match wins**; otherwise the **longest matching
 `*`-suffixed prefix** pattern.

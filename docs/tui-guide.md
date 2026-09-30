@@ -977,6 +977,73 @@ settings, which are env-var/config.toml-only with no slash command) — see
 [`configuration.md`](configuration.md#tool-result-pruning) for the full
 settings reference.
 
+### The prefix-cache cost of pruning and compaction
+
+Both tool-result pruning above and [auto-compaction](#auto-compaction) shrink
+context by rewriting messages that were already sent to the gateway in an
+earlier turn — and that has a cost beyond the summarization/archiving work
+itself, one that's easy to miss because it never shows up as an error or a
+slower turn *right when it happens*.
+
+Most inference backends — llama.cpp-based servers (LM Studio, Ollama,
+text-generation-webui) and vLLM alike, which is most of what pcli talks to
+when [running against a local model](configuration.md#local-api-mode) — do
+automatic prefix/KV-cache reuse: if a new request's prompt shares a leading
+token sequence with something the engine still has resident from a previous
+request, it reuses the cached computation for that shared prefix and only
+processes the new tokens after it. This is transparent — no special field a
+client has to set — and OpenAI's own hosted API does the same thing
+server-side for prompts over 1024 tokens. The only thing a client has to do
+to benefit is *not change the shared prefix* (system prompt, tool schema,
+and early conversation turns) between consecutive requests.
+
+pcli is already well-behaved here by design, with nothing pruning/compaction
+below needs to work around: the system prompt is built exactly once, at
+session creation (`ChatScreen.__init__`, `src/pcli/tui/screens/chat.py`
+around line 316, calling `build_system_prompt()` in
+`src/pcli/agent/prompt.py`), then reused verbatim as `session.messages[0]`
+for the rest of the session — never reworded turn-to-turn, and
+`build_system_prompt()` itself has no timestamps, ids, or other
+non-deterministic content that would shift its tokens between requests. The
+tool schema sent with every request
+(`ToolRegistry.to_openai_tools()`, `src/pcli/tools/registry.py`) has stable,
+deterministic ordering — a tool discovered/registered mid-session is
+appended after the existing ones rather than triggering any reordering, so
+the already-cached prefix never shifts, only grows. And `session.messages`
+itself is append-only in the normal turn-taking case.
+
+Tool-result pruning and auto-compaction are the deliberate exception to all
+of that: `prune_old_tool_results` (`src/pcli/agent/context_pruning.py:84`,
+`message.content = note`) overwrites an already-sent tool result's content
+in place with a short placeholder, and `_run_compaction`'s summarization
+(`src/pcli/agent/compaction.py`, see [Auto-compaction](#auto-compaction)
+above) replaces a whole prefix of older messages with a single summary
+message. Either way, the bytes of a message that was part of a previously
+cached prompt no longer match what the inference engine has resident, so
+the prefix cache is invalidated from the pruned/compacted point onward —
+everything from there to the end of the conversation has to be reprocessed
+from scratch on the *next* request, not saved.
+
+That's not a bug, and it isn't a reason to turn these features off — a
+context window that's genuinely filling up is a real problem, and shrinking
+it is very often the right call even at the cost of a cache-cold next
+request. The point is just that the trade-off is real, not free: pruning and
+compaction buy a smaller context window by giving up prefix-cache reuse for
+everything after the point they touch, and that trade is most visible on a
+local inference engine, where request latency and cost are directly tied to
+how much of the prompt has to be reprocessed rather than reused. On a
+metered hosted API it mostly shows up as a slightly larger bill for one
+request rather than a slower one, since a cache-miss prompt is billed at the
+regular per-token rate — see [`sessions-and-cost.md`](sessions-and-cost.md#cost-tracking)
+for how `cached_tokens` is priced when a gateway reports them.
+
+One thing this does *not* affect: `max_tokens` is recomputed fresh before
+every request (`compute_max_response_tokens`,
+[Dynamic response cap](#dynamic-response-cap) below), but it's a
+generation-time sampling parameter sent alongside the prompt, not part of
+the tokenized prompt content itself, so its per-request variability has no
+bearing on prefix-cache matching either way.
+
 ## Auto-continue on truncated responses
 
 A real reported bug: a turn's final response — the one with no tool call,
