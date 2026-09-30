@@ -262,6 +262,255 @@ async def test_run_due_jobs_calls_on_job_run_callback(tmp_path, monkeypatch: pyt
     assert error is None
 
 
+# --- file_change / git_commit triggers ---
+
+
+def _git(repo, *args: str):
+    import subprocess
+
+    return subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", *args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+async def _fake_run_task_once_ok(task, **kwargs):
+    session = Session(id="sess_x", model="fake-model", gateway_base_url="http://x")
+    return HeadlessTurnResult(session=session, final_text="done", terminated_early=False)
+
+
+@pytest.mark.asyncio
+async def test_file_change_job_baselines_without_firing_on_first_poll(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    watched = tmp_path / "watched.txt"
+    watched.write_text("v1", encoding="utf-8")
+    add_job(ScheduleJob(trigger="file_change", watch_path=str(watched), task="x"))
+
+    calls: list[str] = []
+
+    async def fake_run_task_once(task, **kwargs):
+        calls.append(task)
+        return await _fake_run_task_once_ok(task, **kwargs)
+
+    monkeypatch.setattr(daemon_module, "run_task_once", fake_run_task_once)
+
+    await _run_due_jobs(_settings(), SessionStore(base_dir=tmp_path / "sessions"), tmp_path, on_job_run=None)
+
+    assert calls == []
+    job = read_schedule().jobs[0]
+    assert job.last_seen_state is not None
+    assert job.last_run_at is None
+
+
+@pytest.mark.asyncio
+async def test_file_change_job_fires_once_the_watched_path_actually_changes(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    watched = tmp_path / "watched.txt"
+    watched.write_text("v1", encoding="utf-8")
+    job = add_job(ScheduleJob(trigger="file_change", watch_path=str(watched), task="x"))
+
+    calls: list[str] = []
+
+    async def fake_run_task_once(task, **kwargs):
+        calls.append(task)
+        return await _fake_run_task_once_ok(task, **kwargs)
+
+    monkeypatch.setattr(daemon_module, "run_task_once", fake_run_task_once)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+
+    # First poll: baseline only, no fire.
+    await _run_due_jobs(_settings(), store, tmp_path, on_job_run=None)
+    assert calls == []
+
+    watched.write_text("v2 - actually different", encoding="utf-8")
+
+    # Second poll: the watched file genuinely changed.
+    await _run_due_jobs(_settings(), store, tmp_path, on_job_run=None)
+    assert calls == ["x"]
+
+    reloaded = read_schedule().jobs[0]
+    assert reloaded.id == job.id
+    assert reloaded.last_status == "ok"
+    assert reloaded.last_run_at is not None
+
+
+@pytest.mark.asyncio
+async def test_file_change_job_does_not_refire_on_unchanged_state(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    watched = tmp_path / "watched.txt"
+    watched.write_text("v1", encoding="utf-8")
+    add_job(ScheduleJob(trigger="file_change", watch_path=str(watched), task="x"))
+
+    calls: list[str] = []
+
+    async def fake_run_task_once(task, **kwargs):
+        calls.append(task)
+        return await _fake_run_task_once_ok(task, **kwargs)
+
+    monkeypatch.setattr(daemon_module, "run_task_once", fake_run_task_once)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+
+    await _run_due_jobs(_settings(), store, tmp_path, on_job_run=None)  # baseline
+    await _run_due_jobs(_settings(), store, tmp_path, on_job_run=None)  # nothing changed
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_file_change_job_baselines_after_the_run_not_before(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """Regression guard for the self-trigger-loop fix: a task that itself
+    edits the watched path must not see its own edit as "one more change"
+    on the very next poll."""
+    watched = tmp_path / "watched.txt"
+    watched.write_text("v1", encoding="utf-8")
+    add_job(ScheduleJob(trigger="file_change", watch_path=str(watched), task="x"))
+
+    calls: list[str] = []
+
+    async def self_editing_run_task_once(task, **kwargs):
+        calls.append(task)
+        watched.write_text("edited by the task itself", encoding="utf-8")
+        return await _fake_run_task_once_ok(task, **kwargs)
+
+    monkeypatch.setattr(daemon_module, "run_task_once", self_editing_run_task_once)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+
+    await _run_due_jobs(_settings(), store, tmp_path, on_job_run=None)  # baseline
+    watched.write_text("v2 - an external change", encoding="utf-8")
+    await _run_due_jobs(_settings(), store, tmp_path, on_job_run=None)  # fires, self-edits
+    assert calls == ["x"]
+
+    # No further external change happened - must not fire again.
+    await _run_due_jobs(_settings(), store, tmp_path, on_job_run=None)
+    assert calls == ["x"]
+
+
+@pytest.mark.asyncio
+async def test_git_commit_job_baselines_without_firing_on_first_poll(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "file.txt").write_text("v1", encoding="utf-8")
+    _git(repo, "add", "file.txt")
+    _git(repo, "commit", "-q", "-m", "first commit")
+
+    add_job(ScheduleJob(trigger="git_commit", watch_git_repo=str(repo), task="x"))
+
+    calls: list[str] = []
+
+    async def fake_run_task_once(task, **kwargs):
+        calls.append(task)
+        return await _fake_run_task_once_ok(task, **kwargs)
+
+    monkeypatch.setattr(daemon_module, "run_task_once", fake_run_task_once)
+
+    await _run_due_jobs(_settings(), SessionStore(base_dir=tmp_path / "sessions"), tmp_path, on_job_run=None)
+
+    assert calls == []
+    job = read_schedule().jobs[0]
+    assert job.last_seen_state is not None
+
+
+@pytest.mark.asyncio
+async def test_git_commit_job_fires_once_a_new_commit_lands(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "file.txt").write_text("v1", encoding="utf-8")
+    _git(repo, "add", "file.txt")
+    _git(repo, "commit", "-q", "-m", "first commit")
+
+    job = add_job(ScheduleJob(trigger="git_commit", watch_git_repo=str(repo), task="x"))
+
+    calls: list[str] = []
+
+    async def fake_run_task_once(task, **kwargs):
+        calls.append(task)
+        return await _fake_run_task_once_ok(task, **kwargs)
+
+    monkeypatch.setattr(daemon_module, "run_task_once", fake_run_task_once)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+
+    await _run_due_jobs(_settings(), store, tmp_path, on_job_run=None)  # baseline
+    assert calls == []
+
+    (repo / "file.txt").write_text("v2", encoding="utf-8")
+    _git(repo, "add", "file.txt")
+    _git(repo, "commit", "-q", "-m", "second commit")
+
+    await _run_due_jobs(_settings(), store, tmp_path, on_job_run=None)
+    assert calls == ["x"]
+
+    reloaded = read_schedule().jobs[0]
+    assert reloaded.id == job.id
+    assert reloaded.last_status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_git_commit_job_with_no_repo_configured_uses_cwd(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """watch_git_repo unset -> falls back to the cwd _run_due_jobs was
+    called with (the daemon's own cwd), same fallback documented on
+    ScheduleJob.watch_git_repo."""
+    repo = tmp_path / "as-cwd"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "file.txt").write_text("v1", encoding="utf-8")
+    _git(repo, "add", "file.txt")
+    _git(repo, "commit", "-q", "-m", "first commit")
+
+    add_job(ScheduleJob(trigger="git_commit", task="x"))  # watch_git_repo left unset
+
+    calls: list[str] = []
+
+    async def fake_run_task_once(task, **kwargs):
+        calls.append(task)
+        return await _fake_run_task_once_ok(task, **kwargs)
+
+    monkeypatch.setattr(daemon_module, "run_task_once", fake_run_task_once)
+
+    await _run_due_jobs(_settings(), SessionStore(base_dir=tmp_path / "sessions"), repo, on_job_run=None)
+
+    job = read_schedule().jobs[0]
+    assert job.last_seen_state is not None  # resolved via the given cwd, not an error
+
+
+@pytest.mark.asyncio
+async def test_git_commit_job_with_a_failed_lookup_is_skipped_not_errored(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    not_a_repo = tmp_path / "not-a-repo"
+    not_a_repo.mkdir()
+    add_job(ScheduleJob(trigger="git_commit", watch_git_repo=str(not_a_repo), task="x"))
+
+    calls: list[str] = []
+
+    async def fake_run_task_once(task, **kwargs):
+        calls.append(task)
+
+    monkeypatch.setattr(daemon_module, "run_task_once", fake_run_task_once)
+
+    await _run_due_jobs(_settings(), SessionStore(base_dir=tmp_path / "sessions"), tmp_path, on_job_run=None)
+
+    assert calls == []
+    job = read_schedule().jobs[0]
+    assert job.last_seen_state is None  # never successfully baselined
+    assert job.last_status is None  # skipped, not marked an error
+
+
 @pytest.mark.asyncio
 async def test_run_scheduler_daemon_ticks_and_can_be_cancelled(monkeypatch: pytest.MonkeyPatch):
     """The top-level loop itself: sleep is stubbed to return instantly so

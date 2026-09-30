@@ -24,6 +24,7 @@ from pcli.config.settings import Settings
 from pcli.scheduler.models import ScheduleJob
 from pcli.scheduler.runner import ScheduledSessionNotFoundError, run_task_once
 from pcli.scheduler.store import read_schedule, update_job
+from pcli.scheduler.triggers import compute_path_signature, get_git_head_sha
 from pcli.session.store import SessionStore
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,57 @@ async def run_scheduler_daemon(
         await asyncio.sleep(poll_interval_s)
 
 
+def _cron_due(job: ScheduleJob, now: datetime) -> bool:
+    if job.next_run_at is None:
+        assert job.cron is not None  # enforced by ScheduleJob's validator
+        job.next_run_at = compute_next_run(job.cron, base=now)
+        update_job(job)
+        return False
+    return job.next_run_at <= now
+
+
+def _current_event_signature(job: ScheduleJob, cwd: Path) -> str | None:
+    if job.trigger == "file_change":
+        assert job.watch_path is not None  # enforced by ScheduleJob's validator
+        return compute_path_signature(Path(job.watch_path))
+    assert job.trigger == "git_commit"
+    repo = Path(job.watch_git_repo) if job.watch_git_repo else cwd
+    return get_git_head_sha(repo, job.watch_git_branch)
+
+
+def _event_due(job: ScheduleJob, cwd: Path) -> bool:
+    signature = _current_event_signature(job, cwd)
+    if signature is None:
+        # A git lookup failed this poll (repo not there yet, git missing,
+        # ...) - already logged in triggers.py. Just skip and retry next
+        # tick rather than marking the job an error.
+        return False
+    if job.last_seen_state is None:
+        # First time this job's been seen by any poll - baseline without
+        # firing, the same "compute and skip" first-tick behavior cron
+        # jobs get above, so adding a job against an already-existing
+        # file/commit doesn't fire immediately.
+        job.last_seen_state = signature
+        update_job(job)
+        return False
+    return signature != job.last_seen_state
+
+
+def _rebaseline_event_job(job: ScheduleJob, cwd: Path) -> None:
+    """Re-reads the current signature *after* the job's own run finished
+    and stores that as the new baseline - deliberately not the signature
+    that triggered the run. Otherwise a task that itself edits the watched
+    path, or commits to the watched branch (a very plausible case - e.g. a
+    task that auto-commits its own changes), would see its own output as
+    "one more change" on the very next poll and fire again indefinitely.
+    Baselining after the run means only changes introduced *after* the
+    job's own run completed count as the next trigger."""
+    signature = _current_event_signature(job, cwd)
+    if signature is not None:
+        job.last_seen_state = signature
+        update_job(job)
+
+
 async def _run_due_jobs(
     settings: Settings,
     store: SessionStore,
@@ -72,13 +124,12 @@ async def _run_due_jobs(
     for job in read_schedule().jobs:
         if not job.enabled:
             continue
-        if job.next_run_at is None:
-            job.next_run_at = compute_next_run(job.cron, base=now)
-            update_job(job)
-            continue
-        if job.next_run_at > now:
+        is_due = _cron_due(job, now) if job.trigger == "cron" else _event_due(job, cwd)
+        if not is_due:
             continue
         await _run_one_job(job, settings, store, cwd, on_job_run=on_job_run)
+        if job.trigger != "cron":
+            _rebaseline_event_job(job, cwd)
 
 
 async def _run_one_job(
@@ -120,15 +171,21 @@ async def _run_one_job(
         error = exc
         job.last_status = "error"
         job.last_error = f"session '{job.session_id}' no longer exists"
-        logger.error("Scheduled job %s (%s): %s", job.id, job.name or job.cron, job.last_error)
+        logger.error(
+            "Scheduled job %s (%s): %s", job.id, job.name or job.cron or job.trigger, job.last_error
+        )
     except Exception as exc:  # one job failing must not kill the daemon loop
         error = exc
         job.last_status = "error"
         job.last_error = str(exc)
-        logger.exception("Scheduled job %s (%s) failed", job.id, job.name or job.cron)
+        logger.exception(
+            "Scheduled job %s (%s) failed", job.id, job.name or job.cron or job.trigger
+        )
 
     job.last_run_at = datetime.now(UTC)
-    job.next_run_at = compute_next_run(job.cron, base=job.last_run_at)
+    if job.trigger == "cron":
+        assert job.cron is not None  # enforced by ScheduleJob's validator
+        job.next_run_at = compute_next_run(job.cron, base=job.last_run_at)
     update_job(job)
 
     if on_job_run is not None:

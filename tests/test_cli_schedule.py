@@ -199,3 +199,98 @@ def test_schedule_add_without_max_cost_leaves_it_unset(isolated_paths: Path):
 
     jobs = read_schedule().jobs
     assert jobs[0].max_cost_usd is None
+
+
+# --- trigger selection: --cron / --on-file-change / --on-git-commit ---
+
+
+def test_schedule_add_requires_exactly_one_trigger_when_none_given(isolated_paths: Path):
+    result = runner.invoke(app, ["schedule", "add", "--task", "x"])
+    assert result.exit_code == 1
+    assert "exactly one of --cron, --on-file-change, or --on-git-commit" in result.output
+    assert read_schedule().jobs == []
+
+
+def test_schedule_add_requires_exactly_one_trigger_when_two_given(isolated_paths: Path, tmp_path: Path):
+    result = runner.invoke(
+        app,
+        [
+            "schedule", "add", "--task", "x",
+            "--cron", "* * * * *",
+            "--on-file-change", str(tmp_path / "watched.txt"),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "exactly one of --cron, --on-file-change, or --on-git-commit" in result.output
+    assert read_schedule().jobs == []
+
+
+def test_schedule_add_on_file_change_saves_a_file_change_job(isolated_paths: Path, tmp_path: Path):
+    watched = tmp_path / "watched.txt"
+    result = runner.invoke(
+        app, ["schedule", "add", "--on-file-change", str(watched), "--task", "x"]
+    )
+    assert result.exit_code == 0
+    assert "Added job" in result.output
+
+    jobs = read_schedule().jobs
+    assert len(jobs) == 1
+    assert jobs[0].trigger == "file_change"
+    assert jobs[0].watch_path == str(watched)
+    assert jobs[0].cron is None
+
+
+def test_schedule_add_on_git_commit_saves_a_git_commit_job_with_defaults(isolated_paths: Path):
+    result = runner.invoke(app, ["schedule", "add", "--on-git-commit", "--task", "x"])
+    assert result.exit_code == 0
+
+    jobs = read_schedule().jobs
+    assert jobs[0].trigger == "git_commit"
+    assert jobs[0].watch_git_repo is None  # falls back to the daemon's own cwd
+    assert jobs[0].watch_git_branch is None  # falls back to whatever's checked out
+    assert jobs[0].cron is None
+
+
+def test_schedule_add_on_git_commit_with_explicit_repo_and_branch(isolated_paths: Path, tmp_path: Path):
+    repo = tmp_path / "some-repo"
+    result = runner.invoke(
+        app,
+        [
+            "schedule", "add", "--on-git-commit",
+            "--git-repo", str(repo), "--git-branch", "main",
+            "--task", "x",
+        ],
+    )
+    assert result.exit_code == 0
+
+    jobs = read_schedule().jobs
+    assert jobs[0].watch_git_repo == str(repo)
+    assert jobs[0].watch_git_branch == "main"
+
+
+def test_schedule_list_shows_a_file_change_job(isolated_paths: Path, tmp_path: Path):
+    watched = tmp_path / "watched.txt"
+    add_job(ScheduleJob(trigger="file_change", watch_path=str(watched), task="x", name="watcher"))
+
+    result = runner.invoke(app, ["schedule", "list"])
+
+    assert result.exit_code == 0
+    assert "watcher" in result.output
+    assert f"watching: {watched}" in result.output
+
+
+def test_schedule_list_shows_a_git_commit_job(isolated_paths: Path, tmp_path: Path):
+    repo = tmp_path / "some-repo"
+    add_job(
+        ScheduleJob(
+            trigger="git_commit", watch_git_repo=str(repo), watch_git_branch="main", task="x",
+            name="watcher",
+        )
+    )
+
+    result = runner.invoke(app, ["schedule", "list"])
+
+    assert result.exit_code == 0
+    assert "watching: commits on" in result.output
+    assert str(repo) in result.output
+    assert "[main]" in result.output

@@ -400,8 +400,25 @@ def toolbox_remove(name: str) -> None:
 
 @schedule_app.command("add")
 def schedule_add(
-    cron: str = typer.Option(..., "--cron", help="Standard 5-field cron expression, e.g. "
-        "'*/15 * * * *' (minute hour day month weekday)."),
+    cron: str | None = typer.Option(None, "--cron", help="Standard 5-field cron expression, "
+        "e.g. '*/15 * * * *' (minute hour day month weekday). Exactly one of --cron/"
+        "--on-file-change/--on-git-commit is required."),
+    on_file_change: str | None = typer.Option(
+        None, "--on-file-change", help="Fire whenever this file or directory (watched "
+        "recursively) changes, instead of on a cron schedule."
+    ),
+    on_git_commit: bool = typer.Option(
+        False, "--on-git-commit", help="Fire whenever a new commit lands on the watched "
+        "branch, instead of on a cron schedule. See --git-repo/--git-branch."
+    ),
+    git_repo: str | None = typer.Option(
+        None, "--git-repo", help="--on-git-commit only: repo to watch. Defaults to the "
+        "scheduler daemon's own working directory."
+    ),
+    git_branch: str | None = typer.Option(
+        None, "--git-branch", help="--on-git-commit only: branch to watch. Defaults to "
+        "whatever's currently checked out."
+    ),
     task: str | None = typer.Option(None, "--task", help="The task to run, given inline."),
     task_file: str | None = typer.Option(
         None, "--task-file", help="Path to a file containing the task. Exactly one of "
@@ -429,7 +446,11 @@ def schedule_add(
     ),
 ) -> None:
     """Adds a new recurring job. Nothing runs until 'pcli schedule run' (the
-    daemon) is actually started - adding a job only saves it."""
+    daemon) is actually started - adding a job only saves it. Exactly one
+    of --cron/--on-file-change/--on-git-commit selects the trigger; the job
+    fires either on that time schedule or the next time the watched
+    file/commit changes (scheduler/triggers.py, polled by the daemon the
+    same way a cron job's due time is)."""
     from croniter import croniter
 
     from pcli.scheduler.models import ScheduleJob
@@ -438,23 +459,63 @@ def schedule_add(
     if bool(task) == bool(task_file):
         typer.echo("Provide exactly one of --task or --task-file.", err=True)
         raise typer.Exit(code=1)
-    if not croniter.is_valid(cron):
-        typer.echo(f"'{cron}' isn't a valid 5-field cron expression.", err=True)
+
+    triggers_given = sum(1 for t in (cron, on_file_change, on_git_commit) if t)
+    if triggers_given != 1:
+        typer.echo(
+            "Provide exactly one of --cron, --on-file-change, or --on-git-commit.", err=True
+        )
         raise typer.Exit(code=1)
 
-    job = ScheduleJob(
-        name=name,
-        cron=cron,
-        task=task,
-        task_file=task_file,
-        session_id=session,
-        headed=headed,
-        notify_telegram=notify_telegram_flag,
-        quiet=quiet,
-        max_cost_usd=max_cost,
-    )
+    if cron is not None:
+        if not croniter.is_valid(cron):
+            typer.echo(f"'{cron}' isn't a valid 5-field cron expression.", err=True)
+            raise typer.Exit(code=1)
+        job = ScheduleJob(
+            name=name,
+            trigger="cron",
+            cron=cron,
+            task=task,
+            task_file=task_file,
+            session_id=session,
+            headed=headed,
+            notify_telegram=notify_telegram_flag,
+            quiet=quiet,
+            max_cost_usd=max_cost,
+        )
+        description = cron
+    elif on_file_change is not None:
+        job = ScheduleJob(
+            name=name,
+            trigger="file_change",
+            watch_path=on_file_change,
+            task=task,
+            task_file=task_file,
+            session_id=session,
+            headed=headed,
+            notify_telegram=notify_telegram_flag,
+            quiet=quiet,
+            max_cost_usd=max_cost,
+        )
+        description = f"on change: {on_file_change}"
+    else:
+        job = ScheduleJob(
+            name=name,
+            trigger="git_commit",
+            watch_git_repo=git_repo,
+            watch_git_branch=git_branch,
+            task=task,
+            task_file=task_file,
+            session_id=session,
+            headed=headed,
+            notify_telegram=notify_telegram_flag,
+            quiet=quiet,
+            max_cost_usd=max_cost,
+        )
+        description = f"on commit: {git_repo or '.'}" + (f" [{git_branch}]" if git_branch else "")
+
     add_job(job)
-    typer.echo(f"Added job {job.id} ({cron}). Start 'pcli schedule run' to begin executing it.")
+    typer.echo(f"Added job {job.id} ({description}). Start 'pcli schedule run' to begin executing it.")
 
 
 @schedule_app.command("list")
@@ -467,10 +528,18 @@ def schedule_list() -> None:
         return
     for job in jobs:
         state = "enabled" if job.enabled else "disabled"
-        next_run = job.next_run_at.isoformat() if job.next_run_at else "not yet computed"
         last = f"{job.last_status} @ {job.last_run_at.isoformat()}" if job.last_run_at else "never run"
         label = job.name or "(unnamed)"
-        typer.echo(f"{job.id}  {label}  [{job.cron}]  {state}  next: {next_run}  last: {last}")
+        if job.trigger == "cron":
+            next_run = job.next_run_at.isoformat() if job.next_run_at else "not yet computed"
+            trigger_desc = f"[{job.cron}]  {state}  next: {next_run}"
+        elif job.trigger == "file_change":
+            trigger_desc = f"watching: {job.watch_path}  {state}"
+        else:
+            repo = job.watch_git_repo or "."
+            branch = f" [{job.watch_git_branch}]" if job.watch_git_branch else ""
+            trigger_desc = f"watching: commits on {repo}{branch}  {state}"
+        typer.echo(f"{job.id}  {label}  {trigger_desc}  last: {last}")
 
 
 @schedule_app.command("remove")
