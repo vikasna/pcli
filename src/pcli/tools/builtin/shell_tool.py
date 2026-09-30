@@ -114,6 +114,7 @@ RUN_SHELL = ToolSpec(
     needs_sandbox=True,
     risk_description="Executes an arbitrary shell command.",
     guardrail_command_arg="command",
+    read_only=False,
 )
 
 
@@ -151,6 +152,7 @@ RUN_SHELL_BACKGROUND = ToolSpec(
     needs_sandbox=True,
     risk_description="Starts a shell command that keeps running in the background.",
     guardrail_command_arg="command",
+    read_only=False,
 )
 
 
@@ -205,6 +207,7 @@ READ_BACKGROUND_OUTPUT = ToolSpec(
     needs_permission=False,
     needs_sandbox=True,
     plan_mode_safe=True,
+    read_only=True,
 )
 
 
@@ -233,4 +236,5 @@ STOP_BACKGROUND_PROCESS = ToolSpec(
     needs_permission=True,
     needs_sandbox=True,
     risk_description="Kills a running background process.",
+    read_only=False,
 )

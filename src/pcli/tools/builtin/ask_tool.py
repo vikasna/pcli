@@ -73,4 +73,5 @@ ASK_USER_QUESTION = ToolSpec(
     handler=_ask_user_question,
     needs_permission=False,
     plan_mode_safe=True,
+    read_only=True,
 )

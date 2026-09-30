@@ -82,6 +82,7 @@ READ_FILE = ToolSpec(
     needs_permission=False,
     guardrail_path_arg="path",
     plan_mode_safe=True,
+    read_only=True,
 )
 
 
@@ -109,6 +110,7 @@ WRITE_FILE = ToolSpec(
     needs_permission=True,
     risk_description="Writes/overwrites a file on disk.",
     guardrail_path_arg="path",
+    read_only=False,
 )
 
 
@@ -303,6 +305,7 @@ EDIT_FILE = ToolSpec(
     needs_permission=True,
     risk_description="Edits a file on disk.",
     guardrail_path_arg="path",
+    read_only=False,
 )
 
 
@@ -328,6 +331,7 @@ LIST_DIR = ToolSpec(
     needs_permission=False,
     guardrail_path_arg="path",
     plan_mode_safe=True,
+    read_only=True,
 )
 
 
@@ -363,4 +367,5 @@ GLOB_SEARCH = ToolSpec(
     needs_permission=False,
     guardrail_path_arg="path",
     plan_mode_safe=True,
+    read_only=True,
 )

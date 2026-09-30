@@ -34,6 +34,9 @@ schedule_app = typer.Typer(help="Crontab-like recurring task scheduling (require
     "'schedule' extra: pip install -e '.[schedule]').")
 app.add_typer(schedule_app, name="schedule")
 
+tools_app = typer.Typer(help="Inspect the built-in tool set.")
+app.add_typer(tools_app, name="tools")
+
 
 @app.callback(invoke_without_command=True)
 def _root(
@@ -663,6 +666,42 @@ def schedule_run_now(job_id: str) -> None:
         typer.echo(f"\n{result.final_text}")
 
     asyncio.run(_run())
+
+
+def _one_line_description(description: str, max_chars: int = 100) -> str:
+    """Reduces a tool's (possibly multi-paragraph, possibly one very long
+    paragraph) description to a single line for 'pcli tools list': keeps
+    only the first line (drops anything after an internal "\\n\\n", e.g.
+    web_search's "Query tips:" paragraph), then hard-truncates at a word
+    boundary if that first line is itself still too long (e.g. web_fetch's
+    description is one long paragraph with no internal newline at all)."""
+    first_line = description.splitlines()[0].strip()
+    if len(first_line) <= max_chars:
+        return first_line
+    truncated = first_line[:max_chars].rsplit(" ", 1)[0]
+    return truncated + "..."
+
+
+@tools_app.command("list")
+def tools_list() -> None:
+    """Lists every built-in tool (not toolbox-discovered or
+    register_agent_tool-created ones, which are dynamic/session state -
+    see 'pcli toolbox list' for the toolbox case) with its read-only/
+    mutating type, permission/plan-mode requirements, and a one-line
+    description."""
+    from pcli.tools.registry import build_default_registry
+
+    registry = build_default_registry()
+    tools = sorted(registry, key=lambda t: t.name)
+    name_width = max(len(t.name) for t in tools)
+    for tool in tools:
+        read_only_label = "read-only" if tool.read_only else "mutating"
+        typer.echo(
+            f"{tool.name:<{name_width}}  [{read_only_label:<9}]  "
+            f"needs_permission={tool.needs_permission!s:<5}  "
+            f"plan_mode_safe={tool.plan_mode_safe!s:<5}  "
+            f"{_one_line_description(tool.description)}"
+        )
 
 
 def main() -> None:

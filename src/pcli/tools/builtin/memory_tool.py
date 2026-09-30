@@ -72,4 +72,5 @@ REMEMBER = ToolSpec(
     handler=_remember,
     needs_permission=False,
     plan_mode_safe=True,
+    read_only=False,
 )

@@ -164,6 +164,7 @@ WEB_FETCH = ToolSpec(
     needs_permission=True,
     risk_description="Fetches content from a URL over the network.",
     plan_mode_safe=True,
+    read_only=True,
 )
 
 
@@ -317,4 +318,5 @@ WEB_SEARCH = ToolSpec(
     needs_permission=True,
     risk_description="Sends a search query to a third-party service over the network.",
     plan_mode_safe=True,
+    read_only=True,
 )

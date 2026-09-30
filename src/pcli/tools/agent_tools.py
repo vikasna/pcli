@@ -21,6 +21,7 @@ def make_agent_tool(
     allowed_tool_names: list[str],
     *,
     plan_mode_safe: bool = False,
+    read_only: bool = False,
 ) -> ToolSpec:
     async def _handler(arguments: dict, ctx: ToolContext) -> ToolResult:
         if ctx.gateway_client is None or ctx.tool_registry is None or ctx.permission_manager is None:
@@ -93,6 +94,7 @@ def make_agent_tool(
         risk_description=f"Runs a nested agent ({name}) that can call tools within its "
         "fixed allowed set on its own.",
         plan_mode_safe=plan_mode_safe,
+        read_only=read_only,
     )
 
 
@@ -133,6 +135,7 @@ EXPLORE_CODEBASE = make_agent_tool(
         "inspect_python_module",
     ],
     plan_mode_safe=True,
+    read_only=True,
 )
 
 EXPLORE_FILES = make_agent_tool(
@@ -143,6 +146,7 @@ EXPLORE_FILES = make_agent_tool(
     persona_prompt=_EXPLORE_FILES_PERSONA,
     allowed_tool_names=["list_dir", "glob_search", "read_file"],
     plan_mode_safe=True,
+    read_only=True,
 )
 
 EXPLORE_LOGS = make_agent_tool(
@@ -153,6 +157,7 @@ EXPLORE_LOGS = make_agent_tool(
     persona_prompt=_EXPLORE_LOGS_PERSONA,
     allowed_tool_names=["read_file", "grep"],
     plan_mode_safe=True,
+    read_only=True,
 )
 
 _WRITE_DOCUMENTATION_PERSONA = (
@@ -212,6 +217,7 @@ WRITE_DOCUMENTATION = make_agent_tool(
     persona_prompt=_WRITE_DOCUMENTATION_PERSONA,
     allowed_tool_names=["read_file", "list_dir", "glob_search", "grep", "write_file", "edit_file"],
     plan_mode_safe=False,
+    read_only=False,
 )
 
 VERIFY_COMPUTATION = make_agent_tool(
@@ -222,6 +228,7 @@ VERIFY_COMPUTATION = make_agent_tool(
     persona_prompt=_VERIFY_COMPUTATION_PERSONA,
     allowed_tool_names=["read_file", "write_file", "call_python", "run_shell"],
     plan_mode_safe=False,
+    read_only=False,
 )
 
 DEEP_RESEARCH = make_agent_tool(
@@ -242,6 +249,7 @@ DEEP_RESEARCH = make_agent_tool(
         "web_fetch",
     ],
     plan_mode_safe=True,
+    read_only=False,
 )
 
 DATA_ANALYSIS = make_agent_tool(
@@ -252,4 +260,5 @@ DATA_ANALYSIS = make_agent_tool(
     persona_prompt=_DATA_ANALYSIS_PERSONA,
     allowed_tool_names=["read_file", "list_dir", "glob_search", "call_python", "run_shell", "write_file"],
     plan_mode_safe=False,
+    read_only=False,
 )

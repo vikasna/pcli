@@ -96,4 +96,5 @@ REGISTER_AGENT_TOOL = ToolSpec(
     needs_permission=True,
     risk_description="Registers a new tool the model can call in later turns — grants standing "
     "execution rights to a nested subagent, a bigger action than running one command.",
+    read_only=False,
 )

@@ -118,4 +118,5 @@ WRITE_TODOS = ToolSpec(
     handler=_write_todos,
     needs_permission=False,
     plan_mode_safe=True,
+    read_only=False,
 )

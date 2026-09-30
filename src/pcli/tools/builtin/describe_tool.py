@@ -385,4 +385,5 @@ DESCRIBE_TOOL = ToolSpec(
     handler=_describe_tool,
     needs_permission=False,
     plan_mode_safe=True,
+    read_only=True,
 )

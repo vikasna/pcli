@@ -52,3 +52,47 @@ def test_filtered_with_predicate_matching_nothing_returns_empty_registry():
     subset = registry.filtered(lambda t: False)
 
     assert len(subset) == 0
+
+
+# --- build_default_registry: read_only classification ---
+#
+# read_only is deliberately NOT derived from needs_permission or
+# plan_mode_safe (see ToolSpec.read_only's own docstring) - these
+# spot-checks specifically cover the tools where read_only disagrees with
+# one or both of those other two flags, the cases most likely to silently
+# regress to the wrong value later.
+
+
+def test_build_default_registry_gives_every_tool_a_bool_read_only_flag():
+    from pcli.tools.registry import build_default_registry
+
+    registry = build_default_registry()
+    assert len(registry) > 0
+    for tool in registry:
+        assert isinstance(tool.read_only, bool), tool.name
+
+
+def test_read_only_classification_spot_checks():
+    from pcli.tools.registry import build_default_registry
+
+    registry = build_default_registry()
+    by_name = {t.name: t for t in registry}
+
+    assert by_name["read_file"].read_only is True
+
+    # needs_permission=False but NOT read-only - the exact case
+    # ToolSpec.plan_mode_safe's own docstring warns about.
+    assert by_name["write_todos"].needs_permission is False
+    assert by_name["write_todos"].read_only is False
+    assert by_name["record_decision"].needs_permission is False
+    assert by_name["record_decision"].read_only is False
+
+    # plan_mode_safe=True but NOT read-only - these can run run_shell (via
+    # their own allowed-tool set / delegation) outside of plan mode.
+    assert by_name["spawn_subagent"].plan_mode_safe is True
+    assert by_name["spawn_subagent"].read_only is False
+    assert by_name["deep_research"].plan_mode_safe is True
+    assert by_name["deep_research"].read_only is False
+
+    # A genuinely read-only agent persona, for contrast.
+    assert by_name["explore_codebase"].read_only is True

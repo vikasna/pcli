@@ -72,4 +72,5 @@ REGISTER_TOOLBOX_TOOL = ToolSpec(
     needs_permission=True,
     risk_description="Registers a new tool the model can call in later turns — a bigger "
     "action than running one command, since it grants standing execution rights.",
+    read_only=False,
 )

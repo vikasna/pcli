@@ -69,6 +69,7 @@ def make_command_tool_spec(software_name: str, spec: CommandSpec) -> ToolSpec:
         needs_permission=spec.risk != "read",
         needs_sandbox=True,
         risk_description=f"Runs `{spec.binary_path}` ({spec.risk}).",
+        read_only=spec.risk == "read",
     )
 
 
@@ -131,6 +132,7 @@ def make_synthesized_tool_spec(software_name: str, invocation: list[str], tool_d
         needs_permission=risk != "read",
         needs_sandbox=True,
         risk_description=f"Runs `{invocation_label} {' '.join(subcommand)}` ({risk}, auto-generated).",
+        read_only=risk == "read",
     )
 
 

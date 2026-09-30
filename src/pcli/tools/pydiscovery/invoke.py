@@ -177,4 +177,5 @@ CALL_PYTHON = ToolSpec(
     needs_sandbox=True,
     risk_description="Executes an arbitrary Python function call in a subprocess.",
     guardrail_python_module_arg="qualified_name",
+    read_only=False,
 )

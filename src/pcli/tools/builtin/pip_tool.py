@@ -102,4 +102,5 @@ PIP_INSTALL = ToolSpec(
     needs_sandbox=True,
     risk_description="Installs Python package(s) via pip.",
     guardrail_path_arg="requirements_file",
+    read_only=False,
 )

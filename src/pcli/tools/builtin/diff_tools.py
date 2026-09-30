@@ -74,6 +74,7 @@ DIFF_FILES = ToolSpec(
     needs_permission=False,
     guardrail_path_arg="path_a",
     plan_mode_safe=True,
+    read_only=True,
 )
 
 
@@ -220,4 +221,5 @@ APPLY_PATCH = ToolSpec(
     needs_permission=True,
     risk_description="Modifies a file on disk by applying a patch.",
     guardrail_path_arg="path",
+    read_only=False,
 )

@@ -59,6 +59,7 @@ BROWSER_NAVIGATE = ToolSpec(
     risk_description="Navigates the browser to a URL, which can trigger network requests, "
     "JavaScript execution, and login-state changes on a real website.",
     plan_mode_safe=False,
+    read_only=False,
 )
 
 
@@ -93,6 +94,7 @@ BROWSER_CLICK = ToolSpec(
     risk_description="Clicks an element on a real website - can submit a form, confirm a "
     "purchase, or otherwise take real action.",
     plan_mode_safe=False,
+    read_only=False,
 )
 
 
@@ -128,6 +130,7 @@ BROWSER_TYPE = ToolSpec(
     risk_description="Types text into a field on a real website - may enter real data "
     "(credentials, search queries, form input).",
     plan_mode_safe=False,
+    read_only=False,
 )
 
 
@@ -162,6 +165,7 @@ BROWSER_PRESS_KEY = ToolSpec(
     risk_description="Sends a keypress to a real website - can submit a form or trigger a "
     "keyboard shortcut.",
     plan_mode_safe=False,
+    read_only=False,
 )
 
 
@@ -198,6 +202,7 @@ BROWSER_WAIT_FOR = ToolSpec(
     risk_description="Part of a browser automation sequence on a real website - gated the same "
     "as the actions it's waiting on behalf of.",
     plan_mode_safe=False,
+    read_only=True,
 )
 
 
@@ -220,6 +225,7 @@ BROWSER_READ_PAGE = ToolSpec(
     handler=_browser_read_page,
     needs_permission=False,
     plan_mode_safe=True,
+    read_only=True,
 )
 
 
@@ -243,4 +249,5 @@ BROWSER_SCREENSHOT = ToolSpec(
     handler=_browser_screenshot,
     needs_permission=False,
     plan_mode_safe=True,
+    read_only=False,
 )

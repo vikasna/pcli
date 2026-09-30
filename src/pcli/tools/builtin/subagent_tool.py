@@ -142,4 +142,5 @@ SPAWN_SUBAGENT = ToolSpec(
     needs_permission=True,
     risk_description="Spawns a subagent that can call tools (including sandboxed ones) on its own.",
     plan_mode_safe=True,
+    read_only=False,
 )

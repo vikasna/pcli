@@ -103,4 +103,5 @@ DOWNLOAD_FILE = ToolSpec(
     needs_permission=True,
     risk_description="Downloads content from a URL and writes it to disk.",
     guardrail_path_arg="path",
+    read_only=False,
 )

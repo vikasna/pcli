@@ -143,6 +143,16 @@ class ToolSpec:
     derived from needs_permission — needs_permission=False is not an accurate
     read-only proxy (e.g. write_todos/record_decision mutate session state
     but don't need permission)."""
+    read_only: bool = False
+    """The authoritative "does calling this tool, by itself, mutate
+    anything outside its own return value" flag (no filesystem/shell/
+    session/memory/registry/browser-state changes) - used by `pcli tools
+    list`. Deliberately its own field, not derived from needs_permission or
+    plan_mode_safe: neither is an accurate read-only proxy either (see
+    plan_mode_safe's own docstring above for the needs_permission case;
+    plan_mode_safe=True doesn't imply read-only either - spawn_subagent and
+    deep_research are both plan_mode_safe=True but can run arbitrary
+    allowed-tool effects, including run_shell, outside of plan mode)."""
 
     def to_openai_tool(self) -> ToolDefinition:
         """The advertised schema gets an extra, optional "purpose" property

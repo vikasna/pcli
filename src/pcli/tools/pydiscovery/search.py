@@ -55,6 +55,7 @@ SEARCH_PYTHON = ToolSpec(
     handler=_search_python,
     needs_permission=False,
     plan_mode_safe=True,
+    read_only=True,
 )
 
 
@@ -112,4 +113,5 @@ INSPECT_PYTHON_MODULE = ToolSpec(
     risk_description="Imports a Python module, which may execute module-level side effects.",
     guardrail_python_module_arg="module",
     plan_mode_safe=True,
+    read_only=True,
 )
