@@ -188,9 +188,11 @@ that recurrence:
 - **`pcli schedule`** — pcli's own crontab-like scheduler, built on top of
   `pcli run`'s same `run_task_once` implementation. You start one
   long-running daemon (`pcli schedule run`), and it decides when each job
-  is due using standard 5-field cron expressions, entirely inside pcli —
-  no OS-level cron entry per job. See [`scheduling.md`](scheduling.md) for
-  the full command group (`add`/`list`/`remove`/`enable`/`disable`/`run`/
+  is due — either on a standard 5-field cron expression, or by reacting to
+  a watched file/directory changing or a new commit landing on a watched
+  branch — entirely inside pcli, no OS-level cron entry or file-watching
+  integration per job. See [`scheduling.md`](scheduling.md) for the full
+  command group (`add`/`list`/`remove`/`enable`/`disable`/`run`/
   `run-now`).
 
 #### OS-level scheduling still works too

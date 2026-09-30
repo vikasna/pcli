@@ -44,7 +44,11 @@ per recurring job:
 |---|---|
 | `id` | Auto-generated (`new_id("job_")`), e.g. `job_a1b2c3d4`. |
 | `name` | Optional friendly label shown in `pcli schedule list`; defaults to `""` (shown as `(unnamed)`). |
-| `cron` | Standard 5-field cron expression (minute hour day month weekday), e.g. `"*/15 * * * *"`. Validated with `croniter.is_valid` before the job is ever saved. |
+| `trigger` | `"cron"` (default), `"file_change"`, or `"git_commit"` — which of the three ways below decides when this job fires. Set by `schedule add`'s `--cron`/`--on-file-change`/`--on-git-commit` (exactly one required); defaults to `"cron"` so every job already persisted in a `schedule.json` written before this field existed still validates and behaves exactly as before. |
+| `cron` | Standard 5-field cron expression (minute hour day month weekday), e.g. `"*/15 * * * *"`. Required (and validated with `croniter.is_valid` before the job is ever saved) when `trigger == "cron"`; unused otherwise. |
+| `watch_path` | `trigger == "file_change"` only: a file or directory (watched recursively) whose contents/mtimes are polled for changes. See [File-change and git-commit triggers](#file-change-and-git-commit-triggers) below. |
+| `watch_git_repo` / `watch_git_branch` | `trigger == "git_commit"` only: the repo to watch (defaults to the daemon's own working directory if unset) and the branch to watch (defaults to whatever's currently checked out if unset). |
+| `last_seen_state` | `trigger in ("file_change", "git_commit")` only: the signature/commit SHA last observed by the daemon, used to detect a change on the next poll. `None` means "never polled yet" — the daemon baselines it on first sight without firing, the same way a cron job's unset `next_run_at` is computed-then-skipped on first sight rather than firing immediately. |
 | `task` / `task_file` | Exactly one is set — mirrors `pcli run`'s own `--task`/`--task-file` mutual exclusivity. `task_file` is read fresh (`Path(...).read_text()`) each time the job fires, so editing the file changes what the next run does without needing to re-add the job. |
 | `session_id` | Append to this one continuing session on every run, or `None` for a fresh session each time — mirrors `pcli run --session`. |
 | `headed` | Show the browser window if a `browser_*` tool gets used, instead of the headless default. |
@@ -82,12 +86,16 @@ hand-rolling the read/mutate/write cycle itself).
 ### `add`
 
 ```
-pcli schedule add --cron "*/15 * * * *" (--task "..." | --task-file path) [options]
+pcli schedule add (--cron "*/15 * * * *" | --on-file-change PATH | --on-git-commit) (--task "..." | --task-file path) [options]
 ```
 
 | Flag | Behavior |
 |---|---|
-| `--cron TEXT` | Required. Standard 5-field cron expression. Rejected with a clean error (`'<cron>' isn't a valid 5-field cron expression.`, exit code 1 — not a crash) if `croniter.is_valid` says it's malformed. |
+| `--cron TEXT` | Standard 5-field cron expression. Rejected with a clean error (`'<cron>' isn't a valid 5-field cron expression.`, exit code 1 — not a crash) if `croniter.is_valid` says it's malformed. Exactly one of `--cron`/`--on-file-change`/`--on-git-commit` is required. |
+| `--on-file-change PATH` | Fire whenever this file or directory (watched recursively) changes, instead of on a cron schedule. See [File-change and git-commit triggers](#file-change-and-git-commit-triggers) below. |
+| `--on-git-commit` | Fire whenever a new commit lands on the watched branch, instead of on a cron schedule. Combine with `--git-repo`/`--git-branch` below. See the same section. |
+| `--git-repo PATH` | `--on-git-commit` only. Repo to watch. Defaults to the scheduler daemon's own working directory. |
+| `--git-branch NAME` | `--on-git-commit` only. Branch to watch. Defaults to whatever's currently checked out. |
 | `--task TEXT` / `--task-file PATH` | Exactly one required — same rule and error text (`Provide exactly one of --task or --task-file.`) as `pcli run`. |
 | `--name TEXT` | Friendly label for `pcli schedule list`. |
 | `--session ID` | Append to this existing session every run. |
@@ -96,10 +104,12 @@ pcli schedule add --cron "*/15 * * * *" (--task "..." | --task-file path) [optio
 | `--quiet` / `--no-quiet` | Defaults to `--quiet` (unlike `pcli run`, which defaults to verbose progress output). |
 | `--max-cost AMOUNT` | Hard cap on this job's own runs (USD), overriding `max_session_cost_usd` just for it — never persisted to `config.toml`, never affects other jobs or the TUI. Omit to use whatever `max_session_cost_usd` is already configured (unset by default — no cap). Stored as the job's `max_cost_usd` field (table above). |
 
-Prints the new job's id on success (`Added job job_xxxx (<cron>). Start
-'pcli schedule run' to begin executing it.`). **Adding a job only saves
-it** — nothing runs until the daemon (`pcli schedule run`) is actually
-started.
+Prints the new job's id on success, with a trigger-specific description:
+`Added job job_xxxx (<cron>). Start 'pcli schedule run' to begin executing
+it.` for a cron job, `(on change: <path>)` for `--on-file-change`, or `(on
+commit: <repo> [<branch>])` for `--on-git-commit` (branch suffix only shown
+if `--git-branch` was given). **Adding a job only saves it** — nothing runs
+until the daemon (`pcli schedule run`) is actually started.
 
 ### `list`
 
@@ -107,10 +117,21 @@ started.
 pcli schedule list
 ```
 
-One line per job: id, name (or `(unnamed)`), `[cron]`, `enabled`/`disabled`,
-`next: <next_run_at or "not yet computed">`, `last: <status @ timestamp, or
-"never run">`. With no jobs, prints a hint to add one instead of an empty
-table.
+One line per job: id, name (or `(unnamed)`), then a trigger description
+that depends on the job's `trigger`, then `last: <status @ timestamp, or
+"never run">`:
+
+- **cron jobs**: `[<cron>]  enabled/disabled  next: <next_run_at or "not
+  yet computed">`.
+- **`file_change` jobs**: `watching: <watch_path>  enabled/disabled`.
+- **`git_commit` jobs**: `watching: commits on <repo or "."> [<branch>]
+  enabled/disabled` (the `[<branch>]` suffix is omitted if `--git-branch`
+  wasn't given).
+
+Event-triggered jobs have no cron expression or `next_run_at` to show, so
+`list` simply swaps in what does apply instead — see [File-change and
+git-commit triggers](#file-change-and-git-commit-triggers) below. With no
+jobs, prints a hint to add one instead of an empty table.
 
 ### `remove` / `enable` / `disable`
 
@@ -154,13 +175,18 @@ finished.` or `... failed: <error>` to stderr), and `Stopped.` on Ctrl+C.
 
 1. Re-reads `schedule.json` fresh from disk.
 2. For every **enabled** job:
-   - If `next_run_at` is unset, computes it (`croniter(cron,
-     base=now).get_next(datetime)`), persists it, and moves on — it
-     doesn't fire on the same tick it was first computed.
-   - If `next_run_at` is still in the future, skips it.
-   - Otherwise the job is due: runs it via `run_task_once`, records
+   - **Cron jobs**: if `next_run_at` is unset, computes it
+     (`croniter(cron, base=now).get_next(datetime)`), persists it, and
+     moves on — it doesn't fire on the same tick it was first computed. If
+     `next_run_at` is still in the future, skips it. Otherwise the job is
+     due: runs it via `run_task_once`, records
      `last_run_at`/`last_status`/`last_error`, and advances `next_run_at`
      from the completion time (`compute_next_run(cron, base=last_run_at)`).
+   - **`file_change`/`git_commit` jobs**: compares the current
+     signature/commit SHA against `last_seen_state` instead of comparing a
+     timestamp. See [File-change and git-commit
+     triggers](#file-change-and-git-commit-triggers) below for exactly how
+     "due" is decided and how the baseline is (re)computed.
 3. Sleeps `poll_interval_s`, then repeats.
 
 **Jobs within one tick run sequentially, not concurrently** — simple,
@@ -188,6 +214,74 @@ own timing to fire it later. Prints the final answer text, same as `pcli
 run`. Does **not** update `next_run_at`/`last_run_at`/etc. the way a
 daemon-fired run does — it's a one-off, out-of-band execution, not a tick
 of the schedule.
+
+## File-change and git-commit triggers
+
+Besides `--cron`, a job can fire on an event instead: `--on-file-change
+PATH` or `--on-git-commit` (see `add` above). Both still run through the
+exact same poll loop as a cron job — there's no OS-level file-watching or
+git-hook integration here, just a check on every `pcli schedule run` poll
+(`--poll-interval`, default `30`s). Detection lives in
+`scheduler/triggers.py`:
+
+- **`--on-file-change <path>`**: each poll calls
+  `compute_path_signature(path)`, a sha256 digest over the sorted
+  `(relative_path, mtime_ns, size)` of every file under `path` (or just
+  `path` itself if it's a file). No file contents are ever read. Any path
+  component named `.git` is skipped, so watching a repo's working tree
+  doesn't fire on git's own internal bookkeeping (the index, refs, etc.
+  changing on every commit). A path that doesn't exist (yet) gets a
+  constant sentinel signature, so "still missing" is never itself treated
+  as a change — only the path appearing/changing is.
+- **`--on-git-commit [--git-repo PATH] [--git-branch NAME]`**: each poll
+  calls `get_git_head_sha()`, which shells out to `git rev-parse <branch
+  or HEAD>` in the watched repo (`--git-repo`, defaulting to the daemon's
+  own working directory) against the watched branch (`--git-branch`,
+  defaulting to whatever's currently checked out). If the lookup fails —
+  git isn't installed, the path isn't a repo, the branch doesn't exist —
+  it's logged as a warning and the job is simply skipped that poll;
+  `last_status`/`last_error` are left untouched, since this is usually a
+  transient/config issue rather than a real job failure.
+
+Either way it comes down to the same due/not-due question a cron job's
+`next_run_at <= now` answers — just comparing a signature/SHA against the
+job's `last_seen_state` instead of comparing a timestamp.
+
+**First-poll baseline, no immediate fire.** Just like a freshly-added cron
+job's `next_run_at` is only computed (not fired against) the first time
+the daemon sees it, a freshly-added event job's very first poll just
+records the current signature/SHA into `last_seen_state` and returns — it
+does not fire. This means adding `--on-file-change` against a file that
+already exists (or `--on-git-commit` against a repo that already has
+commits) does **not** fire right away; it fires on the *next* change after
+that baseline is captured.
+
+**Self-trigger-loop prevention.** After an event job fires, the daemon
+does not reuse the signature/SHA that triggered the run as the new
+baseline — it re-checks the signature/SHA again *after* the job's own run
+has finished, and stores *that* as `last_seen_state`. This matters a lot
+in practice: if the scheduled task itself edits the watched file/directory,
+or commits to the watched branch (e.g. a task that auto-commits its own
+output — a very plausible use case), the job will **not** see its own
+output as "one more change" and fire again on the very next poll — only
+changes that happen *after* the run completes count as the next trigger.
+Without this, a self-editing/self-committing task would fire in a tight,
+indefinite loop.
+
+**Several rapid changes between two polls collapse into a single
+firing.** This is poll-based, not instant — by design, not a bug or
+limitation. `--poll-interval` is the tradeoff between latency (how soon
+after a change the job fires) and overhead (how often the daemon stats the
+watched path or shells out to git).
+
+**Execution is identical to a cron job.** A file-change/git-commit job
+runs through the exact same `run_task_once` path as a cron job or `pcli
+run` — `--task`/`--task-file`, `--session`, `--max-cost`,
+`--notify-telegram`, `--quiet`/`--no-quiet`, `--headed` all still apply
+and behave the same. The task text itself is static and isn't
+automatically told *what* changed — if a task needs that, it can just run
+`git show`/`git diff` (or inspect the watched file) itself, since the
+agent already has shell access via `run_shell`.
 
 ## Worked example
 
