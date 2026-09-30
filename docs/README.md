@@ -7,8 +7,8 @@ against your working directory, and renders everything in a Textual TUI.
 ## Architecture at a glance
 
 `pcli.cli` (Typer) parses flags/env, builds a `Settings` object, and either
-launches a subcommand (`sessions`, `cost`, `toolbox`, `run` — the last being
-a one-shot non-interactive task runner, see
+launches a subcommand (`sessions`, `cost`, `toolbox`, `tools`, `run` — the
+last being a one-shot non-interactive task runner, see
 [`headless-and-scheduled-runs.md`](headless-and-scheduled-runs.md)) or starts
 the TUI. The TUI's `ChatScreen` (`pcli.tui.screens.chat`) is the hub: it owns the `Session`,
 a `SessionStore`, and on mount builds a `Sandbox` (via `select_sandbox`), a
@@ -33,8 +33,10 @@ TUI (ChatScreen) -> AgentLoop -> GatewayClient (LLM gateway)
 
 - [`configuration.md`](configuration.md) — every setting, env var, CLI flag,
   config.toml key, and the precedence/persistence rules.
-- [`tools.md`](tools.md) — every built-in tool the LLM can call, and the
-  automatic artifact-archiving mechanism for large tool output.
+- [`tools.md`](tools.md) — every built-in tool the LLM can call, the
+  automatic artifact-archiving mechanism for large tool output, and the
+  `pcli tools list` CLI command for inspecting the built-in tool set
+  statically.
 - [`tui-guide.md`](tui-guide.md) — using the interactive TUI: chat input
   (including Shift+Insert OS-clipboard paste), slash commands, shell
   passthrough (including the `!!!` real-terminal handoff), the decision log,

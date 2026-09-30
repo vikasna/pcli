@@ -106,6 +106,70 @@ hand-curated example calls, each with a one-line explanation.
   spelling — available tools: `<comma-separated list of every registered tool
   name>`" (`src/pcli/tools/builtin/describe_tool.py`).
 
+## `pcli tools list`
+
+The CLI counterpart to `describe_tool` above, for a human instead of the
+model: `describe_tool` is callable only by the model, mid-conversation, one
+tool at a time; `pcli tools list` (`tools_app`, `src/pcli/cli.py`) lists
+every built-in tool at once, from a plain shell, with no live session,
+gateway, or config needed to run it — it's pure static introspection over
+`build_default_registry()` (`src/pcli/tools/registry.py`).
+
+Output is one line per tool, sorted alphabetically by name, name-padded to
+line up:
+
+```
+<name>  [read-only|mutating]  needs_permission=True|False  plan_mode_safe=True|False  <one-line description>
+```
+
+- **`[read-only]` / `[mutating]`** comes from the new `ToolSpec.read_only`
+  field (`src/pcli/tools/base.py`) — see below.
+- **`needs_permission`** and **`plan_mode_safe`** are `str()`-ed straight off
+  the `ToolSpec`, same fields used throughout this document and returned by
+  `describe_tool` above.
+- **The one-line description** is produced by `_one_line_description()`
+  (`src/pcli/cli.py`): it keeps only the tool's first line (splitting on
+  `description.splitlines()[0]`, so a multi-paragraph description like
+  `web_search`'s — which has a "Query tips:" paragraph after a blank line —
+  is cut down to its first paragraph), then, if that first line is *itself*
+  still longer than 100 chars (e.g. `web_fetch`'s description, one long
+  paragraph with no internal newline at all), hard-truncates it at the last
+  word boundary within the limit and appends `...`.
+
+**Scope:** only the *built-in* registry. Toolbox-discovered tools (kubectl,
+SGE, ...) aren't included here — see `pcli toolbox list` in
+[`toolbox-plugins.md`](toolbox-plugins.md) for those — and neither are tools
+created at runtime via `register_agent_tool` above, since those are
+session/runtime state, not part of the static built-in set this command
+introspects.
+
+### `ToolSpec.read_only`
+
+A new field (`src/pcli/tools/base.py`), set explicitly on all 43 built-in
+tools plus every toolbox-discovered tool, and the thing `pcli tools list`'s
+`[read-only]`/`[mutating]` label is drawn from. It answers one specific
+question — does calling this tool, by itself, mutate anything outside its
+own return value (filesystem, shell, session, memory, tool registry, browser
+state) — and it's deliberately its own field, not derived from either of the
+two fields that might look like a read-only proxy but aren't:
+
+- **`needs_permission=False` does not imply read-only.** `write_todos` and
+  `record_decision` mutate session state (`Session.todos`/`Session.decisions`)
+  but don't need permission — the exact caveat already called out on
+  `plan_mode_safe`'s own docstring, and true of both tools' entries above.
+- **`plan_mode_safe=True` does not imply read-only either.** `spawn_subagent`
+  and `deep_research` are both plan-mode-safe to invoke themselves (see their
+  entries above), but in normal build mode they can go on to run `run_shell`
+  and other mutating tools via delegation — plan mode only re-filters what
+  they *delegate to*, not what the outer call itself is classified as.
+
+For toolbox-discovered tools, `read_only` isn't independently audited per
+tool — it's wired straight from the existing per-subcommand `risk` field
+(`CommandSpec.risk`, already `"read"` vs. `"mutate"`/`"destructive"`, see
+[`toolbox-plugins.md`](toolbox-plugins.md)) in
+`make_command_tool_spec`/`make_synthesized_tool_spec`
+(`src/pcli/tools/toolbox/manager.py`): `read_only = (risk == "read")`.
+
 ## read_file
 
 Reads a text file. Resolves relative paths against the working directory,
