@@ -55,6 +55,7 @@ per recurring job:
 | `notify_telegram` | Send the final answer to the configured Telegram chat after each run — same mechanism as [`pcli run --notify-telegram`](telegram-bot.md#pcli-run---notify-telegram). |
 | `quiet` | Only keep the final answer in the run's progress output, not tool-call-by-tool-call lines. Defaults to `True` (unlike `pcli run`, which defaults to verbose) — a scheduled job's output normally just goes to a log. |
 | `max_cost_usd` | Per-job hard spend cap (USD), overriding `max_session_cost_usd` for just this job's own runs — mirrors `pcli run --max-cost`, applied the same way (`scheduler/daemon.py`'s `_run_one_job`, via `settings.model_copy`): never persisted to `config.toml`, never affects other jobs or the TUI. `None` (the default) means this job falls back to whatever `max_session_cost_usd` is already configured (unset by default — no cap). See [`configuration.md`](configuration.md#settings-fields) and [`headless-and-scheduled-runs.md`](headless-and-scheduled-runs.md#pcli-run-one-shot-task-execution). |
+| `audit` | Per-job override of `Settings.audit_mode_enabled`, applied the exact same way as `max_cost_usd` above (`_run_one_job`'s `settings.model_copy(update={"audit_mode_enabled": True})`) — mirrors `pcli run --audit`. `False` (the default) means this job falls back to whatever `audit_mode_enabled` is already configured (off by default). See [Audit log (compliance mode)](sessions-and-cost.md#audit-log-compliance-mode). |
 | `enabled` | Disabled jobs are skipped by the daemon entirely, but stay listed (and keep their `last_run_at`/`last_status` history) so re-enabling doesn't lose anything. |
 | `created_at` | Set once, at creation. |
 | `next_run_at` | The next time this job is due. Left unset (`None`) at creation on purpose — computed lazily by the daemon the first time it sees the job (`croniter(cron, base=now).get_next(datetime)`), so a job added while the daemon isn't running doesn't carry a stale "next run" computed from whenever `schedule add` happened to execute rather than from whenever the daemon actually starts watching it. |
@@ -103,6 +104,7 @@ pcli schedule add (--cron "*/15 * * * *" | --on-file-change PATH | --on-git-comm
 | `--notify-telegram` | Notify Telegram after each run. |
 | `--quiet` / `--no-quiet` | Defaults to `--quiet` (unlike `pcli run`, which defaults to verbose progress output). |
 | `--max-cost AMOUNT` | Hard cap on this job's own runs (USD), overriding `max_session_cost_usd` just for it — never persisted to `config.toml`, never affects other jobs or the TUI. Omit to use whatever `max_session_cost_usd` is already configured (unset by default — no cap). Stored as the job's `max_cost_usd` field (table above). |
+| `--audit` | Turns on the tamper-evident audit log for just this job's own runs, overriding `audit_mode_enabled` just for it — never persisted to `config.toml`, never affects other jobs or the TUI. Stored as the job's `audit` field (table above). See [Audit log (compliance mode)](sessions-and-cost.md#audit-log-compliance-mode). |
 
 Prints the new job's id on success, with a trigger-specific description:
 `Added job job_xxxx (<cron>). Start 'pcli schedule run' to begin executing
@@ -276,7 +278,7 @@ watched path or shells out to git).
 
 **Execution is identical to a cron job.** A file-change/git-commit job
 runs through the exact same `run_task_once` path as a cron job or `pcli
-run` — `--task`/`--task-file`, `--session`, `--max-cost`,
+run` — `--task`/`--task-file`, `--session`, `--max-cost`, `--audit`,
 `--notify-telegram`, `--quiet`/`--no-quiet`, `--headed` all still apply
 and behave the same. The task text itself is static and isn't
 automatically told *what* changed — if a task needs that, it can just run

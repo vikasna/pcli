@@ -47,7 +47,17 @@ implementation instead of two that could drift. See
   `AgentLoop.run_turn` end to end, reporting progress via a plain callback
   instead of `MessageView`. See [What's different from the
   TUI](#whats-different-from-the-tui) below for exactly what it does and
-  doesn't replicate from `ChatScreen._run_one_turn`.
+  doesn't replicate from `ChatScreen._run_one_turn`. One thing it now
+  *does* replicate that it previously didn't: on every tool result, it
+  calls `record_tool_invocation()` (`agent/runtime.py`), the same shared
+  function `ChatScreen` uses, so `session.tool_invocations` gets populated
+  here too. Before this, headless/scheduled runs recorded nothing to
+  `tool_invocations` at all — `ChatScreen._record_tool_invocation` was the
+  only call site — so a `pcli run`/`pcli schedule`/`pcli telegram` session
+  had zero tool-call history even though the TUI always did. This fix is
+  unconditional, independent of `audit_mode_enabled`; see [Audit log
+  (compliance mode)](sessions-and-cost.md#audit-log-compliance-mode) for the
+  opt-in hash-chained record layered on top of it.
 - **`new_headless_session(store, settings, cwd) -> Session`** (`agent/
   headless.py`) — builds a fresh `Session` with the same system prompt a
   brand-new TUI session gets, including the [global user
@@ -69,6 +79,7 @@ pcli run --task "..." --quiet
 pcli run --task "..." --headed
 pcli run --task "..." --notify-telegram
 pcli run --task "..." --max-cost 5.00
+pcli run --task "..." --audit
 ```
 
 | Flag | Behavior |
@@ -80,6 +91,7 @@ pcli run --task "..." --max-cost 5.00
 | `--headed` | Show the browser window if any `browser_*` tool gets used, instead of the headless default. See [`browser-automation.md`](browser-automation.md#headed-vs-headless) for why `pcli run` defaults to headless while the TUI defaults to headed. |
 | `--notify-telegram` | After the run finishes, also send the final answer text to the configured Telegram chat — a lightweight one-off message (`notify_telegram`, `telegram/bot.py`), not the full `pcli telegram` daemon/polling machinery. If `telegram_bot_token`/`telegram_chat_id` aren't configured, this prints a warning and skips rather than failing the run; if sending itself fails (network, bad token, ...), that's also just a warning. See [`telegram-bot.md`](telegram-bot.md#pcli-run---notify-telegram). |
 | `--max-cost AMOUNT` | Hard cap on this run's total spend (USD), overriding `max_session_cost_usd` for just this one invocation — never persisted to `config.toml`, never affects the TUI or any other run. Omit to use whatever `max_session_cost_usd` is already configured (unset by default — no cap). Applied via `settings.model_copy(update={"max_session_cost_usd": max_cost})` rather than rebuilding `Settings` from scratch, so it composes correctly with any `--gateway-url`/`--api-key`/`--model` overrides given in the same invocation instead of silently dropping them. See [Session cost-budget enforcement](sessions-and-cost.md#session-cost-budget-enforcement). |
+| `--audit` | Turns on the tamper-evident audit log (`Session.audit_log`, see [Audit log (compliance mode)](sessions-and-cost.md#audit-log-compliance-mode)) for just this run, overriding `audit_mode_enabled` the same way `--max-cost` overrides `max_session_cost_usd` above (`settings.model_copy(update={"audit_mode_enabled": True})`) — never persisted to `config.toml`, never affects the TUI or any other run. Verify the resulting session afterward with `pcli sessions verify <id>`. |
 
 Passing both or neither of `--task`/`--task-file` is a usage error (exit
 code 1, "Provide exactly one of --task or --task-file."). All the normal

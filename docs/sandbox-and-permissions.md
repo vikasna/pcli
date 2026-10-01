@@ -350,6 +350,29 @@ only need the decision don't have to unpack a tuple.
 5. If the user's choice includes a remember scope other than `"once"`, it's
    recorded via `PermissionPolicy.remember(...)`.
 
+### Audit-mode recording
+
+When `PermissionManager` is constructed with `audit_enabled=True` (threaded
+from `Settings.audit_mode_enabled` via `agent/runtime.py`'s
+`build_permission_manager`) and a `session` is passed to
+`check_with_reason`, it also appends one `kind="permission_decision"`
+`AuditEntry` to `session.audit_log` per call — see [Audit log (compliance
+mode)](sessions-and-cost.md#audit-log-compliance-mode) for the full
+hash-chain mechanism. The five-stage decision logic above is unchanged; it
+was only split out into a private `_decide(...)` helper that additionally
+returns which stage decided the outcome, as a `mechanism` string:
+`rate_limit`, `guardrail_command`, `guardrail_path`,
+`guardrail_python_module` (stage 1, one value per guardrail kind),
+`default_allow` (stage 2), `remembered_policy` (stage 3),
+`no_ui_fail_closed` or `interactive` (stage 4, split by whether `ask` was
+available) — giving `check_with_reason` something concrete to put in each
+`AuditEntry.detail["mechanism"]`. Stage 2's no-guardrail-hit case
+(`default_allow` with nothing denying the call) is the one outcome
+deliberately **not** recorded — nothing was actually decided there, so
+auditing it would mean one entry for every `read_file`-style call in the
+session, pure noise. A `default_allow` tool that *does* trip a guardrail at
+stage 1 is still recorded under that guardrail's own mechanism value.
+
 ### Surfacing the reason back to the model
 
 `AgentLoop._dispatch_tool_call` calls `check_with_reason(...)` (not

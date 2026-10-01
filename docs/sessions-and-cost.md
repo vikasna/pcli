@@ -95,6 +95,10 @@ never pruned while it's excluded.
   arguments, status (`ok`/`error`/`denied`), a `result_summary` (the possibly-
   truncated preview text), and `full_result_ref` — a blob filename holding
   the untruncated result when one was archived (see "Blob storage" below).
+  Appended by `record_tool_invocation()` (`agent/runtime.py`), shared by
+  `ChatScreen`, headless/scheduled runs, and `pcli telegram` — see [Audit log
+  (compliance mode)](#audit-log-compliance-mode) below for why this used to
+  be TUI-only.
 - `cost: SessionCost` — list of `TurnCost` entries plus running totals (see
   Cost tracking below).
 - `permission_grants: list[PermissionGrant]` — appended to by
@@ -110,6 +114,10 @@ never pruned while it's excluded.
   decision log (`decision`, `rationale`, `created_at` per entry); unlike
   `todos`, entries are only ever added, never replaced or mutated — see
   [`tools.md`](tools.md#record_decision).
+- `audit_log: list[AuditEntry]` — append-only, hash-chained record of tool
+  calls and permission decisions; empty unless `Settings.audit_mode_enabled`
+  was on when the session ran. See [Audit log (compliance
+  mode)](#audit-log-compliance-mode) below.
 - `metadata: dict` — free-form; used by the importer to stash
   `imported_from_id` / `imported_from_file`.
 - `working_dir: str | None` — `Path.cwd()` at session creation
@@ -192,6 +200,157 @@ In the TUI, `/export [path]` exports the *current* session; `/sessions` then
 `e` exports the highlighted one from the list screen; `i` there prompts for a
 file path and imports it (always with default `restore_grants=False`, no TUI
 option to override).
+
+## Audit log (compliance mode)
+
+`Settings.audit_mode_enabled` (`src/pcli/config/settings.py`, env var
+`PCLI_AUDIT_MODE_ENABLED`, config.toml key `audit_mode_enabled`, default
+`false` — see [`configuration.md`](configuration.md#settings-fields)) turns
+on a second, independent record of what a run actually did: a tamper-
+evident, hash-chained log of every tool call and every permission/guardrail
+decision, kept in `Session.audit_log: list[AuditEntry]`
+(`src/pcli/session/audit.py`) alongside — not instead of —
+`tool_invocations`/`permission_grants` above. It's aimed at regulated-
+industry use: proving, after the fact, what an unattended agent did, and
+that the record wasn't quietly edited afterward.
+
+### `AuditEntry` and the hash chain
+
+Each `AuditEntry` carries: `id`, `created_at`, `kind` (`"tool_call"` or
+`"permission_decision"`), a human-readable `summary` (e.g. `"run_shell
+denied (guardrail_command)"`), a `detail: dict` of kind-specific structured
+fields, `prev_hash`, and `entry_hash`.
+
+The chain primitive is deliberately simple: `entry_hash` is a sha256 over a
+canonical (`sort_keys=True`) JSON serialization of every other field —
+`id`, `created_at`, `kind`, `summary`, `detail`, and `prev_hash` — where
+`prev_hash` is the *previous* entry's own `entry_hash` (or a 64-character
+`"0"` genesis constant for the first entry in a session). This is the same
+primitive a git commit chain or a certificate-transparency log uses:
+editing, reordering, or deleting an old entry breaks the chain from that
+point forward, and the break can't be silently repaired without
+re-deriving every hash after it. There's deliberately no real signature or
+external timestamping service here — that would be real added complexity
+(key management, a new dependency, a service to call out to) for marginal
+benefit over what a plain sha256 chain already proves: *was this record,
+once written, left alone*. It does not prove *who* wrote it, or pin down
+*when* in any externally-verifiable sense, the way a signed or
+externally-timestamped log would.
+
+`append_audit_entry(session, *, kind, summary, detail)` appends one entry,
+chained onto whatever's already in `session.audit_log` (or the genesis
+hash, if it's the first). It appends unconditionally whenever called — the
+same way `tool_invocations`/`decisions` never gate themselves either; it's
+the *callers* (`agent/runtime.py`'s `record_tool_invocation`,
+`permissions/manager.py`'s `PermissionManager.check_with_reason`) that
+check `audit_mode_enabled` before calling it at all.
+
+`verify_audit_chain(session) -> AuditVerification` recomputes every entry's
+hash from its recorded fields and checks the `prev_hash` linkage, returning
+`AuditVerification(valid, entry_count, broken_at_index, reason)`. An empty
+log is reported valid with `entry_count == 0` — not an error, since
+`audit_mode_enabled` may simply have been off for that session. `pcli
+sessions verify <id>` (below) is the CLI surface for this.
+
+### What gets recorded
+
+- **`kind="tool_call"`** — appended by `record_tool_invocation()`
+  (`src/pcli/agent/runtime.py`) right after it appends the matching
+  `ToolInvocation`, whenever it's called with `audit_enabled=True`. `detail`
+  carries `tool_name`, `arguments`, `is_error`, and `artifact_id` (set when
+  the result was archived — see "Blob storage" above).
+- **`kind="permission_decision"`** — appended by
+  `PermissionManager.check_with_reason` (`src/pcli/permissions/manager.py`)
+  when the manager was constructed with `audit_enabled=True` and a `session`
+  is passed in. `detail` carries `tool_name`, `risk_description`,
+  `decision`, `reason`, and `mechanism` — which of seven ways the decision
+  got made: `rate_limit`, `guardrail_command`, `guardrail_path`,
+  `guardrail_python_module`, `default_allow` (only reachable alongside a
+  guardrail denial — see below), `remembered_policy`, `no_ui_fail_closed` (a
+  headless run with no one to ask), or `interactive` (a real prompt was
+  shown and answered).
+
+  **Skipped** for the one case where nothing was actually decided: a
+  `default_allow` tool call that hit no guardrail at all. Recording that
+  would mean one entry for literally every `read_file` call in every
+  audited session — pure noise with no compliance value. A `default_allow`
+  tool that *does* trip a guardrail is still recorded (with, e.g.,
+  `mechanism="guardrail_path"`) — `default_allow` only means "no permission
+  prompt needed," not "guardrails don't apply."
+
+This also means there's no separate "guardrail evaluated and allowed"
+event kind — only the mechanism that actually produced the final outcome is
+recorded, never every passing check along the way. Recording every
+guardrail evaluation that *allows* something (every `read_file`/`write_file`
+call whose path clears the guardrail, for example) would be enormous noise
+for no compliance benefit.
+
+### The `tool_invocations` recording gap this also fixed
+
+Independent of `audit_mode_enabled`: `record_tool_invocation()` is a new
+function in `agent/runtime.py`, shared by every front end, extracted from
+logic that used to live only in `ChatScreen._record_tool_invocation`.
+Before this, headless/scheduled runs (`pcli run`, `pcli schedule`, `pcli
+telegram` — all via `run_headless_task`, see
+[`headless-and-scheduled-runs.md`](headless-and-scheduled-runs.md)) never
+appended anything to `session.tool_invocations` at all — the exact
+"unattended run" scenario audit mode is meant to cover had *no* tool-call
+record whatsoever, whether or not `audit_mode_enabled` was on.
+`run_headless_task`'s tool-result handling now calls
+`record_tool_invocation()` too, so `tool_invocations` is populated
+identically across every front end, unconditionally — this fix applies
+regardless of `audit_mode_enabled`. `ChatScreen._record_tool_invocation`
+now just delegates to the shared function instead of duplicating its logic.
+
+### `pcli sessions verify <id>`
+
+```
+$ pcli sessions verify sess_a1b2c3d4
+12 audit entries, chain valid.
+
+$ pcli sessions verify sess_tampered
+Chain broken at entry 3: entry_hash does not match the recomputed hash - this entry's content was modified after it was recorded.
+```
+
+Loads the session, runs `verify_audit_chain`, and prints either `"N audit
+entries, chain valid."` (exit `0`) or `"Chain broken at entry <index>:
+<reason>"` (exit `1`). A session that never ran with `audit_mode_enabled`
+on reports `"0 audit entries, chain valid."` — an empty/never-audited log
+is not itself treated as a failure, since audit mode may simply have been
+off.
+
+### Per-invocation override: `--audit`
+
+Like `--max-cost` ([Session cost-budget
+enforcement](#session-cost-budget-enforcement) above),
+`audit_mode_enabled` can be turned on for a single run without touching the
+persisted setting: `pcli run --audit` and `pcli schedule add --audit`
+(`ScheduleJob.audit`) apply `settings.model_copy(update=
+{"audit_mode_enabled": True})` for just that invocation/job — never written
+to `config.toml`, never affecting the TUI or any other run/job. See
+[`headless-and-scheduled-runs.md`](headless-and-scheduled-runs.md#pcli-run-one-shot-task-execution)
+and [`scheduling.md`](scheduling.md#schedulejob-what-a-job-stores).
+
+### Export, and what's still out of scope
+
+`export_session` needed no changes for any of this — it already dumps the
+whole `Session` model verbatim, so `audit_log` rides along in the existing
+export bundle (see [Export / import](#export--import) above) the moment it
+became a `Session` field.
+
+To be clear about the boundary, this feature does **not** add:
+
+- Any TUI surface — it's CLI-only (`pcli sessions verify`, `--audit`),
+  consistent with [event-triggered scheduling](scheduling.md#file-change-and-git-commit-triggers)
+  and [`pcli tools list`](tools.md), pcli's other two "sets it apart"
+  features. There's no `/audit` slash command.
+- Population of `ToolInvocation.permission_decision`/`backend`/
+  `duration_ms` (`src/pcli/session/models.py`) — those remain unpopulated,
+  dead fields, untouched by this change.
+- Audit coverage of the separate per-turn `max_tool_calls_per_turn`
+  guardrail (`AgentLoop.run_turn`) — that's a different, turn-level cap that
+  was never routed through `PermissionManager` in the first place, so it
+  isn't wired into the audit log either.
 
 ## Cost tracking
 
