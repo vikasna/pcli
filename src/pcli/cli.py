@@ -179,6 +179,14 @@ def run_command(
         "other run. Omit to use whatever max_session_cost_usd is already configured (unset by "
         "default - no cap).",
     ),
+    audit: bool = typer.Option(
+        False,
+        "--audit",
+        help="Record a tamper-evident audit log (session/audit.py) for this run's permission "
+        "decisions and tool calls, overriding audit_mode_enabled for just this invocation - "
+        "never persisted to config.toml, never affects the TUI or any other run. Verify "
+        "afterward with 'pcli sessions verify <id>'.",
+    ),
 ) -> None:
     """Runs a single task non-interactively and exits - no TUI. Meant to be
     invoked by an OS scheduler (cron / Task Scheduler) or pcli's own
@@ -212,6 +220,8 @@ def run_command(
             # in this same invocation. model_copy starts from the already-
             # fully-resolved settings instead, so only this one field changes.
             settings = settings.model_copy(update={"max_session_cost_usd": max_cost})
+        if audit:
+            settings = settings.model_copy(update={"audit_mode_enabled": True})
 
         store = SessionStore()
         cwd = Path.cwd()
@@ -333,6 +343,33 @@ def sessions_import(
     typer.echo(f"Imported as session {session.id}")
 
 
+@sessions_app.command("verify")
+def sessions_verify(session_id: str) -> None:
+    """Recomputes and validates session.audit_log's hash chain (see
+    session/audit.py) - proves whether the record was edited after it was
+    written. Only meaningful for a session that ran with audit_mode_enabled
+    ('pcli run --audit'/'pcli schedule add --audit', or the persisted
+    audit_mode_enabled setting) - an empty log is reported as valid (0
+    entries), not an error, since audit mode may simply have been off."""
+    from pcli.session.audit import verify_audit_chain
+
+    store = SessionStore()
+    try:
+        session = store.load(session_id)
+    except SessionNotFoundError:
+        typer.echo(f"No session found with id '{session_id}'.", err=True)
+        raise typer.Exit(code=1) from None
+
+    result = verify_audit_chain(session)
+    if result.valid:
+        typer.echo(f"{result.entry_count} audit entries, chain valid.")
+        return
+    typer.echo(
+        f"Chain broken at entry {result.broken_at_index}: {result.reason}", err=True
+    )
+    raise typer.Exit(code=1)
+
+
 @cost_app.command("report")
 def cost_report_command() -> None:
     typer.echo(json.dumps(global_cost_report(), indent=2))
@@ -447,6 +484,11 @@ def schedule_add(
         "other jobs or the TUI. Omit to use whatever max_session_cost_usd is already "
         "configured (unset by default - no cap)."
     ),
+    audit: bool = typer.Option(
+        False, "--audit", help="Record a tamper-evident audit log for this job's own runs, "
+        "overriding audit_mode_enabled just for it - never persisted to config.toml, never "
+        "affects other jobs or the TUI."
+    ),
 ) -> None:
     """Adds a new recurring job. Nothing runs until 'pcli schedule run' (the
     daemon) is actually started - adding a job only saves it. Exactly one
@@ -485,6 +527,7 @@ def schedule_add(
             notify_telegram=notify_telegram_flag,
             quiet=quiet,
             max_cost_usd=max_cost,
+            audit=audit,
         )
         description = cron
     elif on_file_change is not None:
@@ -499,6 +542,7 @@ def schedule_add(
             notify_telegram=notify_telegram_flag,
             quiet=quiet,
             max_cost_usd=max_cost,
+            audit=audit,
         )
         description = f"on change: {on_file_change}"
     else:
@@ -514,6 +558,7 @@ def schedule_add(
             notify_telegram=notify_telegram_flag,
             quiet=quiet,
             max_cost_usd=max_cost,
+            audit=audit,
         )
         description = f"on commit: {git_repo or '.'}" + (f" [{git_branch}]" if git_branch else "")
 

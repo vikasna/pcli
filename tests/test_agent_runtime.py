@@ -195,3 +195,76 @@ def test_build_permission_manager_leaves_guardrails_untouched_otherwise():
 
     assert manager.guardrails.max_tool_calls_per_turn == 25
     assert manager.guardrails.max_tool_calls_per_minute == 60
+
+
+def test_build_permission_manager_threads_audit_mode_enabled():
+    """Regression coverage: without this wiring, Settings.audit_mode_enabled
+    would be configurable but never actually reach the constructed
+    PermissionManager - the one call site build_permission_manager exists
+    to keep ChatScreen/`pcli run`/`pcli telegram` consistent on."""
+    settings = _settings(audit_mode_enabled=True)
+    manager = build_permission_manager(settings)
+
+    assert manager._audit_enabled is True
+
+
+def test_build_permission_manager_defaults_audit_mode_off():
+    settings = _settings()
+    manager = build_permission_manager(settings)
+
+    assert manager._audit_enabled is False
+
+
+# --- record_tool_invocation ---
+
+
+def test_record_tool_invocation_appends_a_tool_invocation():
+    from pcli.agent.loop import ToolResultEvent
+    from pcli.agent.runtime import record_tool_invocation
+    from pcli.llm.models import ToolCall, ToolCallFunction
+    from pcli.session.store import SessionStore
+
+    store = SessionStore()
+    session = store.new_session(model="fake-model", gateway_base_url="http://x")
+    event = ToolResultEvent(
+        tool_call=ToolCall(
+            id="call_1", function=ToolCallFunction(name="read_file", arguments='{"path": "a.txt"}')
+        ),
+        output="hello",
+        is_error=False,
+    )
+
+    record_tool_invocation(session, event)
+
+    assert len(session.tool_invocations) == 1
+    invocation = session.tool_invocations[0]
+    assert invocation.tool_name == "read_file"
+    assert invocation.arguments == {"path": "a.txt"}
+    assert invocation.status == "ok"
+    assert invocation.result_summary == "hello"
+    assert session.audit_log == []  # audit_enabled defaults to False
+
+
+def test_record_tool_invocation_records_an_audit_entry_when_enabled():
+    from pcli.agent.loop import ToolResultEvent
+    from pcli.agent.runtime import record_tool_invocation
+    from pcli.llm.models import ToolCall, ToolCallFunction
+    from pcli.session.store import SessionStore
+
+    store = SessionStore()
+    session = store.new_session(model="fake-model", gateway_base_url="http://x")
+    event = ToolResultEvent(
+        tool_call=ToolCall(
+            id="call_1", function=ToolCallFunction(name="run_shell", arguments='{"command": "echo hi"}')
+        ),
+        output="boom",
+        is_error=True,
+    )
+
+    record_tool_invocation(session, event, audit_enabled=True)
+
+    assert len(session.audit_log) == 1
+    entry = session.audit_log[0]
+    assert entry.kind == "tool_call"
+    assert entry.detail["tool_name"] == "run_shell"
+    assert entry.detail["is_error"] is True

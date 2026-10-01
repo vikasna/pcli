@@ -8,6 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from pcli.llm.models import ChatMessage, Role, ToolCall, Usage
+from pcli.session.audit import AuditEntry
 from pcli.util.ids import new_id
 
 CURRENT_SCHEMA_VERSION = 1
@@ -130,6 +131,11 @@ class Session(BaseModel):
     permission_grants: list[PermissionGrant] = Field(default_factory=list)
     todos: list[TodoItem] = Field(default_factory=list)
     decisions: list[Decision] = Field(default_factory=list)
+    audit_log: list[AuditEntry] = Field(default_factory=list)
+    """Tamper-evident, hash-chained record of permission decisions and
+    tool calls - see session/audit.py. Empty unless Settings.
+    audit_mode_enabled was on when this session ran; append-only, same as
+    decisions/tool_invocations."""
     metadata: dict[str, Any] = Field(default_factory=dict)
     working_dir: str | None = None
     """Where this session was created (Path.cwd() at the time) - resuming it

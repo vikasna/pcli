@@ -364,3 +364,228 @@ async def test_check_still_returns_a_plain_decision_without_reason(tmp_path: Pat
         "run_shell", {"command": "rm -rf /"}, command="rm -rf /", ask=None
     )
     assert decision == "deny"
+
+
+# --- audit_enabled: permission_decision AuditEntry recording ---
+#
+# audit_enabled is off by default and must produce zero entries regardless
+# of outcome - these tests all pass audit_enabled=True explicitly, plus one
+# test confirming the opposite (audit_enabled=False records nothing).
+
+
+@pytest.mark.asyncio
+async def test_audit_disabled_by_default_records_nothing(tmp_path: Path):
+    manager = PermissionManager(
+        guardrails=_guardrails(), policy=PermissionPolicy(persist_path=tmp_path / "p.json")
+    )
+    session = Session()
+
+    async def ask(tool_name, arguments, risk_description):
+        return ("deny", None)
+
+    await manager.check_with_reason("run_shell", {"command": "git status"}, ask=ask, session=session)
+    assert session.audit_log == []
+
+
+@pytest.mark.asyncio
+async def test_audit_records_an_interactive_allow(tmp_path: Path):
+    manager = PermissionManager(
+        guardrails=_guardrails(),
+        policy=PermissionPolicy(persist_path=tmp_path / "p.json"),
+        audit_enabled=True,
+    )
+    session = Session()
+
+    async def ask(tool_name, arguments, risk_description):
+        return ("allow", "once")
+
+    await manager.check_with_reason(
+        "run_shell", {"command": "git status"}, ask=ask, session=session,
+        risk_description="runs a shell command",
+    )
+
+    assert len(session.audit_log) == 1
+    entry = session.audit_log[0]
+    assert entry.kind == "permission_decision"
+    assert entry.detail["tool_name"] == "run_shell"
+    assert entry.detail["decision"] == "allow"
+    assert entry.detail["mechanism"] == "interactive"
+    assert entry.detail["risk_description"] == "runs a shell command"
+
+
+@pytest.mark.asyncio
+async def test_audit_records_an_interactive_deny(tmp_path: Path):
+    manager = PermissionManager(
+        guardrails=_guardrails(),
+        policy=PermissionPolicy(persist_path=tmp_path / "p.json"),
+        audit_enabled=True,
+    )
+    session = Session()
+
+    async def ask(tool_name, arguments, risk_description):
+        return ("deny", None)
+
+    await manager.check_with_reason(
+        "run_shell", {"command": "git status"}, ask=ask, session=session
+    )
+
+    assert len(session.audit_log) == 1
+    assert session.audit_log[0].detail["decision"] == "deny"
+    assert session.audit_log[0].detail["mechanism"] == "interactive"
+
+
+@pytest.mark.asyncio
+async def test_audit_records_a_guardrail_command_denial(tmp_path: Path):
+    manager = PermissionManager(
+        guardrails=_guardrails(),
+        policy=PermissionPolicy(persist_path=tmp_path / "p.json"),
+        audit_enabled=True,
+    )
+    session = Session()
+
+    await manager.check_with_reason(
+        "run_shell", {"command": "rm -rf /"}, command="rm -rf /", ask=None, session=session
+    )
+
+    assert len(session.audit_log) == 1
+    entry = session.audit_log[0]
+    assert entry.detail["decision"] == "deny"
+    assert entry.detail["mechanism"] == "guardrail_command"
+    assert "rm -rf /" in entry.detail["reason"]
+
+
+@pytest.mark.asyncio
+async def test_audit_records_a_guardrail_path_denial(tmp_path: Path):
+    manager = PermissionManager(
+        guardrails=_guardrails(),
+        policy=PermissionPolicy(persist_path=tmp_path / "p.json"),
+        audit_enabled=True,
+    )
+    session = Session()
+
+    await manager.check_with_reason(
+        "write_file", {"path": "/somewhere/else/file.txt"},
+        path="/somewhere/else/file.txt", ask=None, session=session,
+    )
+
+    assert session.audit_log[0].detail["mechanism"] == "guardrail_path"
+
+
+@pytest.mark.asyncio
+async def test_audit_records_a_rate_limit_denial(tmp_path: Path):
+    manager = PermissionManager(
+        guardrails=_guardrails(max_tool_calls_per_minute=1),
+        policy=PermissionPolicy(persist_path=tmp_path / "p.json"),
+        audit_enabled=True,
+    )
+    session = Session()
+
+    async def ask(tool_name, arguments, risk_description):
+        return ("allow", "once")
+
+    await manager.check_with_reason(
+        "run_shell", {"command": "git status"}, ask=ask, session=session
+    )
+    await manager.check_with_reason(
+        "run_shell", {"command": "git status"}, ask=ask, session=session
+    )
+
+    assert len(session.audit_log) == 2  # first allow, then the rate-limited deny
+    assert session.audit_log[1].detail["mechanism"] == "rate_limit"
+    assert session.audit_log[1].detail["decision"] == "deny"
+
+
+@pytest.mark.asyncio
+async def test_audit_records_a_remembered_policy_hit(tmp_path: Path):
+    manager = PermissionManager(
+        guardrails=_guardrails(),
+        policy=PermissionPolicy(persist_path=tmp_path / "p.json"),
+        audit_enabled=True,
+    )
+    manager.policy.remember("run_shell", scope="always", decision="allow")
+    session = Session()
+
+    async def ask_should_not_be_called(tool_name, arguments, risk_description):
+        raise AssertionError("ask() should not be called once a grant is remembered")
+
+    await manager.check_with_reason(
+        "run_shell", {"command": "git status"}, ask=ask_should_not_be_called, session=session
+    )
+
+    assert len(session.audit_log) == 1
+    assert session.audit_log[0].detail["mechanism"] == "remembered_policy"
+
+
+@pytest.mark.asyncio
+async def test_audit_records_a_headless_fail_closed_denial(tmp_path: Path):
+    manager = PermissionManager(
+        guardrails=_guardrails(),
+        policy=PermissionPolicy(persist_path=tmp_path / "p.json"),
+        audit_enabled=True,
+    )
+    session = Session()
+
+    await manager.check_with_reason(
+        "run_shell", {"command": "git status"}, ask=None, session=session
+    )
+
+    assert session.audit_log[0].detail["mechanism"] == "no_ui_fail_closed"
+
+
+@pytest.mark.asyncio
+async def test_audit_skips_a_default_allow_tool_with_no_guardrail_hit(tmp_path: Path):
+    """The one deliberate no-op case: a tool that doesn't need permission
+    and hit no guardrail decided nothing worth auditing - recording it
+    would be noise (every single read_file call, the most common tool
+    call in any session)."""
+    manager = PermissionManager(
+        guardrails=_guardrails(),
+        policy=PermissionPolicy(persist_path=tmp_path / "p.json"),
+        audit_enabled=True,
+    )
+    session = Session()
+
+    await manager.check_with_reason(
+        "read_file", {"path": "/allowed/x.txt"}, path="/allowed/x.txt",
+        default_allow=True, session=session,
+    )
+
+    assert session.audit_log == []
+
+
+@pytest.mark.asyncio
+async def test_audit_still_records_a_guardrail_denial_on_a_default_allow_tool(tmp_path: Path):
+    """A default_allow tool (e.g. read_file) is still gated by guardrails -
+    a guardrail denial on one of these must still be recorded, unlike the
+    no-guardrail-hit case above."""
+    manager = PermissionManager(
+        guardrails=_guardrails(),
+        policy=PermissionPolicy(persist_path=tmp_path / "p.json"),
+        audit_enabled=True,
+    )
+    session = Session()
+
+    await manager.check_with_reason(
+        "read_file", {"path": "/somewhere/else/file.txt"},
+        path="/somewhere/else/file.txt", default_allow=True, session=session,
+    )
+
+    assert len(session.audit_log) == 1
+    assert session.audit_log[0].detail["mechanism"] == "guardrail_path"
+    assert session.audit_log[0].detail["decision"] == "deny"
+
+
+@pytest.mark.asyncio
+async def test_audit_enabled_with_no_session_records_nothing(tmp_path: Path):
+    """audit_enabled=True but no session passed - nothing to append to, no
+    crash either (mirrors how PermissionGrant recording already behaves)."""
+    manager = PermissionManager(
+        guardrails=_guardrails(),
+        policy=PermissionPolicy(persist_path=tmp_path / "p.json"),
+        audit_enabled=True,
+    )
+
+    decision = await manager.check(
+        "run_shell", {"command": "rm -rf /"}, command="rm -rf /", ask=None
+    )
+    assert decision == "deny"  # just confirming no crash with session=None

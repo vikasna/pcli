@@ -26,7 +26,12 @@ from pathlib import Path
 
 from pcli.agent.loop import AgentLoop
 from pcli.agent.prompt import build_system_prompt
-from pcli.agent.runtime import AgentRuntime, effective_max_tool_iterations, make_tool_context
+from pcli.agent.runtime import (
+    AgentRuntime,
+    effective_max_tool_iterations,
+    make_tool_context,
+    record_tool_invocation,
+)
 from pcli.config.settings import Settings
 from pcli.cost.tracker import CostTracker, cost_budget_reason
 from pcli.memory.models import render_memory_section
@@ -155,6 +160,9 @@ async def run_headless_task(
                     )
                 preview = event.output if len(event.output) <= 200 else event.output[:200] + "..."
                 on_progress(f"  <- {preview}")
+                record_tool_invocation(
+                    session, event, audit_enabled=settings.audit_mode_enabled
+                )
             elif event.kind == "turn_complete":
                 session.messages.extend(Message.from_chat_message(m) for m in event.new_messages)
                 terminated_early = event.terminated_early

@@ -16,9 +16,11 @@ own docstring for why that one step isn't folded in here too.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from pcli.agent.loop import ToolResultEvent
 from pcli.browser.session import BrowserSession
 from pcli.config.settings import Settings
 from pcli.llm.client import GatewayClient
@@ -26,9 +28,10 @@ from pcli.permissions.guardrails import GuardrailsConfig
 from pcli.permissions.manager import AskCallback, PermissionManager
 from pcli.sandbox.base import Sandbox
 from pcli.sandbox.selector import select_sandbox
-from pcli.session.models import Session
+from pcli.session.audit import append_audit_entry
+from pcli.session.models import Session, ToolInvocation
 from pcli.tools.agent_tools_store import load_persisted_agent_tools
-from pcli.tools.artifacts import ArtifactStore
+from pcli.tools.artifacts import ArtifactStore, SessionArtifactStore
 from pcli.tools.base import AskQuestionCallback, ToolContext
 from pcli.tools.builtin.artifact_tool import ASK_ARTIFACT
 from pcli.tools.registry import ToolRegistry, build_default_registry
@@ -75,13 +78,15 @@ def build_permission_manager(settings: Settings) -> PermissionManager:
     that uncaps turn/rate limiting only - the security guardrails (shell
     denylist, fs roots, module denylist) are never touched by local-api
     mode, only the two rate-limiting fields. Shared so ChatScreen, `pcli
-    run`, and `pcli telegram` all construct this identically."""
+    run`, and `pcli telegram` all construct this identically - including
+    audit_enabled, so every caller's permission decisions get recorded to
+    session/audit.py identically whenever Settings.audit_mode_enabled is on."""
     guardrails = GuardrailsConfig.load()
     if settings.is_local_api():
         guardrails = guardrails.model_copy(
             update={"max_tool_calls_per_turn": 0, "max_tool_calls_per_minute": 0}
         )
-    return PermissionManager(guardrails=guardrails)
+    return PermissionManager(guardrails=guardrails, audit_enabled=settings.audit_mode_enabled)
 
 
 async def build_agent_runtime(
@@ -186,3 +191,50 @@ def make_tool_context(
         plan_mode=plan_mode,
         browser_session=runtime.browser_session,
     )
+
+
+def record_tool_invocation(
+    session: Session, event: ToolResultEvent, *, audit_enabled: bool = False
+) -> None:
+    """Appends a ToolInvocation for one completed tool call - shared so
+    every AgentLoop caller (ChatScreen, `pcli run`/`pcli schedule`, `pcli
+    telegram`, all via run_headless_task) records identically. Previously
+    TUI-only (ChatScreen._record_tool_invocation duplicated this logic) -
+    headless/scheduled runs produced zero tool-call record at all, the
+    exact "unattended run" scenario audit_mode_enabled is meant to cover.
+    When audit_enabled, also appends a hash-chained AuditEntry (session/
+    audit.py) - unconditional recording to tool_invocations happens either
+    way, same as it always has."""
+    try:
+        arguments = json.loads(event.tool_call.function.arguments or "{}")
+    except json.JSONDecodeError:
+        arguments = {}
+    if not isinstance(arguments, dict):
+        arguments = {}
+
+    invocation = ToolInvocation(
+        tool_name=event.tool_call.function.name,
+        arguments=arguments,
+        status="error" if event.is_error else "ok",
+        result_summary=event.output,
+    )
+    if event.artifact_id:
+        # AgentLoop already archived the full output (event.output is the
+        # truncated preview) - point the session record at that same blob
+        # rather than storing it a second time under a different scheme.
+        invocation.full_result_ref = SessionArtifactStore.blob_name_for(event.artifact_id)
+    session.tool_invocations.append(invocation)
+
+    if audit_enabled:
+        status = "failed" if event.is_error else "succeeded"
+        append_audit_entry(
+            session,
+            kind="tool_call",
+            summary=f"{invocation.tool_name} {status}",
+            detail={
+                "tool_name": invocation.tool_name,
+                "arguments": arguments,
+                "is_error": event.is_error,
+                "artifact_id": event.artifact_id,
+            },
+        )

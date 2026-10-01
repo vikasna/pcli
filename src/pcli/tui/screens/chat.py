@@ -27,6 +27,7 @@ from pcli.agent.runtime import (
     build_agent_runtime,
     build_permission_manager,
     effective_max_tool_iterations,
+    record_tool_invocation,
 )
 from pcli.browser.session import BrowserSession
 from pcli.config.settings import Settings, get_settings, remove_config_keys, update_config_file
@@ -1542,25 +1543,13 @@ class ChatScreen(Screen):
         self.notify(f"Exported session to {out_path}")
 
     def _record_tool_invocation(self, event: ToolResultEvent) -> None:
-        try:
-            arguments = json.loads(event.tool_call.function.arguments or "{}")
-        except json.JSONDecodeError:
-            arguments = {}
-        if not isinstance(arguments, dict):
-            arguments = {}
-
-        invocation = ToolInvocation(
-            tool_name=event.tool_call.function.name,
-            arguments=arguments,
-            status="error" if event.is_error else "ok",
-            result_summary=event.output,
+        """Delegates to agent/runtime.py's record_tool_invocation, shared
+        with headless/scheduled runs (run_headless_task) so every caller
+        records identically - this method used to duplicate that logic
+        TUI-only."""
+        record_tool_invocation(
+            self._session, event, audit_enabled=self._settings.audit_mode_enabled
         )
-        if event.artifact_id:
-            # AgentLoop already archived the full output (event.output is the
-            # truncated preview) — point the session record at that same blob
-            # rather than storing it a second time under a different scheme.
-            invocation.full_result_ref = SessionArtifactStore.blob_name_for(event.artifact_id)
-        self._session.tool_invocations.append(invocation)
 
     def _effective_compaction_model(self) -> str | None:
         """The model compaction summarization and memory extraction should

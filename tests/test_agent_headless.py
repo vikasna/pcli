@@ -244,6 +244,13 @@ async def test_run_headless_task_permission_not_pre_granted_denies_the_tool_call
     assert "Permission denied" in tool_messages[0].content
     assert route.call_count == 2
 
+    # Regression coverage for the actual gap this feature fixes: headless
+    # runs used to never append to session.tool_invocations at all (only
+    # ChatScreen did) - a denied tool call must still be recorded.
+    assert len(session.tool_invocations) == 1
+    assert session.tool_invocations[0].tool_name == "run_shell"
+    assert session.tool_invocations[0].status == "error"
+
 
 @pytest.mark.asyncio
 @respx.mock
@@ -308,3 +315,72 @@ async def test_run_headless_task_uses_a_supplied_ask_callback(tmp_path: Path):
     assert len(tool_messages) == 1
     assert "Permission denied" not in tool_messages[0].content
     assert "hi" in tool_messages[0].content
+
+    # Same gap-fix regression coverage as the denied-call test above, for
+    # the successful-call path.
+    assert len(session.tool_invocations) == 1
+    assert session.tool_invocations[0].tool_name == "run_shell"
+    assert session.tool_invocations[0].status == "ok"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_run_headless_task_records_audit_entries_when_enabled(tmp_path: Path):
+    """audit_mode_enabled threads through to both PermissionManager (via
+    build_permission_manager) and the tool-call recording added to close
+    the gap above - a headless run with it on should produce a permission_
+    decision entry and a tool_call entry, hash-chained together."""
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(
+            200,
+            content=_sse(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_1",
+                                        "function": {"name": "run_shell", "arguments": '{"command": "echo hi"}'},
+                                    }
+                                ]
+                            },
+                            "finish_reason": None,
+                        }
+                    ]
+                },
+                {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+            ),
+        ),
+        _text_response("Ran it."),
+    ]
+
+    settings = _settings(audit_mode_enabled=True)
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    session = new_headless_session(store, settings, tmp_path)
+    runtime = await build_agent_runtime(settings, tmp_path)
+
+    async def ask(tool_name: str, arguments: dict, risk_description: str):
+        return "allow", "once"
+
+    try:
+        await run_headless_task(
+            "run a command",
+            session=session,
+            runtime=runtime,
+            settings=settings,
+            permission_manager=build_permission_manager(settings),
+            cwd=tmp_path,
+            store=store,
+            ask=ask,
+        )
+    finally:
+        await runtime.client.aclose()
+
+    kinds = [e.kind for e in session.audit_log]
+    assert kinds == ["permission_decision", "tool_call"]
+    assert session.audit_log[0].detail["decision"] == "allow"
+    assert session.audit_log[1].detail["tool_name"] == "run_shell"
+    assert session.audit_log[1].prev_hash == session.audit_log[0].entry_hash

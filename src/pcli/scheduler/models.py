@@ -64,6 +64,11 @@ class ScheduleJob(BaseModel):
     config.toml, never affects other jobs or the TUI. None (the default)
     means this job falls back to whatever max_session_cost_usd is already
     configured (unset by default - no cap)."""
+    audit: bool = False
+    """Per-job override of Settings.audit_mode_enabled, applied the same
+    way as max_cost_usd above - mirrors `pcli run --audit`. False (the
+    default) means this job falls back to whatever audit_mode_enabled is
+    already configured (off by default)."""
     enabled: bool = True
     created_at: datetime = Field(default_factory=_utcnow)
     next_run_at: datetime | None = None

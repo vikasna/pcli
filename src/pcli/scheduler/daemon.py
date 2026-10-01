@@ -151,6 +151,8 @@ async def _run_one_job(
         # `pcli run --max-cost` (cli.py's run_command) - never mutates the
         # shared settings object other jobs/the daemon loop itself use.
         job_settings = settings.model_copy(update={"max_session_cost_usd": job.max_cost_usd})
+    if job.audit:
+        job_settings = job_settings.model_copy(update={"audit_mode_enabled": True})
 
     result: HeadlessTurnResult | None = None
     error: Exception | None = None

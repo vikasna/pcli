@@ -117,6 +117,17 @@ class Settings(BaseSettings):
         "overridable for a single headless run without touching this persisted value via "
         "'pcli run --max-cost'.",
     )
+    audit_mode_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("PCLI_AUDIT_MODE_ENABLED", "audit_mode_enabled"),
+        description="Records a tamper-evident, hash-chained audit entry (session/audit.py) for "
+        "every permission/guardrail decision and every tool call, alongside the existing "
+        "Session.tool_invocations/permission_grants records. Off by default - real, if small, "
+        "per-tool-call overhead most users don't need. Verify a session's chain wasn't edited "
+        "after the fact with 'pcli sessions verify <id>'. Overridable for a single headless run "
+        "without touching this persisted value via 'pcli run --audit'/'pcli schedule add "
+        "--audit'.",
+    )
     default_temperature: float | None = Field(
         default=None,
         validation_alias=AliasChoices("PCLI_DEFAULT_TEMPERATURE", "default_temperature"),

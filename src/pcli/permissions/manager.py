@@ -14,10 +14,21 @@ from typing import Any, Literal
 
 from pcli.permissions.guardrails import GuardrailsConfig
 from pcli.permissions.policy import PermissionPolicy
+from pcli.session.audit import append_audit_entry
 from pcli.session.models import PermissionGrant, Session
 
 PermissionDecision = Literal["allow", "deny"]
 RememberScope = Literal["once", "session", "always"]
+DecisionMechanism = Literal[
+    "rate_limit",
+    "guardrail_command",
+    "guardrail_path",
+    "guardrail_python_module",
+    "default_allow",
+    "remembered_policy",
+    "no_ui_fail_closed",
+    "interactive",
+]
 
 AskCallback = Callable[[str, dict[str, Any], str], Awaitable[tuple[PermissionDecision, RememberScope | None]]]
 
@@ -28,9 +39,11 @@ class PermissionManager:
         *,
         guardrails: GuardrailsConfig | None = None,
         policy: PermissionPolicy | None = None,
+        audit_enabled: bool = False,
     ) -> None:
         self.guardrails = guardrails or GuardrailsConfig.load()
         self.policy = policy or PermissionPolicy()
+        self._audit_enabled = audit_enabled
         self._recent_tool_call_times: deque[float] = deque()
 
     def _within_rate_limit(self) -> bool:
@@ -111,35 +124,85 @@ class PermissionManager:
         enforcement: "always" grants are enforced via self.policy (persisted
         separately in permissions.json), and are deliberately not re-applied
         from a session's own history on import, to avoid double-recording
-        the same grant into permissions.json."""
+        the same grant into permissions.json.
+
+        When self._audit_enabled and session is given, also appends one
+        hash-chained AuditEntry (session/audit.py) per call recording the
+        decision, its reason, and which mechanism decided it - skipped only
+        for the default_allow/no-guardrail-hit case, since nothing was
+        actually decided there (see _decide's own docstring)."""
+        decision, reason, mechanism = await self._decide(
+            tool_name,
+            arguments,
+            command=command,
+            path=path,
+            python_module=python_module,
+            ask=ask,
+            risk_description=risk_description,
+            default_allow=default_allow,
+            session=session,
+        )
+        if self._audit_enabled and session is not None and mechanism != "default_allow":
+            append_audit_entry(
+                session,
+                kind="permission_decision",
+                summary=f"{tool_name} {decision}" + (f" ({mechanism})" if mechanism else ""),
+                detail={
+                    "tool_name": tool_name,
+                    "risk_description": risk_description,
+                    "decision": decision,
+                    "reason": reason,
+                    "mechanism": mechanism,
+                },
+            )
+        return decision, reason
+
+    async def _decide(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        command: str | None,
+        path: str | None,
+        python_module: str | None,
+        ask: AskCallback | None,
+        risk_description: str,
+        default_allow: bool,
+        session: Session | None,
+    ) -> tuple[PermissionDecision, str | None, DecisionMechanism]:
+        """The actual decision logic, unchanged from before check_with_reason
+        was split in two - only the return shape grew a third element
+        (`mechanism`, for check_with_reason's own audit recording). Every
+        early return here corresponds to one DecisionMechanism value."""
         if not self._within_rate_limit():
-            return "deny", "rate limit exceeded (max_tool_calls_per_minute)"
+            return "deny", "rate limit exceeded (max_tool_calls_per_minute)", "rate_limit"
 
         if command is not None:
             result = self.guardrails.evaluate_command(command)
             if not result.allowed:
-                return "deny", result.reason
+                return "deny", result.reason, "guardrail_command"
 
         if path is not None:
             result = self.guardrails.evaluate_path(path)
             if not result.allowed:
-                return "deny", result.reason
+                return "deny", result.reason, "guardrail_path"
 
         if python_module is not None:
             result = self.guardrails.evaluate_python_module(python_module)
             if not result.allowed:
-                return "deny", result.reason
+                return "deny", result.reason, "guardrail_python_module"
 
         if default_allow:
-            return "allow", None
+            return "allow", None, "default_allow"
 
         existing = self.policy.check(tool_name)
         if existing is not None:
-            return existing, ("previously denied and remembered" if existing == "deny" else None)
+            reason = "previously denied and remembered" if existing == "deny" else None
+            return existing, reason, "remembered_policy"
 
         if ask is None:
             # No UI available to ask through -> fail closed.
-            return "deny", "no UI available to request approval"
+            return "deny", "no UI available to request approval", "no_ui_fail_closed"
 
         decision, remember_scope = await ask(tool_name, arguments, risk_description)
         if remember_scope is not None and remember_scope != "once":
@@ -148,4 +211,5 @@ class PermissionManager:
                 session.permission_grants.append(
                     PermissionGrant(tool_name=tool_name, scope=remember_scope, decision=decision)
                 )
-        return decision, ("denied by the user" if decision == "deny" else None)
+        reason = "denied by the user" if decision == "deny" else None
+        return decision, reason, "interactive"
