@@ -44,10 +44,15 @@ desktop.ini
 # Logs
 *.log
 
-# Local model weights (large binaries - never belong in git; GitHub hard-rejects
-# anything over 100MB anyway). Companion files like a chat template or readme
-# dropped alongside them are fine to track.
+# Local model weights and anything dropped alongside them (chat templates,
+# readmes, ...) - this is scratch space for locally-tested models, not part
+# of the project; large binaries also never belong in git (GitHub hard-rejects
+# anything over 100MB anyway).
+models/
 *.gguf
 
 pcli-session.json
 pcli-session.txt
+
+# Informal personal project-brief notes - not part of the public project.
+requirements.md
