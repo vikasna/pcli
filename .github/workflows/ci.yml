@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+          cache-dependency-path: pyproject.toml
+
+      # browser (Playwright)/docker extras are deliberately left out here:
+      # browser's own binary is a separate ~300MB download pcli doesn't need
+      # for its own tests (they importorskip when the real browser isn't
+      # available), and docker's extra is a no-op anyway - the sandbox tests
+      # that need either just skip cleanly without them. schedule/telegram
+      # are pure-Python and cheap, so there's no reason to skip those.
+      - name: Install pcli with dev dependencies
+        run: pip install -e ".[dev,schedule,telegram,win]"
+
+      - name: Lint with ruff
+        run: ruff check .
+
+      # Informational only for now: mypy currently reports a real,
+      # pre-existing backlog of ~24 errors spread across several files that
+      # predate this workflow and aren't part of any one change - fixing them
+      # is a separate cleanup, not something to gate every PR on until it's
+      # done. Flip this to a hard failure once that backlog is cleared.
+      - name: Type-check with mypy (non-blocking)
+        continue-on-error: true
+        run: mypy src/pcli
+
+      - name: Run tests
+        run: pytest tests/ -q
