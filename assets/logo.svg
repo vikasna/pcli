@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="96" height="96" role="img" aria-label="pcli logo">
+  <title>pcli</title>
+  <path d="M26,14 L10,32 L26,50" fill="none" stroke="#14171c" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M38,14 L54,32 L38,50" fill="none" stroke="#14171c" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="32" cy="32" r="9" fill="#d9731a"/>
+</svg>
