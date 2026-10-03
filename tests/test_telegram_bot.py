@@ -352,7 +352,7 @@ async def test_an_unsupported_command_update_gets_an_explanatory_reply(
     await fallback_handler.callback(update, context=None)
 
     expected_text = (
-        "'/models' isn't a command this Telegram bot supports - only /new is. "
+        "'/models' isn't a command this Telegram bot supports yet. "
         "Anything else (no leading /) is sent to the agent as a normal message."
     )
     assert app.bot.sent_messages == [(_AUTHORIZED_CHAT_ID, expected_text)]

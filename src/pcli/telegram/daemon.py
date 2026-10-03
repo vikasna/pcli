@@ -495,10 +495,11 @@ class TelegramDaemon:
         await self._sender.send_message(chat_id, "Started a new session.")
 
     async def handle_unsupported_command(self, chat_id: int, command: str) -> None:
-        """Telegram has no equivalent of the TUI's full slash-command set
-        (/models, /budget, /timeout, ...) - only /new is implemented here.
-        Without this, bot.py's handler registration means anything else
-        /-prefixed matches no handler at all and is silently dropped by
+        """Telegram doesn't have every TUI slash command yet (e.g. /models,
+        /sessions, /plan aren't implemented here - see daemon.py's own
+        handle_*_command methods for the current set). Without this,
+        bot.py's handler registration means anything not explicitly
+        registered matches no handler at all and is silently dropped by
         python-telegram-bot itself, before TelegramDaemon ever sees it - a
         real reported confusion ("I sent /models and nothing happened").
         Same authorization gate as handle_text/handle_new_command."""
@@ -507,8 +508,8 @@ class TelegramDaemon:
             return
         await self._sender.send_message(
             chat_id,
-            f"'{command}' isn't a command this Telegram bot supports - only /new is. "
-            "Anything else (no leading /) is sent to the agent as a normal message.",
+            f"'{command}' isn't a command this Telegram bot supports yet. Anything else "
+            "(no leading /) is sent to the agent as a normal message.",
         )
 
     def handle_callback(self, data: str) -> None:

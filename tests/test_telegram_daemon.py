@@ -185,7 +185,7 @@ async def test_handle_new_command_starts_a_fresh_session_and_confirms(tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_handle_unsupported_command_explains_only_new_is_supported(tmp_path: Path):
+async def test_handle_unsupported_command_explains_the_command_is_not_supported(tmp_path: Path):
     settings = _settings()
     daemon, sender = await _make_daemon(tmp_path, settings)
 
@@ -198,7 +198,7 @@ async def test_handle_unsupported_command_explains_only_new_is_supported(tmp_pat
     chat_id, text, buttons = sender.sent[0]
     assert chat_id == _AUTHORIZED_CHAT_ID
     assert "/models" in text
-    assert "/new" in text
+    assert "isn't a command this Telegram bot supports" in text
     assert buttons is None
 
 

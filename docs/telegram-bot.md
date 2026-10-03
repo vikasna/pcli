@@ -124,17 +124,63 @@ handle_new_command` calls `new_headless_session` again and replies "Started
 a new session." This is the one way to get a fresh conversation without
 killing and re-launching the whole process (and its polling connection).
 
+### Settings commands
+
+Ten more slash commands bring TUI-style setting view/set parity to
+Telegram — each works the same way its `chat.py` counterpart does: with
+no argument it replies with the setting's current value, with one
+argument it parses, validates, and persists the new value (replying with
+a confirmation, or an explanation if the value was invalid). The TUI
+command name differs for several of these, since the TUI allows hyphens
+and Telegram doesn't (see below):
+
+| Telegram command | TUI equivalent |
+| --- | --- |
+| `/timeout` | `/timeout` |
+| `/temperature` | `/temperature` |
+| `/budget` | `/budget` |
+| `/context_limit` | `/context-limit` |
+| `/max_tool_iterations` | `/max-tool-iterations` |
+| `/artifact_threshold` | `/artifact-threshold` |
+| `/max_tool_calls_per_turn` | `/max-tool-calls-per-turn` |
+| `/max_tool_calls_per_minute` | `/max-tool-calls-per-minute` |
+| `/prune_tool_results` | `/prune-tool-results` |
+| `/max_response_tokens` | `/max-response-tokens` |
+
+**Why the names differ: Telegram bot commands can only contain letters,
+digits, and underscores** — no hyphens — a hard platform limitation
+(verified directly against Telegram's `bot_command` entity rules), not a
+stylistic choice. Every hyphenated TUI command name above is spelled with
+underscores instead on the Telegram side (e.g. `/context-limit` becomes
+`/context_limit`).
+
+All ten are registered through a single `CommandHandler` (`bot.py`)
+covering all ten names at once, which dispatches by command name to the
+matching `TelegramDaemon.handle_*_command` method. Each of those methods
+is a thin wrapper around one shared helper,
+`TelegramDaemon._handle_scalar_setting_command` (`daemon.py`), which holds
+the common view-or-set/validate/persist logic so it isn't duplicated ten
+times over.
+
+One behavioral difference from the TUI: `chat.py`'s handlers call
+`self._agent_loop.set_*(...)` to apply a change to the TUI's one
+long-lived `AgentLoop` immediately. The Telegram versions skip that
+step — `run_headless_task` already builds a fresh `AgentLoop` from
+`Settings` on every incoming message, so persisting the setting is
+already enough for it to take effect on the next message.
+
 ### Other slash commands
 
-`/new` is the only slash command implemented here — Telegram has no
-equivalent of the TUI's full command set (`/models`, `/budget`,
-`/timeout`, ...). Sending any other `/`-prefixed message is caught by a
-fallback `MessageHandler(filters.COMMAND, ...)` (`bot.py`) →
-`TelegramDaemon.handle_unsupported_command`, which replies explaining that
-only `/new` is supported. Previously nothing matched `filters.COMMAND`
-except the registered `/new` handler, so anything else was silently
-dropped by python-telegram-bot itself before `TelegramDaemon` ever saw
-it — indistinguishable from the message never arriving at all.
+`/new` and the ten settings commands above are the only slash commands
+implemented here — Telegram has no equivalent of the TUI's full command
+set yet (`/models`, `/sessions`, `/plan`, ...). Sending any other
+`/`-prefixed message is caught by a fallback `MessageHandler(filters.
+COMMAND, ...)` (`bot.py`) → `TelegramDaemon.handle_unsupported_command`,
+which replies that the command isn't supported yet. Previously nothing
+matched `filters.COMMAND` except the registered `/new` handler, so
+anything else was silently dropped by python-telegram-bot itself before
+`TelegramDaemon` ever saw it — indistinguishable from the message never
+arriving at all.
 
 ### Shell passthrough: `!command` and `!!command`
 
