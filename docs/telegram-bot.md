@@ -124,6 +124,18 @@ handle_new_command` calls `new_headless_session` again and replies "Started
 a new session." This is the one way to get a fresh conversation without
 killing and re-launching the whole process (and its polling connection).
 
+### Other slash commands
+
+`/new` is the only slash command implemented here — Telegram has no
+equivalent of the TUI's full command set (`/models`, `/budget`,
+`/timeout`, ...). Sending any other `/`-prefixed message is caught by a
+fallback `MessageHandler(filters.COMMAND, ...)` (`bot.py`) →
+`TelegramDaemon.handle_unsupported_command`, which replies explaining that
+only `/new` is supported. Previously nothing matched `filters.COMMAND`
+except the registered `/new` handler, so anything else was silently
+dropped by python-telegram-bot itself before `TelegramDaemon` ever saw
+it — indistinguishable from the message never arriving at all.
+
 ## Permission approval over inline buttons
 
 `ask_via_telegram` (`src/pcli/telegram/permissions.py`) is
@@ -169,6 +181,12 @@ permission modal still open when the app is killed; there's no session
 state to resume an in-flight approval into either way.
 
 ## Message-queue serialization
+
+Before working a message, `TelegramDaemon._process` immediately replies
+"Working on it..." — an upfront acknowledgment so a message sent mid-turn
+doesn't look identical to one that was never received, since a turn can
+take a while (several tool calls) with nothing else sent back until it
+finishes. The real reply follows once the turn actually completes.
 
 `TelegramDaemon` processes incoming text messages **one at a time**,
 through an `asyncio.Queue` (`handle_text` only ever `put`s onto the queue;
