@@ -241,8 +241,13 @@ async def test_handle_shell_passthrough_quiet_variant_hides_output(tmp_path: Pat
     daemon, sender = await _make_daemon(tmp_path, settings)
 
     try:
+        # The expected output ("999001") is deliberately not a substring of
+        # the command text that gets echoed back ("999*1000+1") - a literal
+        # value (e.g. `print(1 + 1)` -> "2") risks a false positive, since
+        # sys.executable's own path can legitimately contain a stray digit
+        # (e.g. a "...\Python\3.12.10\..." install dir).
         await daemon.handle_shell_passthrough(
-            _AUTHORIZED_CHAT_ID, f'!!"{sys.executable}" -c "print(1 + 1)"'
+            _AUTHORIZED_CHAT_ID, f'!!"{sys.executable}" -c "print(999*1000+1)"'
         )
     finally:
         await daemon._runtime.client.aclose()
@@ -250,7 +255,7 @@ async def test_handle_shell_passthrough_quiet_variant_hides_output(tmp_path: Pat
     assert len(sender.sent) == 1
     _chat_id, text, _buttons = sender.sent[0]
     assert "(output hidden)" in text
-    assert "2" not in text
+    assert "999001" not in text
 
 
 @pytest.mark.asyncio

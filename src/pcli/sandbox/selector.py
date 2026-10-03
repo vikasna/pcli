@@ -15,19 +15,28 @@ from pcli.sandbox.subprocess_backend import RestrictedSubprocessSandbox
 
 
 async def probe_docker_available(*, timeout_s: float = 1.5) -> bool:
+    """True only for a reachable Docker daemon running Linux containers.
+    DockerSandbox shells out to Linux-only assumptions (`python3`, a
+    `/workspace` bind mount, `--pids-limit` - a cgroups-only flag) that
+    error out immediately against a daemon in Windows-container mode
+    (Docker Desktop's other mode, and what GitHub's windows-latest runners
+    default to) rather than just failing to start. Checking the daemon's
+    OSType here means that setup falls back to RestrictedSubprocessSandbox
+    automatically instead of every tool call failing with a cryptic Docker
+    CLI error."""
     if shutil.which("docker") is None:
         return False
     try:
         proc = await asyncio.create_subprocess_exec(
             "docker",
-            "version",
+            "info",
             "--format",
-            "{{.Server.Version}}",
+            "{{.OSType}}",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
-        return proc.returncode == 0
+        stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+        return proc.returncode == 0 and stdout.decode().strip() == "linux"
     except (TimeoutError, OSError):
         return False
 
