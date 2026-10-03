@@ -155,6 +155,31 @@ command via `App.suspend()`), has no Telegram equivalent — there's no TTY
 on the other end of a chat to hand off to — so sending `!!!` here gets an
 explanatory reply instead of being attempted.
 
+### Live tool-call progress
+
+A turn with tool calls used to be silent until it finished — just the
+upfront "Working on it..." and then the final reply, with nothing in
+between no matter how many tool calls it made. `TelegramDaemon._process`
+now wires up `run_headless_task`'s `on_progress` callback (`agent/
+headless.py`) so each tool call and its result reach the chat as separate
+messages while the turn is still running: `  -> tool_name(args)` when the
+call is made, then `  <- result...` with a truncated preview once it
+returns.
+
+`on_progress` is a plain synchronous callback — it's invoked from inside
+an `async for` loop in `run_headless_task` that `_process` doesn't
+control, so it can't `await` the real Telegram send itself. It just puts
+the line onto a small `asyncio.Queue`; a background task drains that
+queue and does the actual sending, so progress forwarding never blocks or
+reorders the turn-driving loop. That queue is always drained — sending a
+sentinel and awaiting the drain task — before the final reply or a
+`GatewayError` message goes out, so tool-call progress reliably appears
+ahead of whatever concludes the turn, never after.
+
+One line is deliberately filtered out: the initial `"> {task}"` progress
+line that just echoes the user's own message back is skipped, since
+Telegram already shows what they sent.
+
 ## Permission approval over inline buttons
 
 `ask_via_telegram` (`src/pcli/telegram/permissions.py`) is
@@ -205,7 +230,9 @@ Before working a message, `TelegramDaemon._process` immediately replies
 "Working on it..." — an upfront acknowledgment so a message sent mid-turn
 doesn't look identical to one that was never received, since a turn can
 take a while (several tool calls) with nothing else sent back until it
-finishes. The real reply follows once the turn actually completes.
+finishes. The real reply follows once the turn actually completes; what
+happens in between is no longer silent either — see [Live tool-call
+progress](#live-tool-call-progress) above.
 
 `TelegramDaemon` processes incoming text messages **one at a time**,
 through an `asyncio.Queue` (`handle_text` only ever `put`s onto the queue;
