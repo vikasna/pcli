@@ -169,18 +169,55 @@ step — `run_headless_task` already builds a fresh `AgentLoop` from
 `Settings` on every incoming message, so persisting the setting is
 already enough for it to take effect on the next message.
 
+### `/rename`, `/allowed_roots`, `/memory`, and `/help`
+
+Four more commands round out parity with `chat.py`, each mirroring its
+`chat.py` counterpart's logic directly rather than going through the
+shared scalar-setting helper above:
+
+- **`/rename [name]`** — view or set the current session's title, same
+  as `chat.py`'s `/rename` (no hyphen, so the name carries over
+  unchanged). With no argument, replies with the current title
+  (`Session.derive_title()`); with one, sets `Session.title` and
+  persists it via `SessionStore`.
+- **`/allowed_roots [add|remove] [path]`** — view or edit the filesystem
+  guardrail's `fs_allowed_roots` list. Telegram name for the TUI's
+  `/allowed-roots` (hyphen -> underscore, the same platform constraint
+  as the table above); `add` and `remove` are plain arguments, not
+  command names, so they keep their TUI spelling unchanged. Refuses to
+  remove the last remaining root — the agent needs at least one, or
+  every filesystem tool call would be denied. Edits apply immediately
+  via `update_guardrails_fs_allowed_roots` (`permissions/guardrails.py`).
+- **`/memory [forget <id>|clear]`** — view, trim, or clear pcli's
+  cross-session memory of you (`memory/store.py`), same as `chat.py`'s
+  `/memory`. With no argument, replies with `render_memory_list` of the
+  current entries; `forget <id>` removes the one entry whose id ends
+  with the given suffix (replying with an error if none or more than one
+  match); `clear` wipes every entry.
+- **`/help`** — a Telegram-specific command reference, and a different
+  constant from `chat.py`'s own `_HELP_TEXT`, not just a resend of it.
+  `chat.py`'s version is Markdown-formatted (`**bold**`), but
+  `BotSender.send_message` (`telegram/sender.py`) sends with no
+  `parse_mode` set, so Markdown there would show up as literal asterisks
+  in the Telegram client. `daemon.py` instead defines its own plain-text
+  `_HELP_TEXT` constant, listing only the commands actually implemented
+  in Telegram so far.
+
+All four get the same "silently ignored from an unauthorized chat" check
+as every other command.
+
 ### Other slash commands
 
-`/new` and the ten settings commands above are the only slash commands
-implemented here — Telegram has no equivalent of the TUI's full command
-set yet (`/models`, `/sessions`, `/plan`, ...). Sending any other
-`/`-prefixed message is caught by a fallback `MessageHandler(filters.
-COMMAND, ...)` (`bot.py`) → `TelegramDaemon.handle_unsupported_command`,
-which replies that the command isn't supported yet. Previously nothing
-matched `filters.COMMAND` except the registered `/new` handler, so
-anything else was silently dropped by python-telegram-bot itself before
-`TelegramDaemon` ever saw it — indistinguishable from the message never
-arriving at all.
+`/new`, the ten settings commands, and the four commands above are the
+only slash commands implemented here — Telegram has no equivalent of the
+TUI's full command set yet (`/models`, `/sessions`, `/plan`, ...).
+Sending any other `/`-prefixed message is caught by a fallback
+`MessageHandler(filters.COMMAND, ...)` (`bot.py`) →
+`TelegramDaemon.handle_unsupported_command`, which replies that the
+command isn't supported yet. Previously nothing matched `filters.
+COMMAND` except the registered `/new` handler, so anything else was
+silently dropped by python-telegram-bot itself before `TelegramDaemon`
+ever saw it — indistinguishable from the message never arriving at all.
 
 ### Shell passthrough: `!command` and `!!command`
 
