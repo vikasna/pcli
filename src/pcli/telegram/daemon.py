@@ -84,6 +84,7 @@ _HELP_TEXT = (
     "/toolbox [discover <name> [path]|list|remove <name>] - discover, list, or remove "
     "toolbox tools (CLI programs/scripts wrapped as callable tools).\n"
     "/compact - manually summarize the conversation so far to free up context space.\n"
+    "/models [name] - set the model, or list what's available from the gateway.\n"
     "\n"
     "!<command> - run a shell command directly, bypassing the agent (!!<command> hides the "
     "output).\n"
@@ -843,6 +844,41 @@ class TelegramDaemon:
         for usage in usages:
             cost_tracker.record_turn(model or "", usage, source="memory")
         self._store.save(self._session)
+
+    async def handle_models_command(self, chat_id: int, arg: str | None) -> None:
+        """Mirrors ChatScreen._handle_models_command's set-directly path.
+        The no-arg listing is plain text here, not chat.py's interactive
+        ModelListScreen picker - see the plan's note on this; a future
+        change may upgrade it to inline buttons the same way permission
+        prompts already use them."""
+        if not self._is_authorized(chat_id):
+            logger.warning("Ignored message from unauthorized chat id %s", chat_id)
+            return
+        if arg:
+            self._set_model(arg)
+            await self._sender.send_message(chat_id, f"Model set to '{arg}'.")
+            return
+
+        try:
+            models = await self._runtime.client.list_models()
+        except GatewayError as exc:
+            await self._sender.send_message(chat_id, f"Failed to list models: {exc.message}")
+            return
+
+        if not models:
+            await self._sender.send_message(chat_id, "Gateway returned no models.")
+            return
+
+        current = self._settings.default_model or self._session.model or None
+        lines = [f"- {m}{' (active)' if m == current else ''}" for m in models]
+        await self._sender.send_message(
+            chat_id, "Available models:\n" + "\n".join(lines) + "\n\nUsage: /models <name>"
+        )
+
+    def _set_model(self, model: str) -> None:
+        self._settings.default_model = model
+        self._session.model = model
+        update_config_file(default_model=model)
 
     async def handle_new_command(self, chat_id: int) -> None:
         if not self._is_authorized(chat_id):

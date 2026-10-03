@@ -891,6 +891,72 @@ async def test_handle_compact_command_reports_a_gateway_error(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_handle_models_command_is_ignored_from_an_unauthorized_chat(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_models_command(999, "some-model")
+        assert sender.sent == []
+    finally:
+        await daemon._runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_handle_models_command_with_an_argument_sets_the_model(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_models_command(_AUTHORIZED_CHAT_ID, "gpt-5")
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert sender.sent == [(_AUTHORIZED_CHAT_ID, "Model set to 'gpt-5'.", None)]
+    assert settings.default_model == "gpt-5"
+    assert daemon._session.model == "gpt-5"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_handle_models_command_with_no_argument_lists_models(tmp_path: Path):
+    respx.get("http://fake-gateway.test/v1/models").mock(
+        return_value=httpx.Response(
+            200, json={"data": [{"id": "fake-model"}, {"id": "other-model"}]}
+        )
+    )
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_models_command(_AUTHORIZED_CHAT_ID, None)
+    finally:
+        await daemon._runtime.client.aclose()
+
+    text = sender.sent[-1][1]
+    assert "fake-model (active)" in text
+    assert "other-model" in text
+    assert "other-model (active)" not in text
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_handle_models_command_with_no_argument_reports_a_gateway_error(tmp_path: Path):
+    respx.get("http://fake-gateway.test/v1/models").mock(
+        side_effect=httpx.ReadTimeout("the read operation timed out")
+    )
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_models_command(_AUTHORIZED_CHAT_ID, None)
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert "Failed to list models" in sender.sent[-1][1]
+
+
+@pytest.mark.asyncio
 @respx.mock
 async def test_a_permission_requiring_tool_call_round_trips_through_the_daemon(tmp_path: Path):
     """End-to-end: a run_shell tool call triggers ask_via_telegram, which
