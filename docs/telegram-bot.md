@@ -299,12 +299,50 @@ Two error replies:
 - **"Gateway returned no models."** — the gateway responded but with an
   empty list.
 
+### `/sessions`
+
+`/sessions` with no argument lists other sessions via `SessionStore.
+list_index()` (already sorted most-recently-updated first), excluding
+the currently active one, capped at 20. Each line shows a short id (the
+last 4 characters of the full session id — the same abbreviation
+`SessionListScreen`'s TUI listing uses), the session's title, message
+count, total cost, and last-updated timestamp.
+
+`/sessions switch <id>` loads that session (`SessionStore.load`) and
+makes it the daemon's active session — `TelegramDaemon.
+handle_sessions_command` reassigns `self._session`, the exact same
+single-attribute swap `/new` already does safely (an in-flight turn, if
+any, holds its own reference to the old `Session` object via
+`run_headless_task`'s `session` parameter, so swapping mid-turn doesn't
+corrupt anything in flight).
+
+**`<id>` can be any suffix of the full session id, not the full id
+itself** — unlike `pcli --resume`, which requires the complete id. This
+reuses the same suffix-matching convenience `/memory forget <id>`
+already has ([above](#rename-allowed_roots-memory-help-and-toolbox)),
+and exists because typing a full session id on a phone keyboard is
+impractical. If the suffix matches more than one session, it replies
+asking for a longer one; if it matches none, it says so.
+
+This is **not** `chat.py`'s full interactive `SessionListScreen`
+browser (sort/search/delete) — it's a deliberately simpler text list,
+covering the real need (resuming a previous conversation from the
+phone) without building a second UI paradigm.
+
+Error/edge replies:
+
+- **"No other sessions yet."** — nothing to list.
+- **"Usage: /sessions switch <id>"** — `switch` with no argument.
+- **"No session found matching '`<id>`'."** / **"'`<id>`' matches more
+  than one session - use a longer id."** — `switch` with a bad or
+  ambiguous suffix.
+
 ### Other slash commands
 
 `/new`, the ten settings commands, the five commands above, `/compact`,
-and `/models` are the only slash commands implemented here — Telegram has
-no equivalent of the TUI's full command set yet (`/sessions`, `/plan`,
-...).
+`/models`, and `/sessions` are the only slash commands implemented
+here — Telegram has no equivalent of the TUI's full command set yet
+(`/plan`, ...).
 Sending any other `/`-prefixed message is caught by a fallback
 `MessageHandler(filters.COMMAND, ...)` (`bot.py`) →
 `TelegramDaemon.handle_unsupported_command`, which replies that the
