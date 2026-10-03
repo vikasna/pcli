@@ -74,6 +74,31 @@ async def test_remember_is_global_not_session_scoped(tmp_path: Path):
     assert len(read_memory().entries) == 1
 
 
+@pytest.mark.asyncio
+async def test_remember_with_local_category_is_not_persisted(tmp_path: Path):
+    result = await REMEMBER.handler(
+        {"content": "This project uses the cactus-needle package", "category": "local"},
+        _ctx(tmp_path),
+    )
+
+    assert result.is_error is False
+    assert "not saved globally" in result.output
+    assert read_memory().entries == []
+
+
+@pytest.mark.asyncio
+async def test_remember_with_local_category_ignores_explicit_source(tmp_path: Path):
+    """source='explicit' only means something for global categories (it
+    protects an entry from automatic eviction) - a local-category call has
+    nothing to protect, since nothing is ever written."""
+    result = await REMEMBER.handler(
+        {"content": "project detail", "category": "local", "source": "explicit"}, _ctx(tmp_path)
+    )
+
+    assert result.is_error is False
+    assert read_memory().entries == []
+
+
 def test_tool_metadata():
     assert REMEMBER.needs_permission is False
     assert REMEMBER.plan_mode_safe is True

@@ -171,6 +171,45 @@ async def test_extract_memory_can_call_remember_more_than_once(tmp_path: Path):
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_extract_memory_classifying_something_as_local_does_not_persist_it(tmp_path: Path):
+    """The model classifying a project-specific fact as category='local'
+    (the new scope added alongside the four global ones - see
+    memory_tool.py's REMEMBER description) must not write anything to the
+    global store, even though the tool call itself succeeds."""
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        _remember_call_response(
+            "call_1", "This project uses the cactus-needle package", "local"
+        ),
+        _text_response("Done reviewing."),
+    ]
+
+    async with GatewayClient(_settings()) as client:
+        await extract_memory("--- user ---\nworking on find-notes...", _ctx(tmp_path, client))
+
+    assert read_memory().entries == []
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_extract_memory_can_mix_local_and_global_calls_in_one_pass(tmp_path: Path):
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        _remember_call_response("call_1", "This project uses the cactus-needle package", "local"),
+        _remember_call_response("call_2", "Works as a backend Python developer", "profile"),
+        _text_response("Done."),
+    ]
+
+    async with GatewayClient(_settings()) as client:
+        await extract_memory("a transcript with one local and one global fact", _ctx(tmp_path, client))
+
+    entries = read_memory().entries
+    assert len(entries) == 1
+    assert entries[0].content == "Works as a backend Python developer"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_extract_memory_returns_usage_for_cost_tracking(tmp_path: Path):
     """chat.py's _extract_memory_from folds this into the session's cost
     ledger (source='memory') - the caller needs real Usage objects back

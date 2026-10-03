@@ -73,3 +73,19 @@ def test_render_memory_list_short_id_present_for_forget_command():
     entry = _entry("common_ask", "Often asks for a summary of recent commits")
     text = render_memory_list([entry])
     assert entry.id[-4:] in text
+
+
+def test_render_memory_list_silently_skips_a_local_category_entry():
+    """A "local"-category MemoryEntry is never actually constructed by the
+    real code path (tools/builtin/memory_tool.py intercepts it before
+    add_entry is ever called) - this just confirms the render functions
+    themselves don't choke on one if it somehow ended up here, since
+    "local" was added to the same MemoryCategory enum rather than a
+    separate type (see that type's own docstring)."""
+    entries = [
+        _entry("local", "Should never be rendered"),
+        _entry("profile", "Works as a backend Python developer"),
+    ]
+    text = render_memory_list(entries)
+    assert "Should never be rendered" not in text
+    assert "Works as a backend Python developer" in text

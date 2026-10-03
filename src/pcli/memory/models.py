@@ -14,7 +14,20 @@ from pydantic import BaseModel, Field
 
 from pcli.util.ids import new_id
 
-MemoryCategory = Literal["profile", "preference", "style", "common_ask"]
+MemoryCategory = Literal["profile", "preference", "style", "common_ask", "local"]
+"""The first four are global - persisted to memory/store.py's cross-session,
+cross-project store and injected into every future session's system prompt
+(render_memory_section below). "local" is not one of those: it exists purely
+so the LLM has an explicit, correctly-labeled place to put something
+project/task-specific instead of being forced to either discard it or
+miscategorize it as one of the global ones (the actual failure mode this
+was added to fix - see tools/builtin/memory_tool.py's REMEMBER description
+and memory/extraction.py's system prompt for the instructions that lean on
+this distinction). A "local"-categorized MemoryEntry is never constructed in
+practice - the remember tool's handler intercepts that category and returns
+without calling add_entry - but it's kept as part of this same enum rather
+than a second parallel type, since the tool's valid-category set is derived
+directly from this one."""
 MemorySource = Literal["explicit", "derived"]
 
 _CATEGORY_ORDER: tuple[MemoryCategory, ...] = ("profile", "preference", "style", "common_ask")
