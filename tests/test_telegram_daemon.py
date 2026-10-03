@@ -95,7 +95,10 @@ async def test_handle_text_processes_a_message_and_replies(tmp_path: Path):
     finally:
         await daemon._runtime.client.aclose()
 
-    assert sender.sent == [(_AUTHORIZED_CHAT_ID, "Hello there.", None)]
+    assert sender.sent == [
+        (_AUTHORIZED_CHAT_ID, "Working on it...", None),
+        (_AUTHORIZED_CHAT_ID, "Hello there.", None),
+    ]
 
 
 @pytest.mark.asyncio
@@ -122,6 +125,36 @@ async def test_handle_new_command_starts_a_fresh_session_and_confirms(tmp_path: 
 
         assert daemon.session_id != original_id
         assert sender.sent == [(_AUTHORIZED_CHAT_ID, "Started a new session.", None)]
+    finally:
+        await daemon._runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_handle_unsupported_command_explains_only_new_is_supported(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_unsupported_command(_AUTHORIZED_CHAT_ID, "/models")
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert len(sender.sent) == 1
+    chat_id, text, buttons = sender.sent[0]
+    assert chat_id == _AUTHORIZED_CHAT_ID
+    assert "/models" in text
+    assert "/new" in text
+    assert buttons is None
+
+
+@pytest.mark.asyncio
+async def test_handle_unsupported_command_from_an_unauthorized_chat_is_ignored(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_unsupported_command(999, "/models")
+        assert sender.sent == []
     finally:
         await daemon._runtime.client.aclose()
 
@@ -181,7 +214,10 @@ async def test_a_permission_requiring_tool_call_round_trips_through_the_daemon(t
     daemon, sender = await _make_daemon(tmp_path, settings)
 
     async def press_allow_once_soon() -> None:
-        while not sender.sent:
+        # Waits specifically for the permission prompt (the message with
+        # buttons), not just any message - the "Working on it..."
+        # acknowledgment is sent first and has no buttons.
+        while not sender.sent or sender.sent[-1][2] is None:
             await asyncio.sleep(0)
         _chat_id, text, buttons = sender.sent[-1]
         assert "run_shell" in text
@@ -225,8 +261,8 @@ async def test_gateway_error_is_reported_to_the_chat_not_raised(tmp_path: Path):
     finally:
         await daemon._runtime.client.aclose()
 
-    assert len(sender.sent) == 1
-    chat_id, text, _buttons = sender.sent[0]
+    assert len(sender.sent) == 2  # the "Working on it..." ack, then the error
+    chat_id, text, _buttons = sender.sent[-1]
     assert chat_id == _AUTHORIZED_CHAT_ID
     assert "Gateway error" in text
 
@@ -244,14 +280,19 @@ async def test_run_forever_processes_queued_messages_one_at_a_time_in_order(tmp_
         await daemon.handle_text(_AUTHORIZED_CHAT_ID, "first")
         await daemon.handle_text(_AUTHORIZED_CHAT_ID, "second")
         for _ in range(50):
-            if len(sender.sent) >= 2:
+            if len(sender.sent) >= 4:  # ack + reply, twice
                 break
             await asyncio.sleep(0.01)
     finally:
         worker.cancel()
         await daemon._runtime.client.aclose()
 
-    assert [text for _chat_id, text, _buttons in sender.sent] == ["first reply", "second reply"]
+    assert [text for _chat_id, text, _buttons in sender.sent] == [
+        "Working on it...",
+        "first reply",
+        "Working on it...",
+        "second reply",
+    ]
 
 
 @pytest.mark.asyncio

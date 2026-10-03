@@ -100,6 +100,14 @@ async def run_telegram_daemon(
         if update.effective_chat is not None:
             await daemon.handle_new_command(update.effective_chat.id)
 
+    async def on_unsupported_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        chat = update.effective_chat
+        message = update.effective_message
+        if chat is None or message is None or not message.text:
+            return
+        command = message.text.split()[0] if message.text.split() else message.text
+        await daemon.handle_unsupported_command(chat.id, command)
+
     async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         query = update.callback_query
         if query is None:
@@ -116,6 +124,12 @@ async def run_telegram_daemon(
             logger.debug("Could not clear the inline keyboard after a decision", exc_info=True)
 
     application.add_handler(CommandHandler("new", on_new_command))
+    # Must come before the plain-text handler below and after "new" above:
+    # filters.COMMAND matches any /word-shaped message, not just registered
+    # ones, so without this anything other than /new matched no handler at
+    # all and was silently dropped by PTB itself - never even reaching
+    # TelegramDaemon. See handle_unsupported_command's own docstring.
+    application.add_handler(MessageHandler(filters.COMMAND, on_unsupported_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     application.add_handler(CallbackQueryHandler(on_callback_query))
 

@@ -250,9 +250,18 @@ async def test_registers_a_command_a_text_and_a_callback_handler(
     app = _FakeApplicationBuilder.last_built
     assert app is not None
     assert app.token == "test-token"
-    assert len(app.handlers) == 3
+    assert len(app.handlers) == 4
     assert any(isinstance(h, _FakeCommandHandler) and h.command == "new" for h in app.handlers)
-    assert any(isinstance(h, _FakeMessageHandler) for h in app.handlers)
+    message_handlers = [h for h in app.handlers if isinstance(h, _FakeMessageHandler)]
+    assert len(message_handlers) == 2
+    # _FakeFilter.__and__/__invert__ are no-ops that just return self (see
+    # that class's own docstring-equivalent comment above) - so
+    # `filters.TEXT & ~filters.COMMAND` collapses to the literal TEXT
+    # instance, and a bare `filters.COMMAND` stays COMMAND. That's enough
+    # to tell the two MessageHandlers apart by identity even without real
+    # filter-matching logic in the fake.
+    assert any(h.filters is _FakeFilters.COMMAND for h in message_handlers)
+    assert any(h.filters is _FakeFilters.TEXT for h in message_handlers)
     assert any(isinstance(h, _FakeCallbackQueryHandler) for h in app.handlers)
 
 
@@ -298,18 +307,90 @@ async def test_an_incoming_text_update_reaches_the_daemon_and_gets_a_reply(
         app = _FakeApplicationBuilder.last_built
         assert app is not None
 
-        text_handler = next(h for h in app.handlers if isinstance(h, _FakeMessageHandler))
+        text_handler = next(
+            h for h in app.handlers
+            if isinstance(h, _FakeMessageHandler) and h.filters is _FakeFilters.TEXT
+        )
         update = _FakeUpdate(chat_id=_AUTHORIZED_CHAT_ID, text="hi")
         await text_handler.callback(update, context=None)
 
         for _ in range(100):
-            if app.bot.sent_messages:
+            if len(app.bot.sent_messages) >= 2:  # the "Working on it..." ack, then the reply
                 break
             await asyncio.sleep(0.01)
-        assert app.bot.sent_messages == [(_AUTHORIZED_CHAT_ID, "Hello from the daemon.")]
+        assert app.bot.sent_messages == [
+            (_AUTHORIZED_CHAT_ID, "Working on it..."),
+            (_AUTHORIZED_CHAT_ID, "Hello from the daemon."),
+        ]
     finally:
         stop_event.set()
         await daemon_task
+
+
+@pytest.mark.asyncio
+async def test_an_unsupported_command_update_gets_an_explanatory_reply(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _install_fake_telegram(monkeypatch)
+    settings = _settings()
+    stop_event = asyncio.Event()
+    stop_event.set()
+
+    await run_telegram_daemon(settings, tmp_path, stop_event=stop_event)
+
+    app = _FakeApplicationBuilder.last_built
+    assert app is not None
+    fallback_handler = next(
+        h for h in app.handlers
+        if isinstance(h, _FakeMessageHandler) and h.filters is _FakeFilters.COMMAND
+    )
+    update = _FakeUpdate(chat_id=_AUTHORIZED_CHAT_ID, text="/models")
+    await fallback_handler.callback(update, context=None)
+
+    expected_text = (
+        "'/models' isn't a command this Telegram bot supports - only /new is. "
+        "Anything else (no leading /) is sent to the agent as a normal message."
+    )
+    assert app.bot.sent_messages == [(_AUTHORIZED_CHAT_ID, expected_text)]
+
+
+def test_real_ptb_filters_actually_separate_commands_from_plain_text():
+    """Regression guard for the actual bug class the fallback handler
+    above fixes - every other test in this file uses _FakeFilter, a pure
+    no-op stub (__and__/__invert__ both just `return self`, see
+    _install_fake_telegram's own comment), which cannot catch a real
+    filter-matching regression. This exercises the genuine
+    python-telegram-bot filters.COMMAND/filters.TEXT objects instead,
+    against a Message carrying a real bot_command MessageEntity - exactly
+    how an incoming "/word" update actually looks once Telegram's own
+    servers parse it (a bare Message with no entities does NOT match
+    filters.COMMAND, confirmed directly - entities are what make this
+    filter work, not just a leading "/" in the text). Skips cleanly if the
+    optional "telegram" extra isn't installed; this dev environment and
+    ci.yml's install step both have it."""
+    pytest.importorskip("telegram")
+    import datetime
+
+    from telegram import Chat, Message, MessageEntity, Update
+    from telegram.ext import filters
+
+    def _command_update(text: str) -> Update:
+        entity = MessageEntity(type=MessageEntity.BOT_COMMAND, offset=0, length=len(text.split()[0]))
+        message = Message(
+            message_id=1,
+            date=datetime.datetime.now(datetime.UTC),
+            chat=Chat(id=1, type="private"),
+            text=text,
+            entities=(entity,),
+        )
+        return Update(update_id=1, message=message)
+
+    models_update = _command_update("/models")
+    assert filters.COMMAND.check_update(models_update)
+    assert not (filters.TEXT & ~filters.COMMAND).check_update(models_update)
+
+    new_update = _command_update("/new")
+    assert filters.COMMAND.check_update(new_update)
 
 
 @pytest.mark.asyncio

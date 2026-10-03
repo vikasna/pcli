@@ -86,6 +86,23 @@ class TelegramDaemon:
         self._session = new_headless_session(self._store, self._settings, self._cwd)
         await self._sender.send_message(chat_id, "Started a new session.")
 
+    async def handle_unsupported_command(self, chat_id: int, command: str) -> None:
+        """Telegram has no equivalent of the TUI's full slash-command set
+        (/models, /budget, /timeout, ...) - only /new is implemented here.
+        Without this, bot.py's handler registration means anything else
+        /-prefixed matches no handler at all and is silently dropped by
+        python-telegram-bot itself, before TelegramDaemon ever sees it - a
+        real reported confusion ("I sent /models and nothing happened").
+        Same authorization gate as handle_text/handle_new_command."""
+        if not self._is_authorized(chat_id):
+            logger.warning("Ignored message from unauthorized chat id %s", chat_id)
+            return
+        await self._sender.send_message(
+            chat_id,
+            f"'{command}' isn't a command this Telegram bot supports - only /new is. "
+            "Anything else (no leading /) is sent to the agent as a normal message.",
+        )
+
     def handle_callback(self, data: str) -> None:
         """No chat-id check here on purpose: a callback_data payload is
         meaningless (decode_callback_data returns None) unless it matches
@@ -119,6 +136,14 @@ class TelegramDaemon:
                     logger.exception("Also failed to report that error back to Telegram")
 
     async def _process(self, text: str) -> None:
+        # A turn can take a while (several tool calls) with nothing else
+        # sent back until it finishes - without this, a message mid-turn
+        # looks identical to one that was never received at all. One
+        # upfront acknowledgment is the right-sized fix for a chat
+        # interface; per-tool-call progress would just be spam (see
+        # run_headless_task's on_progress, deliberately left unwired here).
+        await self._sender.send_message(self._chat_id, "Working on it...")
+
         async def ask(tool_name: str, arguments: dict, risk_description: str):
             return await ask_via_telegram(
                 self._sender,
