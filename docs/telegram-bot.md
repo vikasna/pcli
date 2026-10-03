@@ -225,11 +225,59 @@ shared scalar-setting helper above:
 All five get the same "silently ignored from an unauthorized chat" check
 as every other command.
 
+### `/compact`
+
+`/compact` manually summarizes and archives the oldest turns of the
+conversation to free up context space. `TelegramDaemon.
+handle_compact_command` mirrors `ChatScreen._run_compaction`'s "manual"
+path closely: it calls `maybe_compact` (`agent/compaction.py`) with the
+configured `auto_compact_keep_recent_turns`, and if that returns `None`
+while context usage is still at or above `auto_compact_threshold`, it
+retries with a smaller "recent turns to keep verbatim" window — counting
+down one turn at a time — until an attempt succeeds. A successful
+compaction records a `ToolInvocation` (`tool_name="_compaction"`) and a
+cost-tracker entry (`source="compaction"`) the same way `chat.py` does,
+replies with how many messages were compacted and the resulting
+`artifact_id` (noting it if the recent-turns window had to be tightened
+to get there), and persists the session via `SessionStore`. When
+`Settings.memory_enabled`, it then piggybacks a memory-extraction pass
+on the just-archived transcript — `_extract_memory_from`, the same
+best-effort logic as `chat.py`'s own method of that name: a failure there
+is logged (`logger.exception`) and otherwise invisible, since it never
+touched the turn or command that triggered compaction.
+
+**Unlike everything else on this page, `/compact` isn't just parity for
+parity's sake — it closes a real gap.** `run_headless_task` (`agent/
+headless.py`) deliberately never auto-compacts, a design choice narrower
+than `ChatScreen`'s own turn loop (see [What's different from the
+TUI](headless-and-scheduled-runs.md#whats-different-from-the-tui)).
+Before this command existed, a long-running Telegram conversation had no
+way at all to free up context as it filled up — short of `/new`, which
+throws the whole conversation away instead of summarizing it. `/compact`
+is the only context-management tool Telegram has.
+
+A new `TelegramDaemon._turn_in_progress` flag — set just before and
+cleared just after `_process`'s call into `run_headless_task` — guards
+against running `/compact` while a turn is in flight: `maybe_compact`
+mutates `session.messages` directly, which would race a turn doing the
+same thing concurrently. While a turn is in progress, `/compact` replies
+"Still working on the current turn - try /compact again once it's done."
+instead of running — the same hazard `chat.py`'s own `_turn_in_progress`
+guards against for its `/compact`.
+
+Two other replies worth knowing:
+
+- **"Nothing to compact yet."** — `maybe_compact` found too little
+  history to be worth compacting, even after the retry above.
+- **"Compaction failed: `<error>`"** — the compaction call itself raised
+  a `GatewayError` (bad model name, gateway unreachable, ...).
+
 ### Other slash commands
 
-`/new`, the ten settings commands, and the five commands above are the
-only slash commands implemented here — Telegram has no equivalent of the
-TUI's full command set yet (`/models`, `/sessions`, `/plan`, ...).
+`/new`, the ten settings commands, the five commands above, and
+`/compact` are the only slash commands implemented here — Telegram has no
+equivalent of the TUI's full command set yet (`/models`, `/sessions`,
+`/plan`, ...).
 Sending any other `/`-prefixed message is caught by a fallback
 `MessageHandler(filters.COMMAND, ...)` (`bot.py`) →
 `TelegramDaemon.handle_unsupported_command`, which replies that the
