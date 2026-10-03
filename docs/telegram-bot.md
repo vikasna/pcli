@@ -272,12 +272,39 @@ Two other replies worth knowing:
 - **"Compaction failed: `<error>`"** — the compaction call itself raised
   a `GatewayError` (bad model name, gateway unreachable, ...).
 
+### `/models`
+
+`/models <name>` sets the model directly: given an argument,
+`TelegramDaemon.handle_models_command` mirrors `chat.py`'s `ChatScreen.
+_set_model` — it sets `Settings.default_model`, `Session.model`, and
+persists via `update_config_file`, replying "Model set to '<name>'."
+This skips the same TUI-only live-apply step the [settings
+commands](#settings-commands) above do — there's no persistent
+`AgentLoop` here to push the change into.
+
+`/models` with no argument calls `self._runtime.client.list_models()` and
+replies with a plain-text list of model ids, marking whichever one is
+currently active with `(active)`. This is **not** the same as `chat.py`'s
+interactive `ModelListScreen` picker — it's a deliberate placeholder/first
+step. A future change may upgrade it to an inline-button picker, reusing
+the same `callback_data` mechanism [permission
+prompts](#permission-approval-over-inline-buttons) already use — that's
+its own separate change, since it's a genuinely new mechanism here, not
+just another command to port.
+
+Two error replies:
+
+- **"Failed to list models: `<error>`"** — the listing call raised a
+  `GatewayError`.
+- **"Gateway returned no models."** — the gateway responded but with an
+  empty list.
+
 ### Other slash commands
 
-`/new`, the ten settings commands, the five commands above, and
-`/compact` are the only slash commands implemented here — Telegram has no
-equivalent of the TUI's full command set yet (`/models`, `/sessions`,
-`/plan`, ...).
+`/new`, the ten settings commands, the five commands above, `/compact`,
+and `/models` are the only slash commands implemented here — Telegram has
+no equivalent of the TUI's full command set yet (`/sessions`, `/plan`,
+...).
 Sending any other `/`-prefixed message is caught by a fallback
 `MessageHandler(filters.COMMAND, ...)` (`bot.py`) →
 `TelegramDaemon.handle_unsupported_command`, which replies that the
