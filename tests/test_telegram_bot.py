@@ -250,8 +250,12 @@ async def test_registers_a_command_a_text_and_a_callback_handler(
     app = _FakeApplicationBuilder.last_built
     assert app is not None
     assert app.token == "test-token"
-    assert len(app.handlers) == 4
+    assert len(app.handlers) == 5
     assert any(isinstance(h, _FakeCommandHandler) and h.command == "new" for h in app.handlers)
+    assert any(
+        isinstance(h, _FakeCommandHandler) and isinstance(h.command, list) and "timeout" in h.command
+        for h in app.handlers
+    )
     message_handlers = [h for h in app.handlers if isinstance(h, _FakeMessageHandler)]
     assert len(message_handlers) == 2
     # _FakeFilter.__and__/__invert__ are no-ops that just return self (see
@@ -352,6 +356,59 @@ async def test_an_unsupported_command_update_gets_an_explanatory_reply(
         "Anything else (no leading /) is sent to the agent as a normal message."
     )
     assert app.bot.sent_messages == [(_AUTHORIZED_CHAT_ID, expected_text)]
+
+
+@pytest.mark.asyncio
+async def test_a_scalar_setting_command_update_reaches_the_right_daemon_method(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _install_fake_telegram(monkeypatch)
+    settings = _settings()
+    stop_event = asyncio.Event()
+    stop_event.set()
+
+    await run_telegram_daemon(settings, tmp_path, stop_event=stop_event)
+
+    app = _FakeApplicationBuilder.last_built
+    assert app is not None
+    handler = next(
+        h
+        for h in app.handlers
+        if isinstance(h, _FakeCommandHandler) and isinstance(h.command, list)
+    )
+    update = _FakeUpdate(chat_id=_AUTHORIZED_CHAT_ID, text="/timeout 45")
+    context = types.SimpleNamespace(args=["45"])
+    await handler.callback(update, context=context)
+
+    assert app.bot.sent_messages == [
+        (_AUTHORIZED_CHAT_ID, "request_timeout_s set to 45s - takes effect on the next gateway request.")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_scalar_setting_command_with_no_args_reports_the_current_value(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _install_fake_telegram(monkeypatch)
+    settings = _settings()
+    stop_event = asyncio.Event()
+    stop_event.set()
+
+    await run_telegram_daemon(settings, tmp_path, stop_event=stop_event)
+
+    app = _FakeApplicationBuilder.last_built
+    assert app is not None
+    handler = next(
+        h
+        for h in app.handlers
+        if isinstance(h, _FakeCommandHandler) and isinstance(h.command, list)
+    )
+    update = _FakeUpdate(chat_id=_AUTHORIZED_CHAT_ID, text="/timeout")
+    context = types.SimpleNamespace(args=[])
+    await handler.callback(update, context=context)
+
+    assert len(app.bot.sent_messages) == 1
+    assert "request_timeout_s is currently" in app.bot.sent_messages[0][1]
 
 
 def test_real_ptb_filters_actually_separate_commands_from_plain_text():

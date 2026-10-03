@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from pcli.agent.runtime import build_agent_runtime, build_permission_manager
@@ -108,6 +108,39 @@ async def run_telegram_daemon(
         command = message.text.split()[0] if message.text.split() else message.text
         await daemon.handle_unsupported_command(chat.id, command)
 
+    # Telegram bot commands can only contain [A-Za-z0-9_] - no hyphens - so
+    # every hyphenated TUI command name below is spelled with underscores
+    # here instead (e.g. /context-limit -> /context_limit). A single
+    # CommandHandler registered against all these names, routed by this one
+    # dict, instead of ten near-identical PTB handler registrations.
+    scalar_setting_commands: dict[str, Callable[[int, str | None], Awaitable[None]]] = {
+        "timeout": daemon.handle_timeout_command,
+        "temperature": daemon.handle_temperature_command,
+        "budget": daemon.handle_budget_command,
+        "context_limit": daemon.handle_context_limit_command,
+        "max_tool_iterations": daemon.handle_max_tool_iterations_command,
+        "artifact_threshold": daemon.handle_artifact_threshold_command,
+        "max_tool_calls_per_turn": daemon.handle_max_tool_calls_per_turn_command,
+        "max_tool_calls_per_minute": daemon.handle_max_tool_calls_per_minute_command,
+        "prune_tool_results": daemon.handle_prune_tool_results_command,
+        "max_response_tokens": daemon.handle_max_response_tokens_command,
+    }
+
+    async def on_scalar_setting_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        chat = update.effective_chat
+        message = update.effective_message
+        if chat is None or message is None or not message.text:
+            return
+        tokens = message.text.split()
+        if not tokens:
+            return
+        command = tokens[0][1:].partition("@")[0]  # drop leading "/" and any "@botname" suffix
+        handler = scalar_setting_commands.get(command)
+        if handler is None:
+            return
+        arg = " ".join(context.args) if context.args else None
+        await handler(chat.id, arg)
+
     async def on_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         query = update.callback_query
         if query is None:
@@ -124,11 +157,15 @@ async def run_telegram_daemon(
             logger.debug("Could not clear the inline keyboard after a decision", exc_info=True)
 
     application.add_handler(CommandHandler("new", on_new_command))
-    # Must come before the plain-text handler below and after "new" above:
-    # filters.COMMAND matches any /word-shaped message, not just registered
-    # ones, so without this anything other than /new matched no handler at
-    # all and was silently dropped by PTB itself - never even reaching
-    # TelegramDaemon. See handle_unsupported_command's own docstring.
+    application.add_handler(
+        CommandHandler(list(scalar_setting_commands), on_scalar_setting_command)
+    )
+    # Must come before the plain-text handler below and after the specific
+    # command handlers above: filters.COMMAND matches any /word-shaped
+    # message, not just registered ones, so without this anything not
+    # explicitly registered matched no handler at all and was silently
+    # dropped by PTB itself - never even reaching TelegramDaemon. See
+    # handle_unsupported_command's own docstring.
     application.add_handler(MessageHandler(filters.COMMAND, on_unsupported_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     application.add_handler(CallbackQueryHandler(on_callback_query))

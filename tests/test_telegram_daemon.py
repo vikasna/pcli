@@ -316,6 +316,261 @@ async def test_handle_new_command_from_an_unauthorized_chat_is_ignored(tmp_path:
         await daemon._runtime.client.aclose()
 
 
+_SCALAR_SETTING_COMMAND_METHODS = [
+    "handle_timeout_command",
+    "handle_temperature_command",
+    "handle_budget_command",
+    "handle_context_limit_command",
+    "handle_max_tool_iterations_command",
+    "handle_artifact_threshold_command",
+    "handle_max_tool_calls_per_turn_command",
+    "handle_max_tool_calls_per_minute_command",
+    "handle_prune_tool_results_command",
+    "handle_max_response_tokens_command",
+]
+
+
+@pytest.mark.asyncio
+async def test_scalar_setting_commands_are_ignored_from_an_unauthorized_chat(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        for method_name in _SCALAR_SETTING_COMMAND_METHODS:
+            await getattr(daemon, method_name)(999, None)
+        assert sender.sent == []
+    finally:
+        await daemon._runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_handle_timeout_command_views_sets_and_rejects_bad_input(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_timeout_command(_AUTHORIZED_CHAT_ID, None)
+        assert "request_timeout_s is currently" in sender.sent[-1][1]
+
+        await daemon.handle_timeout_command(_AUTHORIZED_CHAT_ID, "45")
+        assert "request_timeout_s set to 45s" in sender.sent[-1][1]
+        assert settings.request_timeout_s == 45.0
+
+        await daemon.handle_timeout_command(_AUTHORIZED_CHAT_ID, "not-a-number")
+        assert "isn't a valid number" in sender.sent[-1][1]
+
+        await daemon.handle_timeout_command(_AUTHORIZED_CHAT_ID, "-5")
+        assert "must be greater than 0" in sender.sent[-1][1]
+    finally:
+        await daemon._runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_handle_temperature_command_views_sets_clears_and_rejects_bad_input(
+    tmp_path: Path,
+):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_temperature_command(_AUTHORIZED_CHAT_ID, None)
+        assert "default_temperature is currently" in sender.sent[-1][1]
+
+        await daemon.handle_temperature_command(_AUTHORIZED_CHAT_ID, "0.5")
+        assert "default_temperature set to 0.5" in sender.sent[-1][1]
+        assert settings.default_temperature == 0.5
+
+        await daemon.handle_temperature_command(_AUTHORIZED_CHAT_ID, "off")
+        assert "cleared" in sender.sent[-1][1]
+        assert settings.default_temperature is None
+
+        await daemon.handle_temperature_command(_AUTHORIZED_CHAT_ID, "nope")
+        assert "isn't a valid number" in sender.sent[-1][1]
+    finally:
+        await daemon._runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_handle_budget_command_views_sets_clears_and_rejects_bad_input(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_budget_command(_AUTHORIZED_CHAT_ID, None)
+        assert "max_session_cost_usd is currently" in sender.sent[-1][1]
+
+        await daemon.handle_budget_command(_AUTHORIZED_CHAT_ID, "5")
+        assert "max_session_cost_usd set to $5.00" in sender.sent[-1][1]
+        assert settings.max_session_cost_usd == 5.0
+
+        await daemon.handle_budget_command(_AUTHORIZED_CHAT_ID, "off")
+        assert "cleared" in sender.sent[-1][1]
+        assert settings.max_session_cost_usd is None
+
+        await daemon.handle_budget_command(_AUTHORIZED_CHAT_ID, "0")
+        assert "must be greater than 0" in sender.sent[-1][1]
+    finally:
+        await daemon._runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_handle_context_limit_command_views_sets_and_rejects_bad_input(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_context_limit_command(_AUTHORIZED_CHAT_ID, None)
+        assert "Assumed context limit for 'fake-model'" in sender.sent[-1][1]
+
+        await daemon.handle_context_limit_command(_AUTHORIZED_CHAT_ID, "5000")
+        assert "Context limit for 'fake-model' set to 5,000 tokens." in sender.sent[-1][1]
+
+        await daemon.handle_context_limit_command(_AUTHORIZED_CHAT_ID, "abc")
+        assert "isn't a valid number of tokens" in sender.sent[-1][1]
+    finally:
+        await daemon._runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_handle_max_tool_iterations_command_views_sets_and_rejects_bad_input(
+    tmp_path: Path,
+):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_max_tool_iterations_command(_AUTHORIZED_CHAT_ID, None)
+        assert "max_tool_iterations is currently" in sender.sent[-1][1]
+
+        await daemon.handle_max_tool_iterations_command(_AUTHORIZED_CHAT_ID, "10")
+        assert "max_tool_iterations set to 10." in sender.sent[-1][1]
+        assert settings.max_tool_iterations == 10
+
+        await daemon.handle_max_tool_iterations_command(_AUTHORIZED_CHAT_ID, "0")
+        assert "must be greater than 0" in sender.sent[-1][1]
+    finally:
+        await daemon._runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_handle_artifact_threshold_command_views_sets_and_rejects_bad_input(
+    tmp_path: Path,
+):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_artifact_threshold_command(_AUTHORIZED_CHAT_ID, None)
+        assert "artifact_threshold_chars is currently" in sender.sent[-1][1]
+
+        await daemon.handle_artifact_threshold_command(_AUTHORIZED_CHAT_ID, "500")
+        assert "artifact_threshold_chars set to 500." in sender.sent[-1][1]
+        assert settings.artifact_threshold_chars == 500
+
+        await daemon.handle_artifact_threshold_command(_AUTHORIZED_CHAT_ID, "-1")
+        assert "must be greater than 0" in sender.sent[-1][1]
+    finally:
+        await daemon._runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_handle_max_tool_calls_per_turn_command_views_sets_and_rejects_bad_input(
+    tmp_path: Path,
+):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_max_tool_calls_per_turn_command(_AUTHORIZED_CHAT_ID, None)
+        assert "max_tool_calls_per_turn is currently" in sender.sent[-1][1]
+
+        await daemon.handle_max_tool_calls_per_turn_command(_AUTHORIZED_CHAT_ID, "5")
+        assert "max_tool_calls_per_turn set to 5." in sender.sent[-1][1]
+
+        await daemon.handle_max_tool_calls_per_turn_command(_AUTHORIZED_CHAT_ID, "-1")
+        assert "must be 0 or greater" in sender.sent[-1][1]
+    finally:
+        await daemon._runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_handle_max_tool_calls_per_minute_command_views_sets_and_rejects_bad_input(
+    tmp_path: Path,
+):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_max_tool_calls_per_minute_command(_AUTHORIZED_CHAT_ID, None)
+        assert "max_tool_calls_per_minute is currently" in sender.sent[-1][1]
+
+        await daemon.handle_max_tool_calls_per_minute_command(_AUTHORIZED_CHAT_ID, "5")
+        assert "max_tool_calls_per_minute set to 5." in sender.sent[-1][1]
+
+        await daemon.handle_max_tool_calls_per_minute_command(_AUTHORIZED_CHAT_ID, "-1")
+        assert "must be 0 or greater" in sender.sent[-1][1]
+    finally:
+        await daemon._runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_handle_prune_tool_results_command_views_toggles_sets_and_rejects_bad_input(
+    tmp_path: Path,
+):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_prune_tool_results_command(_AUTHORIZED_CHAT_ID, None)
+        assert "prune_tool_results is" in sender.sent[-1][1]
+
+        await daemon.handle_prune_tool_results_command(_AUTHORIZED_CHAT_ID, "off")
+        assert "prune_tool_results disabled." in sender.sent[-1][1]
+        assert settings.prune_tool_results_enabled is False
+
+        await daemon.handle_prune_tool_results_command(_AUTHORIZED_CHAT_ID, "on")
+        assert "prune_tool_results enabled." in sender.sent[-1][1]
+        assert settings.prune_tool_results_enabled is True
+
+        await daemon.handle_prune_tool_results_command(_AUTHORIZED_CHAT_ID, "5")
+        assert "prune_tool_results_keep_recent_turns set to 5." in sender.sent[-1][1]
+        assert settings.prune_tool_results_keep_recent_turns == 5
+
+        await daemon.handle_prune_tool_results_command(_AUTHORIZED_CHAT_ID, "nonsense")
+        assert "isn't 'off', 'on', or a valid number" in sender.sent[-1][1]
+    finally:
+        await daemon._runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_handle_max_response_tokens_command_views_toggles_sets_and_rejects_bad_input(
+    tmp_path: Path,
+):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_max_response_tokens_command(_AUTHORIZED_CHAT_ID, None)
+        assert "max_response_tokens is" in sender.sent[-1][1]
+
+        await daemon.handle_max_response_tokens_command(_AUTHORIZED_CHAT_ID, "off")
+        assert "max_response_tokens disabled." in sender.sent[-1][1]
+        assert settings.max_response_tokens_enabled is False
+
+        await daemon.handle_max_response_tokens_command(_AUTHORIZED_CHAT_ID, "on")
+        assert "max_response_tokens enabled." in sender.sent[-1][1]
+        assert settings.max_response_tokens_enabled is True
+
+        await daemon.handle_max_response_tokens_command(_AUTHORIZED_CHAT_ID, "1000")
+        assert "max_response_tokens_safety_margin set to 1,000." in sender.sent[-1][1]
+        assert settings.max_response_tokens_safety_margin == 1000
+
+        await daemon.handle_max_response_tokens_command(_AUTHORIZED_CHAT_ID, "bogus")
+        assert "isn't 'off', 'on', or a valid number" in sender.sent[-1][1]
+    finally:
+        await daemon._runtime.client.aclose()
+
+
 @pytest.mark.asyncio
 @respx.mock
 async def test_a_permission_requiring_tool_call_round_trips_through_the_daemon(tmp_path: Path):
