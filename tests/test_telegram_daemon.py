@@ -572,6 +572,131 @@ async def test_handle_max_response_tokens_command_views_toggles_sets_and_rejects
 
 
 @pytest.mark.asyncio
+async def test_rename_allowed_roots_memory_and_help_are_ignored_from_an_unauthorized_chat(
+    tmp_path: Path,
+):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_rename_command(999, "New Title")
+        await daemon.handle_allowed_roots_command(999, "add /tmp")
+        await daemon.handle_memory_command(999, "clear")
+        await daemon.handle_help_command(999)
+        assert sender.sent == []
+    finally:
+        await daemon._runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_handle_rename_command_views_and_sets_the_session_title(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_rename_command(_AUTHORIZED_CHAT_ID, None)
+        assert "Current session title:" in sender.sent[-1][1]
+
+        await daemon.handle_rename_command(_AUTHORIZED_CHAT_ID, "My Renamed Session")
+        assert "Session renamed to 'My Renamed Session'." in sender.sent[-1][1]
+        assert daemon._session.title == "My Renamed Session"
+    finally:
+        await daemon._runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_handle_allowed_roots_command_views_adds_and_removes_paths(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+    guardrails = daemon._permission_manager.guardrails
+
+    try:
+        await daemon.handle_allowed_roots_command(_AUTHORIZED_CHAT_ID, "")
+        assert "Current allowed_roots:" in sender.sent[-1][1]
+
+        await daemon.handle_allowed_roots_command(_AUTHORIZED_CHAT_ID, "add /some/new/path")
+        assert "Added '/some/new/path' to allowed_roots." in sender.sent[-1][1]
+        assert "/some/new/path" in guardrails.fs_allowed_roots
+
+        await daemon.handle_allowed_roots_command(_AUTHORIZED_CHAT_ID, "add /some/new/path")
+        assert "is already in allowed_roots" in sender.sent[-1][1]
+
+        await daemon.handle_allowed_roots_command(_AUTHORIZED_CHAT_ID, "remove /some/new/path")
+        assert "Removed '/some/new/path' from allowed_roots." in sender.sent[-1][1]
+        assert "/some/new/path" not in guardrails.fs_allowed_roots
+
+        await daemon.handle_allowed_roots_command(_AUTHORIZED_CHAT_ID, "remove /not/there")
+        assert "isn't in allowed_roots" in sender.sent[-1][1]
+
+        await daemon.handle_allowed_roots_command(_AUTHORIZED_CHAT_ID, "bogus")
+        assert "Unknown /allowed_roots subcommand" in sender.sent[-1][1]
+    finally:
+        await daemon._runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_handle_allowed_roots_command_refuses_to_remove_the_last_entry(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+    guardrails = daemon._permission_manager.guardrails
+    assert len(guardrails.fs_allowed_roots) == 1
+    only_root = guardrails.fs_allowed_roots[0]
+
+    try:
+        await daemon.handle_allowed_roots_command(_AUTHORIZED_CHAT_ID, f"remove {only_root}")
+        assert "Refusing to remove the last allowed_roots entry" in sender.sent[-1][1]
+        assert guardrails.fs_allowed_roots == [only_root]
+    finally:
+        await daemon._runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_handle_memory_command_views_forgets_and_clears(tmp_path: Path):
+    from pcli.memory.store import add_entry
+
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_memory_command(_AUTHORIZED_CHAT_ID, "")
+        assert len(sender.sent) == 1  # no entries yet, but still a reply (an empty-list render)
+
+        add_entry("Works as a backend developer", category="profile", source="derived", max_entries=40)
+
+        await daemon.handle_memory_command(_AUTHORIZED_CHAT_ID, "")
+        assert "Works as a backend developer" in sender.sent[-1][1]
+
+        await daemon.handle_memory_command(_AUTHORIZED_CHAT_ID, "forget nonexistent-id")
+        assert "No memory entry found matching" in sender.sent[-1][1]
+
+        await daemon.handle_memory_command(_AUTHORIZED_CHAT_ID, "clear")
+        assert "Cleared all memory entries." in sender.sent[-1][1]
+
+        await daemon.handle_memory_command(_AUTHORIZED_CHAT_ID, "")
+        assert "Works as a backend developer" not in sender.sent[-1][1]
+    finally:
+        await daemon._runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_handle_help_command_sends_the_command_reference(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_help_command(_AUTHORIZED_CHAT_ID)
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert len(sender.sent) == 1
+    text = sender.sent[0][1]
+    assert "/help" in text
+    assert "/rename" in text
+    assert "/allowed_roots" in text
+    assert "/memory" in text
+
+
+@pytest.mark.asyncio
 @respx.mock
 async def test_a_permission_requiring_tool_call_round_trips_through_the_daemon(tmp_path: Path):
     """End-to-end: a run_shell tool call triggers ask_via_telegram, which

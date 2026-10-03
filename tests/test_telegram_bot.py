@@ -250,8 +250,14 @@ async def test_registers_a_command_a_text_and_a_callback_handler(
     app = _FakeApplicationBuilder.last_built
     assert app is not None
     assert app.token == "test-token"
-    assert len(app.handlers) == 5
+    assert len(app.handlers) == 9
     assert any(isinstance(h, _FakeCommandHandler) and h.command == "new" for h in app.handlers)
+    assert any(isinstance(h, _FakeCommandHandler) and h.command == "rename" for h in app.handlers)
+    assert any(
+        isinstance(h, _FakeCommandHandler) and h.command == "allowed_roots" for h in app.handlers
+    )
+    assert any(isinstance(h, _FakeCommandHandler) and h.command == "memory" for h in app.handlers)
+    assert any(isinstance(h, _FakeCommandHandler) and h.command == "help" for h in app.handlers)
     assert any(
         isinstance(h, _FakeCommandHandler) and isinstance(h.command, list) and "timeout" in h.command
         for h in app.handlers
@@ -409,6 +415,49 @@ async def test_a_scalar_setting_command_with_no_args_reports_the_current_value(
 
     assert len(app.bot.sent_messages) == 1
     assert "request_timeout_s is currently" in app.bot.sent_messages[0][1]
+
+
+@pytest.mark.asyncio
+async def test_a_help_command_update_reaches_the_daemon_and_gets_the_reference(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _install_fake_telegram(monkeypatch)
+    settings = _settings()
+    stop_event = asyncio.Event()
+    stop_event.set()
+
+    await run_telegram_daemon(settings, tmp_path, stop_event=stop_event)
+
+    app = _FakeApplicationBuilder.last_built
+    assert app is not None
+    handler = next(h for h in app.handlers if isinstance(h, _FakeCommandHandler) and h.command == "help")
+    update = _FakeUpdate(chat_id=_AUTHORIZED_CHAT_ID, text="/help")
+    await handler.callback(update, context=types.SimpleNamespace(args=[]))
+
+    assert len(app.bot.sent_messages) == 1
+    assert "/help" in app.bot.sent_messages[0][1]
+
+
+@pytest.mark.asyncio
+async def test_a_rename_command_update_passes_the_joined_argument_through(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _install_fake_telegram(monkeypatch)
+    settings = _settings()
+    stop_event = asyncio.Event()
+    stop_event.set()
+
+    await run_telegram_daemon(settings, tmp_path, stop_event=stop_event)
+
+    app = _FakeApplicationBuilder.last_built
+    assert app is not None
+    handler = next(
+        h for h in app.handlers if isinstance(h, _FakeCommandHandler) and h.command == "rename"
+    )
+    update = _FakeUpdate(chat_id=_AUTHORIZED_CHAT_ID, text="/rename My New Title")
+    await handler.callback(update, context=types.SimpleNamespace(args=["My", "New", "Title"]))
+
+    assert app.bot.sent_messages == [(_AUTHORIZED_CHAT_ID, "Session renamed to 'My New Title'.")]
 
 
 def test_real_ptb_filters_actually_separate_commands_from_plain_text():

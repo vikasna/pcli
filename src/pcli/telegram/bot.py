@@ -100,6 +100,31 @@ async def run_telegram_daemon(
         if update.effective_chat is not None:
             await daemon.handle_new_command(update.effective_chat.id)
 
+    async def on_rename_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        chat = update.effective_chat
+        if chat is None:
+            return
+        arg = " ".join(context.args) if context.args else None
+        await daemon.handle_rename_command(chat.id, arg)
+
+    async def on_allowed_roots_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        chat = update.effective_chat
+        if chat is None:
+            return
+        rest = " ".join(context.args) if context.args else ""
+        await daemon.handle_allowed_roots_command(chat.id, rest)
+
+    async def on_memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        chat = update.effective_chat
+        if chat is None:
+            return
+        rest = " ".join(context.args) if context.args else ""
+        await daemon.handle_memory_command(chat.id, rest)
+
+    async def on_help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if update.effective_chat is not None:
+            await daemon.handle_help_command(update.effective_chat.id)
+
     async def on_unsupported_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat = update.effective_chat
         message = update.effective_message
@@ -157,6 +182,10 @@ async def run_telegram_daemon(
             logger.debug("Could not clear the inline keyboard after a decision", exc_info=True)
 
     application.add_handler(CommandHandler("new", on_new_command))
+    application.add_handler(CommandHandler("rename", on_rename_command))
+    application.add_handler(CommandHandler("allowed_roots", on_allowed_roots_command))
+    application.add_handler(CommandHandler("memory", on_memory_command))
+    application.add_handler(CommandHandler("help", on_help_command))
     application.add_handler(
         CommandHandler(list(scalar_setting_commands), on_scalar_setting_command)
     )

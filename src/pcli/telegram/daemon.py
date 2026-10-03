@@ -35,7 +35,9 @@ from pcli.cost.context import (
     set_model_context_limit,
 )
 from pcli.llm.errors import GatewayError
-from pcli.permissions.guardrails import update_guardrails_limits
+from pcli.memory.models import render_memory_list
+from pcli.memory.store import clear_memory, read_memory, remove_entry
+from pcli.permissions.guardrails import update_guardrails_fs_allowed_roots, update_guardrails_limits
 from pcli.permissions.manager import PermissionManager
 from pcli.session.store import SessionStore
 from pcli.telegram.permissions import (
@@ -47,6 +49,33 @@ from pcli.telegram.permissions import (
 from pcli.tui.shell_passthrough import run_passthrough_command
 
 logger = logging.getLogger(__name__)
+
+_HELP_TEXT = (
+    "Commands:\n"
+    "\n"
+    "/help - show this help.\n"
+    "/new - start a fresh session (does not restart the daemon).\n"
+    "/rename [name] - view or set the current session's title.\n"
+    "/timeout [seconds] - view or set the per-request gateway timeout.\n"
+    "/temperature [value|off] - view or set the sampling temperature.\n"
+    "/budget [amount|off] - view or set a hard cap on this session's spend.\n"
+    "/context_limit [tokens] - view or set the assumed context window for the current model.\n"
+    "/max_tool_iterations [n] - view or set the per-turn tool-call iteration cap.\n"
+    "/artifact_threshold [chars] - view or set the tool-output length archived instead of "
+    "kept inline.\n"
+    "/max_tool_calls_per_turn [n] - view or set the per-turn tool-call guardrail (0 = "
+    "unlimited).\n"
+    "/max_tool_calls_per_minute [n] - view or set the per-minute tool-call guardrail (0 = "
+    "unlimited).\n"
+    "/prune_tool_results [off|on|n] - view, toggle, or set tool-result pruning.\n"
+    "/max_response_tokens [off|on|margin] - view, toggle, or set the dynamic max_tokens cap.\n"
+    "/allowed_roots [add|remove] [path] - view or edit the filesystem guardrail's allowed "
+    "paths.\n"
+    "/memory [forget <id>|clear] - view, trim, or clear pcli's cross-session memory of you.\n"
+    "\n"
+    "!<command> - run a shell command directly, bypassing the agent (!!<command> hides the "
+    "output).\n"
+)
 
 
 class _CommandError(Exception):
@@ -487,6 +516,135 @@ class TelegramDaemon:
             )
 
         await self._handle_scalar_setting_command(chat_id, arg, view=view, apply=apply)
+
+    async def handle_rename_command(self, chat_id: int, arg: str | None) -> None:
+        if not self._is_authorized(chat_id):
+            logger.warning("Ignored message from unauthorized chat id %s", chat_id)
+            return
+        if not arg:
+            await self._sender.send_message(
+                chat_id,
+                f"Current session title: '{self._session.derive_title()}'. Usage: /rename <name>",
+            )
+            return
+        self._session.title = arg
+        self._store.save(self._session)
+        await self._sender.send_message(chat_id, f"Session renamed to '{arg}'.")
+
+    async def handle_allowed_roots_command(self, chat_id: int, rest: str) -> None:
+        """Mirrors ChatScreen._handle_allowed_roots_command - view or edit
+        the filesystem guardrail's allowed_roots list. Telegram-side name
+        is /allowed_roots, not /allowed-roots - Telegram bot commands can't
+        contain hyphens (see the scalar-setting commands' own note on this).
+        "add"/"remove" are plain arguments, not command names, so they keep
+        their TUI spelling."""
+        if not self._is_authorized(chat_id):
+            logger.warning("Ignored message from unauthorized chat id %s", chat_id)
+            return
+        guardrails = self._permission_manager.guardrails
+        sub_command, _, arg = rest.partition(" ")
+        sub_command = sub_command.strip().lower()
+        arg = arg.strip()
+
+        if not sub_command:
+            roots = "\n".join(f"- {root}" for root in guardrails.fs_allowed_roots)
+            await self._sender.send_message(
+                chat_id,
+                f"Current allowed_roots:\n{roots}\n\nUsage: /allowed_roots add <path> | "
+                "/allowed_roots remove <path>",
+            )
+            return
+
+        if sub_command == "add":
+            if not arg:
+                await self._sender.send_message(chat_id, "Usage: /allowed_roots add <path>")
+                return
+            if arg in guardrails.fs_allowed_roots:
+                await self._sender.send_message(chat_id, f"'{arg}' is already in allowed_roots.")
+                return
+            new_roots = [*guardrails.fs_allowed_roots, arg]
+            update_guardrails_fs_allowed_roots(new_roots)
+            guardrails.fs_allowed_roots = new_roots
+            await self._sender.send_message(
+                chat_id, f"Added '{arg}' to allowed_roots. Takes effect immediately."
+            )
+            return
+
+        if sub_command == "remove":
+            if not arg:
+                await self._sender.send_message(chat_id, "Usage: /allowed_roots remove <path>")
+                return
+            if arg not in guardrails.fs_allowed_roots:
+                await self._sender.send_message(chat_id, f"'{arg}' isn't in allowed_roots.")
+                return
+            if len(guardrails.fs_allowed_roots) == 1:
+                await self._sender.send_message(
+                    chat_id,
+                    "Refusing to remove the last allowed_roots entry - the agent needs at "
+                    "least one, or every filesystem tool call would be denied.",
+                )
+                return
+            new_roots = [root for root in guardrails.fs_allowed_roots if root != arg]
+            update_guardrails_fs_allowed_roots(new_roots)
+            guardrails.fs_allowed_roots = new_roots
+            await self._sender.send_message(
+                chat_id, f"Removed '{arg}' from allowed_roots. Takes effect immediately."
+            )
+            return
+
+        await self._sender.send_message(
+            chat_id,
+            f"Unknown /allowed_roots subcommand: '{sub_command}'. Use /allowed_roots, "
+            "/allowed_roots add <path>, or /allowed_roots remove <path>.",
+        )
+
+    async def handle_memory_command(self, chat_id: int, rest: str) -> None:
+        """Mirrors ChatScreen._handle_memory_command - view, trim, or clear
+        pcli's global, cross-session memory (memory/store.py)."""
+        if not self._is_authorized(chat_id):
+            logger.warning("Ignored message from unauthorized chat id %s", chat_id)
+            return
+        sub_command, _, arg = rest.partition(" ")
+        sub_command = sub_command.strip().lower()
+        arg = arg.strip()
+
+        if not sub_command:
+            await self._sender.send_message(chat_id, render_memory_list(read_memory().entries))
+            return
+
+        if sub_command == "clear":
+            clear_memory()
+            await self._sender.send_message(chat_id, "Cleared all memory entries.")
+            return
+
+        if sub_command == "forget":
+            if not arg:
+                await self._sender.send_message(chat_id, "Usage: /memory forget <id>")
+                return
+            matches = [e for e in read_memory().entries if e.id.endswith(arg)]
+            if not matches:
+                await self._sender.send_message(chat_id, f"No memory entry found matching '{arg}'.")
+                return
+            if len(matches) > 1:
+                await self._sender.send_message(
+                    chat_id, f"'{arg}' matches more than one entry - use a longer id."
+                )
+                return
+            remove_entry(matches[0].id)
+            await self._sender.send_message(chat_id, f"Forgot: {matches[0].content}")
+            return
+
+        await self._sender.send_message(
+            chat_id,
+            f"Unknown /memory subcommand: '{sub_command}'. Use /memory, /memory forget <id>, "
+            "or /memory clear.",
+        )
+
+    async def handle_help_command(self, chat_id: int) -> None:
+        if not self._is_authorized(chat_id):
+            logger.warning("Ignored message from unauthorized chat id %s", chat_id)
+            return
+        await self._sender.send_message(chat_id, _HELP_TEXT)
 
     async def handle_new_command(self, chat_id: int) -> None:
         if not self._is_authorized(chat_id):
