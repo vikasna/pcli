@@ -196,9 +196,30 @@ class TelegramDaemon:
         # sent back until it finishes - without this, a message mid-turn
         # looks identical to one that was never received at all. One
         # upfront acknowledgment is the right-sized fix for a chat
-        # interface; per-tool-call progress would just be spam (see
-        # run_headless_task's on_progress, deliberately left unwired here).
+        # interface.
         await self._sender.send_message(self._chat_id, "Working on it...")
+
+        # run_headless_task's on_progress is a plain sync callback (it has
+        # to be - it's called from inside an async-for loop it doesn't
+        # control, see headless.py), so it can't await the real Telegram
+        # send itself. It just queues the line; a background task drains
+        # the queue and does the actual sending, so each tool call and its
+        # result reaches the chat as it happens instead of only after the
+        # whole turn finishes.
+        progress: asyncio.Queue[str | None] = asyncio.Queue()
+
+        def on_progress(line: str) -> None:
+            if not line.startswith("> "):  # the echoed task text itself - redundant, skip
+                progress.put_nowait(line)
+
+        async def forward_progress() -> None:
+            while True:
+                line = await progress.get()
+                if line is None:
+                    return
+                await self._sender.send_message(self._chat_id, line)
+
+        forwarder = asyncio.create_task(forward_progress())
 
         async def ask(tool_name: str, arguments: dict, risk_description: str):
             return await ask_via_telegram(
@@ -219,11 +240,20 @@ class TelegramDaemon:
                 permission_manager=self._permission_manager,
                 cwd=self._cwd,
                 store=self._store,
+                on_progress=on_progress,
                 ask=ask,
             )
         except GatewayError as exc:
+            # Drained before sending the error, not after, so any tool
+            # calls that did complete before the gateway failed still show
+            # up in the chat ahead of the error message instead of behind it.
+            await progress.put(None)
+            await forwarder
             await self._sender.send_message(self._chat_id, f"Gateway error: {exc.message}")
             return
+
+        await progress.put(None)
+        await forwarder
 
         await self._sender.send_message(self._chat_id, result.final_text or "(no reply)")
         if result.truncations_exhausted:

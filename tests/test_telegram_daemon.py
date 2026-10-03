@@ -103,6 +103,60 @@ async def test_handle_text_processes_a_message_and_replies(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+@respx.mock
+async def test_tool_calls_and_their_results_are_forwarded_to_the_chat(tmp_path: Path):
+    """read_file (needs_permission=False) keeps this focused on progress
+    forwarding itself, without also exercising the permission-prompt path
+    already covered by test_a_permission_requiring_tool_call_round_trips_
+    through_the_daemon below."""
+    (tmp_path / "notes.txt").write_text("hello from disk", encoding="utf-8")
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(
+            200,
+            content=_sse(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_1",
+                                        "function": {
+                                            "name": "read_file",
+                                            "arguments": json.dumps({"path": "notes.txt"}),
+                                        },
+                                    }
+                                ]
+                            },
+                            "finish_reason": None,
+                        }
+                    ]
+                },
+                {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+            ),
+        ),
+        _text_response("Read it."),
+    ]
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_text(_AUTHORIZED_CHAT_ID, "read the notes file")
+        await daemon._process(await daemon._queue.get())
+    finally:
+        await daemon._runtime.client.aclose()
+
+    texts = [text for _chat_id, text, _buttons in sender.sent]
+    assert texts[0] == "Working on it..."
+    assert texts[-1] == "Read it."
+    assert any(line.startswith("  -> read_file(") for line in texts)
+    assert any(line.startswith("  <- ") and "hello from disk" in line for line in texts)
+    assert all(not line.startswith("> ") for line in texts)  # the task echo is skipped
+
+
+@pytest.mark.asyncio
 async def test_handle_text_from_an_unauthorized_chat_is_ignored(tmp_path: Path):
     settings = _settings()
     daemon, sender = await _make_daemon(tmp_path, settings)
