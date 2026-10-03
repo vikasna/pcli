@@ -143,6 +143,13 @@ async def run_telegram_daemon(
         arg = " ".join(context.args) if context.args else None
         await daemon.handle_models_command(chat.id, arg)
 
+    async def on_sessions_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        chat = update.effective_chat
+        if chat is None:
+            return
+        rest = " ".join(context.args) if context.args else ""
+        await daemon.handle_sessions_command(chat.id, rest)
+
     async def on_unsupported_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat = update.effective_chat
         message = update.effective_message
@@ -207,6 +214,7 @@ async def run_telegram_daemon(
     application.add_handler(CommandHandler("toolbox", on_toolbox_command))
     application.add_handler(CommandHandler("compact", on_compact_command))
     application.add_handler(CommandHandler("models", on_models_command))
+    application.add_handler(CommandHandler("sessions", on_sessions_command))
     application.add_handler(
         CommandHandler(list(scalar_setting_commands), on_scalar_setting_command)
     )

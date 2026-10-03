@@ -85,6 +85,7 @@ _HELP_TEXT = (
     "toolbox tools (CLI programs/scripts wrapped as callable tools).\n"
     "/compact - manually summarize the conversation so far to free up context space.\n"
     "/models [name] - set the model, or list what's available from the gateway.\n"
+    "/sessions [switch <id>] - list other sessions, or switch to one.\n"
     "\n"
     "!<command> - run a shell command directly, bypassing the agent (!!<command> hides the "
     "output).\n"
@@ -879,6 +880,70 @@ class TelegramDaemon:
         self._settings.default_model = model
         self._session.model = model
         update_config_file(default_model=model)
+
+    async def handle_sessions_command(self, chat_id: int, rest: str) -> None:
+        """`/sessions` lists other sessions (`SessionStore.list_index` -
+        already sorted most-recently-updated first); `/sessions switch
+        <id>` loads one and makes it self._session - the same
+        single-attribute swap /new already does safely (an in-flight
+        turn, if any, holds its own reference to the old Session object
+        via run_headless_task's `session` parameter, so swapping
+        self._session mid-turn doesn't corrupt anything in flight).
+        Unlike `pcli --resume`, which requires the full id, `<id>` here
+        can be any suffix of it - same convenience /memory forget <id>
+        already gives, since typing a full id on a phone keyboard is
+        impractical. Not chat.py's full interactive SessionListScreen
+        browser (sort/search/delete) - a text list covers the real need
+        (resuming a previous conversation from the phone)."""
+        if not self._is_authorized(chat_id):
+            logger.warning("Ignored message from unauthorized chat id %s", chat_id)
+            return
+        sub_command, _, arg = rest.partition(" ")
+        sub_command = sub_command.strip().lower()
+        arg = arg.strip()
+
+        if not sub_command:
+            entries = [e for e in self._store.list_index() if e.id != self._session.id][:20]
+            if not entries:
+                await self._sender.send_message(chat_id, "No other sessions yet.")
+                return
+            lines = [
+                f"- {entry.id[-4:]}  {entry.title}  ({entry.message_count} msg, "
+                f"${entry.total_cost_usd:.4f}, {entry.updated_at:%Y-%m-%d %H:%M})"
+                for entry in entries
+            ]
+            await self._sender.send_message(
+                chat_id,
+                "Other sessions (most recent first):\n"
+                + "\n".join(lines)
+                + "\n\nUsage: /sessions switch <id> (the short id shown above, or more of it)",
+            )
+            return
+
+        if sub_command == "switch":
+            if not arg:
+                await self._sender.send_message(chat_id, "Usage: /sessions switch <id>")
+                return
+            matches = [e for e in self._store.list_index() if e.id.endswith(arg)]
+            if not matches:
+                await self._sender.send_message(chat_id, f"No session found matching '{arg}'.")
+                return
+            if len(matches) > 1:
+                await self._sender.send_message(
+                    chat_id, f"'{arg}' matches more than one session - use a longer id."
+                )
+                return
+            self._session = self._store.load(matches[0].id)
+            await self._sender.send_message(
+                chat_id, f"Switched to session '{self._session.derive_title()}'."
+            )
+            return
+
+        await self._sender.send_message(
+            chat_id,
+            f"Unknown /sessions subcommand: '{sub_command}'. Use /sessions, or /sessions "
+            "switch <id>.",
+        )
 
     async def handle_new_command(self, chat_id: int) -> None:
         if not self._is_authorized(chat_id):

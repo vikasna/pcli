@@ -250,7 +250,7 @@ async def test_registers_a_command_a_text_and_a_callback_handler(
     app = _FakeApplicationBuilder.last_built
     assert app is not None
     assert app.token == "test-token"
-    assert len(app.handlers) == 12
+    assert len(app.handlers) == 13
     assert any(isinstance(h, _FakeCommandHandler) and h.command == "new" for h in app.handlers)
     assert any(isinstance(h, _FakeCommandHandler) and h.command == "rename" for h in app.handlers)
     assert any(
@@ -261,6 +261,7 @@ async def test_registers_a_command_a_text_and_a_callback_handler(
     assert any(isinstance(h, _FakeCommandHandler) and h.command == "toolbox" for h in app.handlers)
     assert any(isinstance(h, _FakeCommandHandler) and h.command == "compact" for h in app.handlers)
     assert any(isinstance(h, _FakeCommandHandler) and h.command == "models" for h in app.handlers)
+    assert any(isinstance(h, _FakeCommandHandler) and h.command == "sessions" for h in app.handlers)
     assert any(
         isinstance(h, _FakeCommandHandler) and isinstance(h.command, list) and "timeout" in h.command
         for h in app.handlers
@@ -505,6 +506,28 @@ async def test_a_models_command_update_with_an_argument_sets_the_model(
     await handler.callback(update, context=types.SimpleNamespace(args=["gpt-5"]))
 
     assert app.bot.sent_messages == [(_AUTHORIZED_CHAT_ID, "Model set to 'gpt-5'.")]
+
+
+@pytest.mark.asyncio
+async def test_a_sessions_command_update_passes_the_joined_argument_through(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _install_fake_telegram(monkeypatch)
+    settings = _settings()
+    stop_event = asyncio.Event()
+    stop_event.set()
+
+    await run_telegram_daemon(settings, tmp_path, stop_event=stop_event)
+
+    app = _FakeApplicationBuilder.last_built
+    assert app is not None
+    handler = next(
+        h for h in app.handlers if isinstance(h, _FakeCommandHandler) and h.command == "sessions"
+    )
+    update = _FakeUpdate(chat_id=_AUTHORIZED_CHAT_ID, text="/sessions")
+    await handler.callback(update, context=types.SimpleNamespace(args=[]))
+
+    assert app.bot.sent_messages == [(_AUTHORIZED_CHAT_ID, "No other sessions yet.")]
 
 
 def test_real_ptb_filters_actually_separate_commands_from_plain_text():

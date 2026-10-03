@@ -957,6 +957,99 @@ async def test_handle_models_command_with_no_argument_reports_a_gateway_error(tm
 
 
 @pytest.mark.asyncio
+async def test_handle_sessions_command_is_ignored_from_an_unauthorized_chat(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_sessions_command(999, "")
+        assert sender.sent == []
+    finally:
+        await daemon._runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_handle_sessions_command_with_no_other_sessions(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_sessions_command(_AUTHORIZED_CHAT_ID, "")
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert "No other sessions yet." in sender.sent[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_handle_sessions_command_lists_other_sessions_excluding_the_current_one(
+    tmp_path: Path,
+):
+    from pcli.session.models import Message
+
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+    other = daemon._store.new_session(model="other-model", gateway_base_url=settings.gateway_base_url)
+    other.messages.append(Message(role="user", content="a question about widgets"))
+    daemon._store.save(other)
+
+    try:
+        await daemon.handle_sessions_command(_AUTHORIZED_CHAT_ID, "")
+    finally:
+        await daemon._runtime.client.aclose()
+
+    text = sender.sent[-1][1]
+    assert other.id[-4:] in text
+    assert "a question about widgets" in text
+    assert daemon._session.id[-4:] not in text  # the current session is excluded
+
+
+@pytest.mark.asyncio
+async def test_handle_sessions_command_switch_loads_a_session_by_id_suffix(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+    original_id = daemon._session.id
+    other = daemon._store.new_session(model="other-model", gateway_base_url=settings.gateway_base_url)
+    other.title = "The other session"
+    daemon._store.save(other)
+
+    try:
+        await daemon.handle_sessions_command(_AUTHORIZED_CHAT_ID, f"switch {other.id[-4:]}")
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert daemon._session.id == other.id
+    assert daemon._session.id != original_id
+    assert "Switched to session 'The other session'." in sender.sent[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_handle_sessions_command_switch_with_no_match(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_sessions_command(_AUTHORIZED_CHAT_ID, "switch zzzz")
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert "No session found matching 'zzzz'." in sender.sent[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_handle_sessions_command_switch_with_no_argument_sends_usage(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_sessions_command(_AUTHORIZED_CHAT_ID, "switch")
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert "Usage: /sessions switch <id>" in sender.sent[-1][1]
+
+
+@pytest.mark.asyncio
 @respx.mock
 async def test_a_permission_requiring_tool_call_round_trips_through_the_daemon(tmp_path: Path):
     """End-to-end: a run_shell tool call triggers ask_via_telegram, which
