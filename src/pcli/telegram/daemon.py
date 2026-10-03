@@ -39,6 +39,7 @@ from pcli.memory.models import render_memory_list
 from pcli.memory.store import clear_memory, read_memory, remove_entry
 from pcli.permissions.guardrails import update_guardrails_fs_allowed_roots, update_guardrails_limits
 from pcli.permissions.manager import PermissionManager
+from pcli.sandbox.base import SandboxSecurityError
 from pcli.session.store import SessionStore
 from pcli.telegram.permissions import (
     PendingApprovals,
@@ -46,6 +47,7 @@ from pcli.telegram.permissions import (
     ask_via_telegram,
     decode_callback_data,
 )
+from pcli.tools.toolbox.manager import ToolboxDiscoveryError
 from pcli.tui.shell_passthrough import run_passthrough_command
 
 logger = logging.getLogger(__name__)
@@ -72,6 +74,8 @@ _HELP_TEXT = (
     "/allowed_roots [add|remove] [path] - view or edit the filesystem guardrail's allowed "
     "paths.\n"
     "/memory [forget <id>|clear] - view, trim, or clear pcli's cross-session memory of you.\n"
+    "/toolbox [discover <name> [path]|list|remove <name>] - discover, list, or remove "
+    "toolbox tools (CLI programs/scripts wrapped as callable tools).\n"
     "\n"
     "!<command> - run a shell command directly, bypassing the agent (!!<command> hides the "
     "output).\n"
@@ -645,6 +649,67 @@ class TelegramDaemon:
             logger.warning("Ignored message from unauthorized chat id %s", chat_id)
             return
         await self._sender.send_message(chat_id, _HELP_TEXT)
+
+    async def handle_toolbox_command(self, chat_id: int, rest: str) -> None:
+        """Mirrors ChatScreen._handle_toolbox_command/_toolbox_discover/
+        _toolbox_list/_toolbox_remove - discover, list, or remove toolbox
+        tools (CLI programs/scripts wrapped as callable tools). Unlike
+        chat.py, self._runtime.toolbox_manager and self._runtime.
+        tool_registry are always present here (AgentRuntime builds both for
+        every caller - see agent/runtime.py), so there's no "toolbox isn't
+        available" guard to port."""
+        if not self._is_authorized(chat_id):
+            logger.warning("Ignored message from unauthorized chat id %s", chat_id)
+            return
+        sub, _, arg = rest.partition(" ")
+        arg = arg.strip()
+
+        if sub == "discover" and arg:
+            name, _, path = arg.partition(" ")
+            await self._toolbox_discover(chat_id, name, path.strip() or None)
+        elif sub == "list":
+            await self._toolbox_list(chat_id)
+        elif sub == "remove" and arg:
+            await self._toolbox_remove(chat_id, arg)
+        else:
+            await self._sender.send_message(
+                chat_id,
+                "Usage: /toolbox discover <name> [path] | /toolbox list | "
+                "/toolbox remove <name>",
+            )
+
+    async def _toolbox_discover(self, chat_id: int, name: str, path: str | None) -> None:
+        await self._sender.send_message(chat_id, f"Discovering '{name}'...")
+        try:
+            summary = await self._runtime.toolbox_manager.discover(
+                name,
+                gateway_client=self._runtime.client,
+                model=self._settings.default_model or None,
+                path=path,
+            )
+        except (ToolboxDiscoveryError, GatewayError, SandboxSecurityError) as exc:
+            await self._sender.send_message(chat_id, f"Discovery failed: {exc}")
+            return
+        await self._sender.send_message(chat_id, summary)
+
+        loaded = await self._runtime.toolbox_manager.load_all()
+        self._runtime.tool_registry.merge(loaded)
+
+    async def _toolbox_list(self, chat_id: int) -> None:
+        entries = self._runtime.toolbox_manager.list_discovered()
+        if not entries:
+            await self._sender.send_message(chat_id, "No software discovered yet. Try /toolbox discover <name>.")
+            return
+        lines = [
+            f"- {name} [{entry['source']}] {entry.get('version', '?')} - "
+            f"{entry.get('tool_count', 0)} tool(s)"
+            for name, entry in entries.items()
+        ]
+        await self._sender.send_message(chat_id, "\n".join(lines))
+
+    async def _toolbox_remove(self, chat_id: int, name: str) -> None:
+        self._runtime.toolbox_manager.remove(name)
+        await self._sender.send_message(chat_id, f"Removed '{name}' from the toolbox.")
 
     async def handle_new_command(self, chat_id: int) -> None:
         if not self._is_authorized(chat_id):

@@ -694,6 +694,108 @@ async def test_handle_help_command_sends_the_command_reference(tmp_path: Path):
     assert "/rename" in text
     assert "/allowed_roots" in text
     assert "/memory" in text
+    assert "/toolbox" in text
+
+
+@pytest.mark.asyncio
+async def test_handle_toolbox_command_is_ignored_from_an_unauthorized_chat(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_toolbox_command(999, "list")
+        assert sender.sent == []
+    finally:
+        await daemon._runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_handle_toolbox_command_list_with_nothing_discovered(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_toolbox_command(_AUTHORIZED_CHAT_ID, "list")
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert "No software discovered yet" in sender.sent[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_handle_toolbox_command_with_no_subcommand_sends_usage(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_toolbox_command(_AUTHORIZED_CHAT_ID, "")
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert "Usage: /toolbox discover" in sender.sent[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_handle_toolbox_command_discover_sends_an_ack_then_the_summary(tmp_path: Path):
+    from pcli.tools.registry import ToolRegistry
+
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    async def fake_discover(name, *, gateway_client, model, path):
+        assert name == "widget"
+        return "Registered 2 tool(s) for 'widget'."
+
+    async def fake_load_all():
+        return ToolRegistry()
+
+    daemon._runtime.toolbox_manager.discover = fake_discover
+    daemon._runtime.toolbox_manager.load_all = fake_load_all
+
+    try:
+        await daemon.handle_toolbox_command(_AUTHORIZED_CHAT_ID, "discover widget")
+    finally:
+        await daemon._runtime.client.aclose()
+
+    texts = [text for _chat_id, text, _buttons in sender.sent]
+    assert texts[0] == "Discovering 'widget'..."
+    assert texts[-1] == "Registered 2 tool(s) for 'widget'."
+
+
+@pytest.mark.asyncio
+async def test_handle_toolbox_command_discover_failure_is_reported(tmp_path: Path):
+    from pcli.tools.toolbox.manager import ToolboxDiscoveryError
+
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    async def fake_discover(name, *, gateway_client, model, path):
+        raise ToolboxDiscoveryError("no such binary")
+
+    daemon._runtime.toolbox_manager.discover = fake_discover
+
+    try:
+        await daemon.handle_toolbox_command(_AUTHORIZED_CHAT_ID, "discover nonexistent")
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert "Discovery failed" in sender.sent[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_handle_toolbox_command_removes_an_entry(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+    removed: list[str] = []
+    daemon._runtime.toolbox_manager.remove = removed.append
+
+    try:
+        await daemon.handle_toolbox_command(_AUTHORIZED_CHAT_ID, "remove widget")
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert removed == ["widget"]
+    assert "Removed 'widget' from the toolbox." in sender.sent[-1][1]
 
 
 @pytest.mark.asyncio
