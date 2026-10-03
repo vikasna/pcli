@@ -798,6 +798,98 @@ async def test_handle_toolbox_command_removes_an_entry(tmp_path: Path):
     assert "Removed 'widget' from the toolbox." in sender.sent[-1][1]
 
 
+def _add_two_turns(daemon) -> None:
+    from pcli.session.models import Message
+
+    daemon._session.messages.extend(
+        [
+            Message(role="user", content="turn 1 user"),
+            Message(role="assistant", content="turn 1 assistant"),
+            Message(role="user", content="turn 2 user"),
+            Message(role="assistant", content="turn 2 assistant"),
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_handle_compact_command_is_ignored_from_an_unauthorized_chat(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_compact_command(999)
+        assert sender.sent == []
+    finally:
+        await daemon._runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_handle_compact_command_refuses_while_a_turn_is_in_progress(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+    daemon._turn_in_progress = True
+
+    try:
+        await daemon.handle_compact_command(_AUTHORIZED_CHAT_ID)
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert "Still working on the current turn" in sender.sent[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_handle_compact_command_reports_nothing_to_compact_yet(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_compact_command(_AUTHORIZED_CHAT_ID)
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert "Nothing to compact yet." in sender.sent[-1][1]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_handle_compact_command_compacts_and_reports_success(tmp_path: Path):
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        return_value=_text_response("Summary of the compacted turns.")
+    )
+    settings = _settings(auto_compact_keep_recent_turns=1, memory_enabled=False)
+    daemon, sender = await _make_daemon(tmp_path, settings)
+    _add_two_turns(daemon)
+
+    try:
+        await daemon.handle_compact_command(_AUTHORIZED_CHAT_ID)
+    finally:
+        await daemon._runtime.client.aclose()
+
+    text = sender.sent[-1][1]
+    assert "Compacted" in text
+    assert "artifact_id=" in text
+    assert any(inv.tool_name == "_compaction" for inv in daemon._session.tool_invocations)
+    assert any(t.source == "compaction" for t in daemon._session.cost.turns)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_handle_compact_command_reports_a_gateway_error(tmp_path: Path):
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(
+        side_effect=httpx.ReadTimeout("the read operation timed out")
+    )
+    settings = _settings(auto_compact_keep_recent_turns=1, memory_enabled=False, max_retries=1)
+    daemon, sender = await _make_daemon(tmp_path, settings)
+    _add_two_turns(daemon)
+
+    try:
+        await daemon.handle_compact_command(_AUTHORIZED_CHAT_ID)
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert "Compaction failed" in sender.sent[-1][1]
+
+
 @pytest.mark.asyncio
 @respx.mock
 async def test_a_permission_requiring_tool_call_round_trips_through_the_daemon(tmp_path: Path):

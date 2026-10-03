@@ -24,22 +24,28 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
+from pcli.agent.compaction import maybe_compact
 from pcli.agent.headless import new_headless_session, run_headless_task
-from pcli.agent.runtime import AgentRuntime
+from pcli.agent.runtime import AgentRuntime, make_tool_context
 from pcli.config.settings import Settings, remove_config_keys, update_config_file
 from pcli.cost.context import (
     ContextLimitTable,
     compute_max_response_tokens,
+    current_context_usage,
     set_model_context_limit,
 )
+from pcli.cost.tracker import CostTracker
 from pcli.llm.errors import GatewayError
+from pcli.memory.extraction import extract_memory
 from pcli.memory.models import render_memory_list
 from pcli.memory.store import clear_memory, read_memory, remove_entry
 from pcli.permissions.guardrails import update_guardrails_fs_allowed_roots, update_guardrails_limits
 from pcli.permissions.manager import PermissionManager
 from pcli.sandbox.base import SandboxSecurityError
+from pcli.session.models import ToolInvocation
 from pcli.session.store import SessionStore
 from pcli.telegram.permissions import (
     PendingApprovals,
@@ -47,6 +53,7 @@ from pcli.telegram.permissions import (
     ask_via_telegram,
     decode_callback_data,
 )
+from pcli.tools.artifacts import SessionArtifactStore
 from pcli.tools.toolbox.manager import ToolboxDiscoveryError
 from pcli.tui.shell_passthrough import run_passthrough_command
 
@@ -76,6 +83,7 @@ _HELP_TEXT = (
     "/memory [forget <id>|clear] - view, trim, or clear pcli's cross-session memory of you.\n"
     "/toolbox [discover <name> [path]|list|remove <name>] - discover, list, or remove "
     "toolbox tools (CLI programs/scripts wrapped as callable tools).\n"
+    "/compact - manually summarize the conversation so far to free up context space.\n"
     "\n"
     "!<command> - run a shell command directly, bypassing the agent (!!<command> hides the "
     "output).\n"
@@ -112,6 +120,7 @@ class TelegramDaemon:
         self._session = new_headless_session(store, settings, cwd)
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._context_limit_table = ContextLimitTable.load()
+        self._turn_in_progress = False
 
     @property
     def session_id(self) -> str:
@@ -711,6 +720,130 @@ class TelegramDaemon:
         self._runtime.toolbox_manager.remove(name)
         await self._sender.send_message(chat_id, f"Removed '{name}' from the toolbox.")
 
+    def _effective_compaction_model(self) -> str | None:
+        """Mirrors ChatScreen._effective_compaction_model - settings.
+        compaction_model if configured (a deliberately cheaper/smaller
+        model for compaction/memory-extraction's mechanical, lower-stakes
+        calls), falling back to default_model/session.model otherwise."""
+        return (
+            self._settings.compaction_model
+            or self._settings.default_model
+            or self._session.model
+            or None
+        )
+
+    async def handle_compact_command(self, chat_id: int) -> None:
+        """Mirrors ChatScreen._run_compaction's "manual" path - unlike
+        run_headless_task (which, deliberately narrower than ChatScreen's
+        own turn loop, never auto-compacts - see headless.py's module
+        docstring), the Telegram daemon has no other way to free up
+        context on a long-running conversation, so this is a real need
+        here, not just parity for its own sake."""
+        if not self._is_authorized(chat_id):
+            logger.warning("Ignored message from unauthorized chat id %s", chat_id)
+            return
+        if self._turn_in_progress:
+            await self._sender.send_message(
+                chat_id, "Still working on the current turn - try /compact again once it's done."
+            )
+            return
+
+        artifact_store = SessionArtifactStore(self._store, self._session.id)
+        cost_tracker = CostTracker(self._session)
+        configured_keep_recent_turns = self._settings.auto_compact_keep_recent_turns
+        tightened_to: int | None = None
+
+        try:
+            result = await maybe_compact(
+                self._session,
+                gateway_client=self._runtime.client,
+                model=self._effective_compaction_model(),
+                artifact_store=artifact_store,
+                keep_recent_turns=configured_keep_recent_turns,
+            )
+            if result is None:
+                usage = current_context_usage(self._session, limit_table=self._context_limit_table)
+                if usage.fraction >= self._settings.auto_compact_threshold:
+                    for smaller in range(configured_keep_recent_turns - 1, -1, -1):
+                        result = await maybe_compact(
+                            self._session,
+                            gateway_client=self._runtime.client,
+                            model=self._effective_compaction_model(),
+                            artifact_store=artifact_store,
+                            keep_recent_turns=smaller,
+                        )
+                        if result is not None:
+                            tightened_to = smaller
+                            break
+        except GatewayError as exc:
+            logger.exception("Gateway error during compaction: %s", exc.message)
+            await self._sender.send_message(chat_id, f"Compaction failed: {exc.message}")
+            return
+
+        if result is None:
+            await self._sender.send_message(chat_id, "Nothing to compact yet.")
+            return
+
+        self._session.tool_invocations.append(
+            ToolInvocation(
+                tool_name="_compaction",
+                arguments={},
+                status="ok",
+                result_summary=f"Compacted {result.messages_compacted} message(s).",
+                full_result_ref=SessionArtifactStore.blob_name_for(result.artifact_id),
+            )
+        )
+        cost_tracker.record_turn(
+            self._effective_compaction_model() or "", result.usage, source="compaction"
+        )
+        tightened_note = (
+            f" (kept only the last {tightened_to} recent turn(s) verbatim instead of the "
+            f"usual {configured_keep_recent_turns} - context was still full at that setting)"
+            if tightened_to is not None
+            else ""
+        )
+        await self._sender.send_message(
+            chat_id,
+            f"Compacted {result.messages_compacted} earlier message(s) to reduce context "
+            f"usage (archived as artifact_id='{result.artifact_id}'){tightened_note}.",
+        )
+        self._store.save(self._session)
+
+        if self._settings.memory_enabled:
+            await self._extract_memory_from(result.artifact_id, artifact_store, cost_tracker)
+
+    async def _extract_memory_from(
+        self, artifact_id: str, artifact_store: SessionArtifactStore, cost_tracker: CostTracker
+    ) -> None:
+        """Mirrors ChatScreen._extract_memory_from - best-effort: a failure
+        here is logged and otherwise invisible, since it never touched the
+        turn/command that triggered compaction."""
+        transcript = artifact_store.get(artifact_id)
+        if not transcript:
+            return
+        model = self._effective_compaction_model()
+        try:
+            extraction_ctx = replace(
+                make_tool_context(
+                    self._runtime,
+                    self._settings,
+                    self._cwd,
+                    session=self._session,
+                    permission_manager=self._permission_manager,
+                    artifact_store=artifact_store,
+                ),
+                model=model,
+            )
+            usages = await extract_memory(transcript, extraction_ctx)
+        except GatewayError as exc:
+            logger.exception("Gateway error during memory extraction: %s", exc.message)
+            return
+        if not usages:
+            return
+        for usage in usages:
+            cost_tracker.record_turn(model or "", usage, source="memory")
+        self._store.save(self._session)
+
     async def handle_new_command(self, chat_id: int) -> None:
         if not self._is_authorized(chat_id):
             return
@@ -768,6 +901,17 @@ class TelegramDaemon:
                     logger.exception("Also failed to report that error back to Telegram")
 
     async def _process(self, text: str) -> None:
+        # Guards /compact below the same way ChatScreen._turn_in_progress
+        # guards its own /compact - maybe_compact mutates session.messages
+        # directly, which would race a turn also reading/appending to that
+        # same list if the two ran concurrently.
+        self._turn_in_progress = True
+        try:
+            await self._process_turn(text)
+        finally:
+            self._turn_in_progress = False
+
+    async def _process_turn(self, text: str) -> None:
         # A turn can take a while (several tool calls) with nothing else
         # sent back until it finishes - without this, a message mid-turn
         # looks identical to one that was never received at all. One

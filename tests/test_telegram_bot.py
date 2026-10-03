@@ -250,7 +250,7 @@ async def test_registers_a_command_a_text_and_a_callback_handler(
     app = _FakeApplicationBuilder.last_built
     assert app is not None
     assert app.token == "test-token"
-    assert len(app.handlers) == 10
+    assert len(app.handlers) == 11
     assert any(isinstance(h, _FakeCommandHandler) and h.command == "new" for h in app.handlers)
     assert any(isinstance(h, _FakeCommandHandler) and h.command == "rename" for h in app.handlers)
     assert any(
@@ -259,6 +259,7 @@ async def test_registers_a_command_a_text_and_a_callback_handler(
     assert any(isinstance(h, _FakeCommandHandler) and h.command == "memory" for h in app.handlers)
     assert any(isinstance(h, _FakeCommandHandler) and h.command == "help" for h in app.handlers)
     assert any(isinstance(h, _FakeCommandHandler) and h.command == "toolbox" for h in app.handlers)
+    assert any(isinstance(h, _FakeCommandHandler) and h.command == "compact" for h in app.handlers)
     assert any(
         isinstance(h, _FakeCommandHandler) and isinstance(h.command, list) and "timeout" in h.command
         for h in app.handlers
