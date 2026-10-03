@@ -10,7 +10,9 @@ ChatScreen's own "don't run two turns at once" discipline
 (_turn_in_progress / queued followups), just as an explicit asyncio.Queue
 instead of a Textual worker loop, so a message that arrives mid-turn waits
 its turn instead of racing the one already running (both would otherwise
-read/mutate the same Session.messages list concurrently).
+read/mutate the same Session.messages list concurrently). `!`-prefixed
+shell passthrough is the one exception - it never touches the Session at
+all, so it runs immediately instead of queuing (see handle_text).
 
 A fresh Session is started each time the daemon starts (same default `pcli
 run` uses with no --session) - restarting `pcli telegram` begins a new
@@ -35,6 +37,7 @@ from pcli.telegram.permissions import (
     ask_via_telegram,
     decode_callback_data,
 )
+from pcli.tui.shell_passthrough import run_passthrough_command
 
 logger = logging.getLogger(__name__)
 
@@ -73,12 +76,65 @@ class TelegramDaemon:
         return chat_id == self._chat_id
 
     async def handle_text(self, chat_id: int, text: str) -> None:
-        """Queues a message for processing - never runs it inline. See the
-        module docstring for why this matters."""
+        """Queues a message for processing - never runs it inline, except
+        for `!`-prefixed shell passthrough (see handle_shell_passthrough),
+        which bypasses the queue/session/LLM entirely, mirroring the TUI's
+        own immediate, turn-independent handling of `!command` in
+        ChatScreen.on_chat_input_submitted. See the module docstring for why
+        queuing everything else matters."""
         if not self._is_authorized(chat_id):
             logger.warning("Ignored message from unauthorized chat id %s", chat_id)
             return
+        if text.startswith("!"):
+            await self.handle_shell_passthrough(chat_id, text)
+            return
         await self._queue.put(text)
+
+    async def handle_shell_passthrough(self, chat_id: int, raw: str) -> None:
+        """Mirrors ChatScreen's `!command`/`!!command` (tui/shell_passthrough.py)
+        - runs the command directly against the real environment, bypassing
+        the LLM, the sandbox, permissions, and session/artifact recording
+        entirely. Safe to expose here under the same trust model as the TUI
+        version: the chat-id authorization check above is this bot's
+        equivalent of "the user's own keyboard" (see the module docstring's
+        "personal automation, not a multi-user bot"). The TUI's `!!!`
+        (handing off a real interactive terminal) has no Telegram
+        equivalent - there's no TTY to hand off to - so it gets an
+        explanatory reply instead of being attempted."""
+        if not self._is_authorized(chat_id):
+            logger.warning("Ignored message from unauthorized chat id %s", chat_id)
+            return
+
+        if raw.startswith("!!!"):
+            await self._sender.send_message(
+                chat_id,
+                "'!!!' (an interactive terminal) isn't supported over Telegram - there's "
+                "no terminal to hand it off to. Use '!command' or '!!command' instead.",
+            )
+            return
+
+        quiet = raw.startswith("!!")
+        command = raw[2:].strip() if quiet else raw[1:].strip()
+        if not command:
+            await self._sender.send_message(
+                chat_id,
+                "Usage: !<command> to run a shell command (!!<command> to hide the result).",
+            )
+            return
+
+        result = await run_passthrough_command(command, cwd=self._cwd)
+
+        if quiet:
+            await self._sender.send_message(chat_id, f"$ {command}\n(output hidden)")
+            return
+
+        output = result.stdout
+        if result.stderr:
+            output += f"\n--- stderr ---\n{result.stderr}"
+        footer = f"\n[exit_code={result.exit_code}]"
+        if result.timed_out:
+            footer += " (timed out)"
+        await self._sender.send_message(chat_id, f"$ {command}\n{output}{footer}")
 
     async def handle_new_command(self, chat_id: int) -> None:
         if not self._is_authorized(chat_id):

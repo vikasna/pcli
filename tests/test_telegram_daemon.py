@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -154,6 +155,88 @@ async def test_handle_unsupported_command_from_an_unauthorized_chat_is_ignored(t
 
     try:
         await daemon.handle_unsupported_command(999, "/models")
+        assert sender.sent == []
+    finally:
+        await daemon._runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_handle_text_routes_shell_passthrough_directly_not_through_the_queue(
+    tmp_path: Path,
+):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_text(_AUTHORIZED_CHAT_ID, f'!"{sys.executable}" -c "print(1 + 1)"')
+        assert daemon._queue.empty()
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert len(sender.sent) == 1
+    chat_id, text, buttons = sender.sent[0]
+    assert chat_id == _AUTHORIZED_CHAT_ID
+    assert "2" in text
+    assert "[exit_code=0]" in text
+    assert buttons is None
+
+
+@pytest.mark.asyncio
+async def test_handle_shell_passthrough_quiet_variant_hides_output(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_shell_passthrough(
+            _AUTHORIZED_CHAT_ID, f'!!"{sys.executable}" -c "print(1 + 1)"'
+        )
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert len(sender.sent) == 1
+    _chat_id, text, _buttons = sender.sent[0]
+    assert "(output hidden)" in text
+    assert "2" not in text
+
+
+@pytest.mark.asyncio
+async def test_handle_shell_passthrough_triple_bang_explains_its_unsupported(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_shell_passthrough(_AUTHORIZED_CHAT_ID, "!!!bash")
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert len(sender.sent) == 1
+    _chat_id, text, _buttons = sender.sent[0]
+    assert "interactive terminal" in text
+    assert "isn't supported" in text
+
+
+@pytest.mark.asyncio
+async def test_handle_shell_passthrough_with_no_command_sends_usage(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_shell_passthrough(_AUTHORIZED_CHAT_ID, "!")
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert len(sender.sent) == 1
+    _chat_id, text, _buttons = sender.sent[0]
+    assert "Usage" in text
+
+
+@pytest.mark.asyncio
+async def test_handle_shell_passthrough_from_an_unauthorized_chat_is_ignored(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_shell_passthrough(999, "!echo hi")
         assert sender.sent == []
     finally:
         await daemon._runtime.client.aclose()
