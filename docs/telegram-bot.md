@@ -169,9 +169,9 @@ step — `run_headless_task` already builds a fresh `AgentLoop` from
 `Settings` on every incoming message, so persisting the setting is
 already enough for it to take effect on the next message.
 
-### `/rename`, `/allowed_roots`, `/memory`, and `/help`
+### `/rename`, `/allowed_roots`, `/memory`, `/help`, and `/toolbox`
 
-Four more commands round out parity with `chat.py`, each mirroring its
+Five more commands round out parity with `chat.py`, each mirroring its
 `chat.py` counterpart's logic directly rather than going through the
 shared scalar-setting helper above:
 
@@ -202,13 +202,32 @@ shared scalar-setting helper above:
   in the Telegram client. `daemon.py` instead defines its own plain-text
   `_HELP_TEXT` constant, listing only the commands actually implemented
   in Telegram so far.
+- **`/toolbox discover <name> [path]`, `/toolbox list`, and `/toolbox
+  remove <name>`** — mirrors `chat.py`'s `_handle_toolbox_command` and
+  its three helper methods (`_toolbox_discover`/`_toolbox_list`/
+  `_toolbox_remove`) directly. `discover` sends a "Discovering
+  '<name>'..." acknowledgment first since it calls the gateway and can
+  take a few seconds, then the discovery summary — or "Discovery
+  failed: <error>" if `ToolboxDiscoveryError`, `GatewayError`, or
+  `SandboxSecurityError` is raised. `list` replies with each discovered
+  tool, or a note that nothing's been discovered yet. `remove <name>`
+  removes one. Unlike `chat.py`'s version, which guards with an "isn't
+  available (gateway/sandbox not set up)" check, the Telegram version
+  needs no such guard — `self._runtime.toolbox_manager` and
+  `self._runtime.tool_registry` are always built by `AgentRuntime` for
+  every caller, TUI and headless alike (`agent/runtime.py`), so there's
+  nothing to guard against. After a successful discovery, the newly
+  loaded tools are merged directly into `self._runtime.tool_registry`
+  via `ToolRegistry.merge` — the same registry object `run_headless_task`
+  reads from on the next incoming message, so no extra wiring is needed
+  for the new tools to become usable.
 
-All four get the same "silently ignored from an unauthorized chat" check
+All five get the same "silently ignored from an unauthorized chat" check
 as every other command.
 
 ### Other slash commands
 
-`/new`, the ten settings commands, and the four commands above are the
+`/new`, the ten settings commands, and the five commands above are the
 only slash commands implemented here — Telegram has no equivalent of the
 TUI's full command set yet (`/models`, `/sessions`, `/plan`, ...).
 Sending any other `/`-prefixed message is caught by a fallback
