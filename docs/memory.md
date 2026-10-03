@@ -29,6 +29,14 @@ Categories, in the fixed order they're always rendered/listed:
 - **`style`** — how they like responses/conversation.
 - **`common_ask`** — a task they repeatedly ask for.
 
+`MemoryCategory` (the shared type behind both this field and the `remember`
+tool's `category` parameter) actually has a fifth value, **`local`** — but it
+never ends up as an actual `MemoryEntry.category`: a `remember` call with
+`category='local'` is intercepted before `add_entry` is ever called, so the
+four values above remain the only ones a persisted entry can have. See [The
+`remember` tool](#the-remember-tool-explicit) below for what `local` is for
+and why it exists.
+
 `source` values:
 
 - **`explicit`** — the user directly asked to be remembered (e.g. "remember
@@ -100,22 +108,46 @@ forget <id>` command resolves a typed short id to a full one first) and
 tool registry (`tools/registry.py`) — a global counterpart to
 [`record_decision`](tools.md#record_decision): same shape (one call adds one
 entry, nothing mutated in place), but `record_decision` logs to the current
-`Session` only, while `remember` persists to the memory store above, meant to
-still be true — and useful — in a completely different session and project
-later on.
+`Session` only, while `remember`'s four global categories persist to the
+memory store above, meant to still be true — and useful — in a completely
+different session and project later on. A fifth category, `local`, is a
+deliberate exception to all of that.
 
 - **Parameters:** `content` (string, required), `category` (string, required
-  — one of the four values above), `source` (string, optional — `"explicit"`
-  or `"derived"`; omitted or anything else defaults to `"derived"`).
+  — one of the four global values above, or `local`), `source` (string,
+  optional — `"explicit"` or `"derived"`; omitted or anything else defaults
+  to `"derived"`; meaningless for `category='local'`, which is never
+  persisted regardless).
+- **`category='local'` persists nothing, on purpose.** `_remember`
+  intercepts it before `add_entry` is ever called and just returns an
+  acknowledgement (`"Noted (local to this session, not saved globally): "`) —
+  no file write, no entry, never shown again. It was added after a real bug:
+  an autonomous extraction pass filed a project-specific technical detail (a
+  Python import error in one project's test script) under the global
+  `preference` category, even though the extraction prompt already said not
+  to — that entry then leaked into every unrelated future session as
+  irrelevant context, since the store is global with no per-project scoping.
+  `local` gives the model an explicit, correctly-labeled place for
+  project/task-specific content instead of forcing a choice between
+  discarding it silently or stretching it to fit one of the four global
+  categories. Per both the tool description and the extraction prompt below,
+  it's the correct, intentional choice for most of what comes up in a
+  normal conversation — not a lesser fallback.
 - **Permission:** not required (`needs_permission=False`). `plan_mode_safe=True`
   — remembering a fact isn't a mutation of the working directory, so it stays
   available while [plan mode](tui-guide.md#plan-mode) is active.
-- The tool's own description instructs the main agent to call it
-  **immediately** whenever the user explicitly asks to be remembered ("remember
-  that I use tabs", "don't suggest X again") — not to wait or batch it up —
-  and never for anything specific to only the current task.
+- The tool's own description tells the model to use the four global
+  categories only for a fact true of the *user as a person*, independent of
+  whatever project is currently being worked on — concretely: would this
+  sentence still make sense read cold in a totally unrelated project? — and
+  to use `local` for anything specific to the current project, repo, file,
+  or task. It also instructs the main agent to act **immediately** whenever
+  the user explicitly asks to be remembered ("remember that I use tabs",
+  "don't suggest X again") — always one of the global categories, since
+  that's about the user, not the project — rather than waiting or batching
+  it up.
 - Errors cleanly (not a crash) if `content` is empty or `category` isn't one
-  of the four valid values.
+  of the five valid values.
 - Two callers in practice: the main agent (explicit requests, any session
   length) and the autonomous extraction pass below (derived facts, only once
   a session has compacted at least once).
@@ -149,14 +181,21 @@ extraction sub-loop. `ctx.model` is `ChatScreen._effective_compaction_model()`
 summarization call used, so a deliberately cheaper `compaction_model` covers
 both of these background calls, not just compaction:
 
-- System prompt tells the reviewer model to look for durable, cross-session
-  facts only — the user's role/domain (`profile`), a recurring
-  technical/workflow preference (`preference`), how they like
-  responses/conversation (`style`), or a task they repeatedly ask for
-  (`common_ask`) — and explicitly **not** to call `remember` for anything
-  specific to only the current task (file names, one-off requests, details
-  that won't matter in a different project). Most reviews are expected to add
-  zero or one fact, not several.
+- System prompt (`_EXTRACTION_SYSTEM_PROMPT`) tells the reviewer model to
+  classify everything worth noting into exactly one of two scopes, rather
+  than just deciding whether to call `remember` at all: the four global
+  categories (role/domain as `profile`, a recurring technical/workflow
+  choice as `preference`, response/conversation style as `style`, a task
+  repeated across different projects as `common_ask`) only for a fact true
+  of the user as a person, independent of the current project; `local`
+  otherwise, for anything specific to the current project/repo/file/task.
+  This two-scope framing replaced an earlier, looser instruction to simply
+  not call `remember` for task-specific content — in practice that still
+  let a project-specific detail get stretched into a global category (the
+  real incident that prompted this; see [The `remember`
+  tool](#the-remember-tool-explicit) above). Most reviews are expected to
+  add zero or one fact, not several, and genuinely nothing worth noting
+  even locally means no calls at all.
 - The prompt also includes what's already known (`render_memory_section`
   of the current store), so the reviewer doesn't re-derive something already
   captured.
