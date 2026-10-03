@@ -136,6 +136,25 @@ except the registered `/new` handler, so anything else was silently
 dropped by python-telegram-bot itself before `TelegramDaemon` ever saw
 it — indistinguishable from the message never arriving at all.
 
+### Shell passthrough: `!command` and `!!command`
+
+A message starting with `!` doesn't go to the LLM at all —
+`TelegramDaemon.handle_text` routes it straight to `handle_shell_passthrough`,
+which mirrors the TUI's own `!command`/`!!command` passthrough
+([`tui-guide.md`](tui-guide.md#shell-passthrough-command-command-and-command)):
+it runs the command directly via the same `run_passthrough_command`
+(`tui/shell_passthrough.py`), bypassing the LLM, the sandbox, the
+permission system, and session/artifact recording entirely. `!<command>`
+replies with `$ command`, its stdout/stderr, and `[exit_code=N]`;
+`!!<command>` runs the same way but replies with `(output hidden)`
+instead of the result. The chat-id authorization check still applies —
+an unauthorized chat gets nothing, same as any other message.
+
+The TUI's third tier, `!!!command` (handing the real terminal off to the
+command via `App.suspend()`), has no Telegram equivalent — there's no TTY
+on the other end of a chat to hand off to — so sending `!!!` here gets an
+explanatory reply instead of being attempted.
+
 ## Permission approval over inline buttons
 
 `ask_via_telegram` (`src/pcli/telegram/permissions.py`) is
@@ -201,6 +220,12 @@ concurrently instead of queued, both turns would read and mutate that same
 list at once — a race that could corrupt the session's message history.
 Queueing means a message that arrives while the bot is still working
 simply waits its turn rather than racing the one already in flight.
+
+The one exception is `!`-prefixed [shell passthrough](#shell-passthrough-command-and-command)
+— `handle_text` routes it straight to `handle_shell_passthrough` instead
+of `put`ting it on the queue, so it runs immediately even mid-turn. This
+is safe precisely because it never touches `Session.messages` (or
+anything else the queue is protecting) at all.
 
 ## Layered module design
 
