@@ -700,6 +700,8 @@ async def test_handle_help_command_sends_the_command_reference(tmp_path: Path):
     assert "/memory" in text
     assert "/toolbox" in text
     assert "/export" in text
+    assert "/plan" in text
+    assert "/build" in text
 
 
 @pytest.mark.asyncio
@@ -1176,6 +1178,137 @@ async def test_handle_export_command_with_an_explicit_path(tmp_path: Path):
 
     assert sender.sent_documents == [(_AUTHORIZED_CHAT_ID, out_path)]
     assert out_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_plan_and_build_commands_are_ignored_from_an_unauthorized_chat(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_plan_command(999)
+        await daemon.handle_build_command(999)
+        assert sender.sent == []
+        assert daemon._plan_mode is False
+    finally:
+        await daemon._runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_handle_plan_command_enables_plan_mode(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_plan_command(_AUTHORIZED_CHAT_ID)
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert daemon._plan_mode is True
+    assert "Plan mode enabled" in sender.sent[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_handle_plan_command_repeated_reports_already_active(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_plan_command(_AUTHORIZED_CHAT_ID)
+        await daemon.handle_plan_command(_AUTHORIZED_CHAT_ID)
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert "Already in plan mode" in sender.sent[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_handle_build_command_restores_build_mode(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_plan_command(_AUTHORIZED_CHAT_ID)
+        await daemon.handle_build_command(_AUTHORIZED_CHAT_ID)
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert daemon._plan_mode is False
+    assert "Build mode restored" in sender.sent[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_handle_build_command_when_already_in_build_mode_reports_already_active(
+    tmp_path: Path,
+):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_build_command(_AUTHORIZED_CHAT_ID)
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert "Already in build mode" in sender.sent[-1][1]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_plan_mode_denies_a_non_plan_mode_safe_tool_call_during_a_real_turn(tmp_path: Path):
+    """End-to-end through _process (not just handle_plan_command) - proves
+    self._plan_mode actually threads into run_headless_task's plan_mode
+    and tool_registry params on the next message, not just getting set
+    and ignored. The filtered registry already excludes write_file
+    entirely, so the model's call is rejected at AgentLoop's tool-lookup
+    step ("Unknown tool") rather than reaching the plan-mode-specific
+    backstop message - that message, and the backstop itself, are already
+    covered in isolation by test_agent_headless.py's own
+    test_run_headless_task_plan_mode_denies_a_non_plan_mode_safe_tool_call.
+    This test's job is just the wiring, not re-proving the mechanism."""
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(
+            200,
+            content=_sse(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_1",
+                                        "function": {
+                                            "name": "write_file",
+                                            "arguments": json.dumps(
+                                                {"path": "x.txt", "content": "hi"}
+                                            ),
+                                        },
+                                    }
+                                ]
+                            },
+                            "finish_reason": None,
+                        }
+                    ]
+                },
+                {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+            ),
+        ),
+        _text_response("understood"),
+    ]
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_plan_command(_AUTHORIZED_CHAT_ID)
+        await daemon.handle_text(_AUTHORIZED_CHAT_ID, "create a file")
+        await daemon._process(await daemon._queue.get())
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert not (tmp_path / "x.txt").exists()
+    texts = [text for _chat_id, text, _buttons in sender.sent]
+    assert any("Unknown tool: write_file" in t for t in texts)
 
 
 @pytest.mark.asyncio

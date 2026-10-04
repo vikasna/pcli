@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pcli.agent.loop import AgentLoop
-from pcli.agent.prompt import build_system_prompt
+from pcli.agent.prompt import PLAN_MODE_REINFORCEMENT, build_system_prompt
 from pcli.agent.runtime import (
     AgentRuntime,
     effective_max_tool_iterations,
@@ -34,6 +34,7 @@ from pcli.agent.runtime import (
 )
 from pcli.config.settings import Settings
 from pcli.cost.tracker import CostTracker, cost_budget_reason
+from pcli.llm.models import ChatMessage
 from pcli.memory.models import render_memory_section
 from pcli.memory.store import read_memory
 from pcli.permissions.manager import AskCallback, PermissionManager
@@ -41,6 +42,7 @@ from pcli.session.models import Message, Session
 from pcli.session.store import SessionStore
 from pcli.tools.artifacts import SessionArtifactStore
 from pcli.tools.base import AskQuestionCallback
+from pcli.tools.registry import ToolRegistry
 
 _MAX_CONSECUTIVE_AUTO_CONTINUES = 3
 """Same cap and reasoning as ChatScreen's own _MAX_CONSECUTIVE_AUTO_CONTINUES
@@ -100,9 +102,23 @@ async def run_headless_task(
     on_progress: ProgressCallback = lambda _line: None,
     ask: AskCallback | None = None,
     ask_question: AskQuestionCallback | None = None,
+    plan_mode: bool = False,
+    tool_registry: ToolRegistry | None = None,
 ) -> HeadlessTurnResult:
+    """plan_mode/tool_registry mirror ChatScreen._set_plan_mode's own two
+    layers (see agent/prompt.py's PLAN_MODE_REINFORCEMENT for the third):
+    tool_registry is the primary mechanism (the model never even sees a
+    disallowed tool - the caller is expected to pass runtime.tool_registry
+    pre-filtered via ToolRegistry.filtered(lambda t: t.plan_mode_safe) when
+    plan_mode is True, the same way ChatScreen._effective_tool_registry
+    does; this function has no opinion of its own on what "plan mode"
+    means, it just wires through whatever registry it's given), defaulting
+    to runtime.tool_registry when not overridden; plan_mode itself both
+    activates AgentLoop's dispatch-time backstop (via ctx.plan_mode, below)
+    and injects the per-turn reinforcement message further down."""
     artifact_store = SessionArtifactStore(store, session.id)
     cost_tracker = CostTracker(session)
+    effective_tool_registry = tool_registry if tool_registry is not None else runtime.tool_registry
 
     def tool_context_factory():
         return make_tool_context(
@@ -114,12 +130,13 @@ async def run_headless_task(
             artifact_store=artifact_store,
             ask=ask,
             ask_question=ask_question,
+            plan_mode=plan_mode,
         )
 
     agent_loop = AgentLoop(
         runtime.client,
         model=settings.default_model or None,
-        tool_registry=runtime.tool_registry,
+        tool_registry=effective_tool_registry,
         permission_manager=permission_manager,
         tool_context_factory=tool_context_factory,
         max_tool_iterations=effective_max_tool_iterations(settings),
@@ -139,6 +156,8 @@ async def run_headless_task(
     while run_again:
         run_again = False
         chat_messages = [m.to_chat_message() for m in session.messages]
+        if plan_mode:
+            chat_messages.append(ChatMessage(role="system", content=PLAN_MODE_REINFORCEMENT))
         text_parts: list[str] = []
         async for event in agent_loop.run_turn(
             chat_messages,

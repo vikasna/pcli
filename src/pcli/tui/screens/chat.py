@@ -22,7 +22,7 @@ from pcli.agent.activity import ActivityTracker, format_subagent_activity
 from pcli.agent.compaction import maybe_compact
 from pcli.agent.context_pruning import extract_purpose, prune_old_tool_results
 from pcli.agent.loop import AgentLoop, ToolResultEvent
-from pcli.agent.prompt import build_system_prompt
+from pcli.agent.prompt import PLAN_MODE_REINFORCEMENT, build_system_prompt
 from pcli.agent.runtime import (
     build_agent_runtime,
     build_permission_manager,
@@ -91,21 +91,6 @@ _NO_SUBAGENT_RUNNING_MESSAGE = "No subagent is currently running."
 # that's stuck hitting the limit every single time doesn't loop forever.
 _MAX_CONSECUTIVE_AUTO_CONTINUES = 3
 _AUTO_CONTINUE_MESSAGE = "Continue."
-
-# Ephemeral, per-turn reinforcement injected only while plan mode is active
-# (see _run_one_turn) — never persisted to session.messages, so it can't be
-# "forgotten" via compaction drift and never pollutes exports/resumption.
-# The tool registry itself already blocks non-plan_mode_safe tools (and
-# AgentLoop's dispatch-time backstop denies them even if one slipped through
-# a stale registry) — this is a second, prompt-level layer on top of that,
-# not the actual safety boundary.
-_PLAN_MODE_REINFORCEMENT = (
-    "# Plan mode active\n"
-    "You are in plan mode: only read-only/exploration tools are available (writes, edits, "
-    "shell commands, and other mutating actions will be denied if attempted). Investigate, "
-    "explain your findings, and propose an approach — do not try to make changes or route "
-    "around this restriction. The user will switch to /build before asking you to act on it."
-)
 
 # Static reference shown by /help — kept as one literal string (not built from
 # the _handle_command dispatch table) since the wording needs full sentences,
@@ -1370,8 +1355,9 @@ class ChatScreen(Screen):
         plan_mode_safe tools (read/explore only, no writes/edits/shell). The
         registry swap is the primary mechanism (the model never even sees a
         disallowed tool); AgentLoop's dispatch-time backstop and the
-        per-turn prompt reinforcement (_PLAN_MODE_REINFORCEMENT) are the
-        additional layers on top, not the boundary itself."""
+        per-turn prompt reinforcement (agent/prompt.py's
+        PLAN_MODE_REINFORCEMENT, shared with headless.py's own plan-mode
+        support) are the additional layers on top, not the boundary itself."""
         message_view = self.query_one(MessageView)
         if enabled == self._plan_mode:
             message_view.add_message(
@@ -1921,7 +1907,7 @@ class ChatScreen(Screen):
         try:
             chat_messages = [m.to_chat_message() for m in self._session.messages]
             if self._plan_mode:
-                chat_messages.append(ChatMessage(role="system", content=_PLAN_MODE_REINFORCEMENT))
+                chat_messages.append(ChatMessage(role="system", content=PLAN_MODE_REINFORCEMENT))
             async for chunk in self._agent_loop.run_turn(
                 chat_messages,
                 ask=ask,

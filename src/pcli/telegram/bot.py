@@ -157,6 +157,14 @@ async def run_telegram_daemon(
         arg = " ".join(context.args) if context.args else None
         await daemon.handle_export_command(chat.id, arg)
 
+    async def on_plan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if update.effective_chat is not None:
+            await daemon.handle_plan_command(update.effective_chat.id)
+
+    async def on_build_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if update.effective_chat is not None:
+            await daemon.handle_build_command(update.effective_chat.id)
+
     async def on_unsupported_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat = update.effective_chat
         message = update.effective_message
@@ -223,6 +231,8 @@ async def run_telegram_daemon(
     application.add_handler(CommandHandler("models", on_models_command))
     application.add_handler(CommandHandler("sessions", on_sessions_command))
     application.add_handler(CommandHandler("export", on_export_command))
+    application.add_handler(CommandHandler("plan", on_plan_command))
+    application.add_handler(CommandHandler("build", on_build_command))
     application.add_handler(
         CommandHandler(list(scalar_setting_commands), on_scalar_setting_command)
     )

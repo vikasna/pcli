@@ -346,6 +346,24 @@ when it would actually change what the user does next; a slip that changes nothi
 doesn't need a callout."""
 
 
+PLAN_MODE_REINFORCEMENT = (
+    "# Plan mode active\n"
+    "You are in plan mode: only read-only/exploration tools are available (writes, edits, "
+    "shell commands, and other mutating actions will be denied if attempted). Investigate, "
+    "explain your findings, and propose an approach — do not try to make changes or route "
+    "around this restriction. The user will switch to /build before asking you to act on it."
+)
+"""Ephemeral, per-turn reinforcement injected only while plan mode is active
+(ChatScreen._run_one_turn, agent/headless.py's run_headless_task) - never
+persisted to session.messages, so it can't be "forgotten" via compaction
+drift and never pollutes exports/resumption. The tool registry itself
+already blocks non-plan_mode_safe tools (and AgentLoop's dispatch-time
+backstop denies them even if one slipped through a stale registry) - this
+is a second, prompt-level layer on top of that, not the actual safety
+boundary. Shared between both callers (not a separate copy each) so the
+wording can't drift between the TUI and `pcli telegram`."""
+
+
 def build_system_prompt(*, extra_sections: list[str] | None = None) -> str:
     sections = [environment_section(), BASE_SYSTEM_PROMPT]
     if extra_sections:

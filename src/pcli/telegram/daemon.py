@@ -93,6 +93,8 @@ _HELP_TEXT = (
     "/models [name] - set the model, or list what's available from the gateway.\n"
     "/sessions [switch <id>] - list other sessions, or switch to one.\n"
     "/export [path] - export the current session and send it as a document.\n"
+    "/plan - enter plan mode: only read-only/exploration tools are available.\n"
+    "/build - exit plan mode, restoring full tool access.\n"
     "\n"
     "!<command> - run a shell command directly, bypassing the agent (!!<command> hides the "
     "output).\n"
@@ -146,6 +148,7 @@ class TelegramDaemon:
         self._context_limit_table = ContextLimitTable.load()
         self._turn_in_progress = False
         self._model_choices: dict[str, str] = {}
+        self._plan_mode = False
 
     @property
     def session_id(self) -> str:
@@ -1005,6 +1008,35 @@ class TelegramDaemon:
         export_session(self._session, out_path, store=self._store)
         await self._sender.send_document(chat_id, out_path)
 
+    async def _set_plan_mode(self, chat_id: int, enabled: bool) -> None:
+        """Mirrors ChatScreen._set_plan_mode - self._plan_mode is read by
+        _process_turn on the next message (there's no live AgentLoop here
+        to push a registry swap into immediately, same simplification
+        already noted for the scalar-setting commands)."""
+        if not self._is_authorized(chat_id):
+            logger.warning("Ignored message from unauthorized chat id %s", chat_id)
+            return
+        if enabled == self._plan_mode:
+            await self._sender.send_message(
+                chat_id, f"Already in {'plan' if enabled else 'build'} mode."
+            )
+            return
+        self._plan_mode = enabled
+        if enabled:
+            await self._sender.send_message(
+                chat_id,
+                "Plan mode enabled: only read-only/exploration tools are available. Use "
+                "/build to exit and allow writes/edits/shell commands again.",
+            )
+        else:
+            await self._sender.send_message(chat_id, "Build mode restored: all tools are available again.")
+
+    async def handle_plan_command(self, chat_id: int) -> None:
+        await self._set_plan_mode(chat_id, True)
+
+    async def handle_build_command(self, chat_id: int) -> None:
+        await self._set_plan_mode(chat_id, False)
+
     async def handle_new_command(self, chat_id: int) -> None:
         if not self._is_authorized(chat_id):
             return
@@ -1124,6 +1156,12 @@ class TelegramDaemon:
                 risk_description,
             )
 
+        tool_registry = (
+            self._runtime.tool_registry.filtered(lambda t: t.plan_mode_safe)
+            if self._plan_mode
+            else None
+        )
+
         try:
             result = await run_headless_task(
                 text,
@@ -1135,6 +1173,8 @@ class TelegramDaemon:
                 store=self._store,
                 on_progress=on_progress,
                 ask=ask,
+                plan_mode=self._plan_mode,
+                tool_registry=tool_registry,
             )
         except GatewayError as exc:
             # Drained before sending the error, not after, so any tool

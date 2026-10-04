@@ -17,6 +17,7 @@ from pcli.agent.headless import (
     new_headless_session,
     run_headless_task,
 )
+from pcli.agent.prompt import PLAN_MODE_REINFORCEMENT
 from pcli.agent.runtime import build_agent_runtime, build_permission_manager
 from pcli.config.settings import Settings
 from pcli.memory.store import add_entry
@@ -384,3 +385,151 @@ async def test_run_headless_task_records_audit_entries_when_enabled(tmp_path: Pa
     assert session.audit_log[0].detail["decision"] == "allow"
     assert session.audit_log[1].detail["tool_name"] == "run_shell"
     assert session.audit_log[1].prev_hash == session.audit_log[0].entry_hash
+
+
+# --- plan_mode ---
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_run_headless_task_plan_mode_injects_reinforcement_not_persisted(tmp_path: Path):
+    """Mirrors test_chat_screen_plan_mode.py's own equivalent test - the
+    same ephemeral, per-turn reinforcement (agent/prompt.py's
+    PLAN_MODE_REINFORCEMENT) chat.py injects, shared rather than
+    duplicated so the wording can't drift between the TUI and the
+    Telegram daemon, which is the actual caller that needed this."""
+    captured_requests: list[bytes] = []
+
+    def _capture(request):
+        captured_requests.append(request.content)
+        return _text_response("ok")
+
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(side_effect=_capture)
+
+    settings = _settings()
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    session = new_headless_session(store, settings, tmp_path)
+    runtime = await build_agent_runtime(settings, tmp_path)
+
+    try:
+        await run_headless_task(
+            "look around",
+            session=session,
+            runtime=runtime,
+            settings=settings,
+            permission_manager=build_permission_manager(settings),
+            cwd=tmp_path,
+            store=store,
+            plan_mode=True,
+        )
+    finally:
+        await runtime.client.aclose()
+
+    sent = json.loads(captured_requests[0])
+    sent_contents = [m.get("content", "") for m in sent["messages"]]
+    assert any(PLAN_MODE_REINFORCEMENT in c for c in sent_contents if c)
+    assert not any(m.content and PLAN_MODE_REINFORCEMENT in m.content for m in session.messages)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_run_headless_task_plan_mode_denies_a_non_plan_mode_safe_tool_call(tmp_path: Path):
+    """Proves ctx.plan_mode (threaded through make_tool_context) is what
+    denies this, not just registry filtering - no tool_registry override
+    is passed here, so the model's own call is only ever blocked by
+    AgentLoop's dispatch-time backstop in agent/loop.py."""
+    route = respx.post("http://fake-gateway.test/v1/chat/completions")
+    route.side_effect = [
+        httpx.Response(
+            200,
+            content=_sse(
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_1",
+                                        "function": {
+                                            "name": "write_file",
+                                            "arguments": json.dumps(
+                                                {"path": "x.txt", "content": "hi"}
+                                            ),
+                                        },
+                                    }
+                                ]
+                            },
+                            "finish_reason": None,
+                        }
+                    ]
+                },
+                {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+            ),
+        ),
+        _text_response("understood"),
+    ]
+
+    settings = _settings()
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    session = new_headless_session(store, settings, tmp_path)
+    runtime = await build_agent_runtime(settings, tmp_path)
+
+    try:
+        await run_headless_task(
+            "create a file",
+            session=session,
+            runtime=runtime,
+            settings=settings,
+            permission_manager=build_permission_manager(settings),
+            cwd=tmp_path,
+            store=store,
+            plan_mode=True,
+        )
+    finally:
+        await runtime.client.aclose()
+
+    tool_message = next(m for m in session.messages if m.role == "tool")
+    assert "not available in plan mode" in tool_message.content
+    assert not (tmp_path / "x.txt").exists()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_run_headless_task_tool_registry_override_hides_tools_from_the_model(tmp_path: Path):
+    """Confirms the tool_registry param is actually threaded into
+    AgentLoop's own tool list sent to the gateway, not just accepted and
+    ignored - the primary plan-mode mechanism (the model never even sees
+    a disallowed tool), same as ChatScreen._effective_tool_registry."""
+    captured_requests: list[bytes] = []
+
+    def _capture(request):
+        captured_requests.append(request.content)
+        return _text_response("done")
+
+    respx.post("http://fake-gateway.test/v1/chat/completions").mock(side_effect=_capture)
+
+    settings = _settings()
+    store = SessionStore(base_dir=tmp_path / "sessions")
+    session = new_headless_session(store, settings, tmp_path)
+    runtime = await build_agent_runtime(settings, tmp_path)
+    filtered = runtime.tool_registry.filtered(lambda t: t.plan_mode_safe)
+
+    try:
+        await run_headless_task(
+            "look around",
+            session=session,
+            runtime=runtime,
+            settings=settings,
+            permission_manager=build_permission_manager(settings),
+            cwd=tmp_path,
+            store=store,
+            tool_registry=filtered,
+        )
+    finally:
+        await runtime.client.aclose()
+
+    sent = json.loads(captured_requests[0])
+    tool_names = {t["function"]["name"] for t in sent.get("tools", [])}
+    assert "read_file" in tool_names
+    assert "write_file" not in tool_names

@@ -10,9 +10,10 @@ import pytest
 import respx
 from textual.app import App
 
+from pcli.agent.prompt import PLAN_MODE_REINFORCEMENT
 from pcli.config.settings import Settings
 from pcli.session.store import SessionStore
-from pcli.tui.screens.chat import _PLAN_MODE_REINFORCEMENT, ChatScreen
+from pcli.tui.screens.chat import ChatScreen
 from pcli.tui.widgets.chat_input import ChatInput
 from pcli.tui.widgets.message_view import MessageView
 from pcli.tui.widgets.status_bar import StatusBar
@@ -143,11 +144,11 @@ async def test_plan_mode_injects_ephemeral_reinforcement_not_persisted_to_sessio
 
         sent = json.loads(captured_requests[0])
         sent_contents = [m.get("content", "") for m in sent["messages"]]
-        assert any(_PLAN_MODE_REINFORCEMENT in c for c in sent_contents if c)
+        assert any(PLAN_MODE_REINFORCEMENT in c for c in sent_contents if c)
 
         # Never persisted to the actual session.
         assert not any(
-            m.content and _PLAN_MODE_REINFORCEMENT in m.content for m in session.messages
+            m.content and PLAN_MODE_REINFORCEMENT in m.content for m in session.messages
         )
 
 

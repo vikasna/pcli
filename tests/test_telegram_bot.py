@@ -254,7 +254,7 @@ async def test_registers_a_command_a_text_and_a_callback_handler(
     app = _FakeApplicationBuilder.last_built
     assert app is not None
     assert app.token == "test-token"
-    assert len(app.handlers) == 14
+    assert len(app.handlers) == 16
     assert any(isinstance(h, _FakeCommandHandler) and h.command == "new" for h in app.handlers)
     assert any(isinstance(h, _FakeCommandHandler) and h.command == "rename" for h in app.handlers)
     assert any(
@@ -267,6 +267,8 @@ async def test_registers_a_command_a_text_and_a_callback_handler(
     assert any(isinstance(h, _FakeCommandHandler) and h.command == "models" for h in app.handlers)
     assert any(isinstance(h, _FakeCommandHandler) and h.command == "sessions" for h in app.handlers)
     assert any(isinstance(h, _FakeCommandHandler) and h.command == "export" for h in app.handlers)
+    assert any(isinstance(h, _FakeCommandHandler) and h.command == "plan" for h in app.handlers)
+    assert any(isinstance(h, _FakeCommandHandler) and h.command == "build" for h in app.handlers)
     assert any(
         isinstance(h, _FakeCommandHandler) and isinstance(h.command, list) and "timeout" in h.command
         for h in app.handlers
@@ -598,6 +600,33 @@ async def test_an_export_command_update_sends_the_session_as_a_document(
     assert chat_id == _AUTHORIZED_CHAT_ID
     assert filename.endswith(".pcli-session.json")
     assert b'"format"' in document
+
+
+@pytest.mark.asyncio
+async def test_a_plan_command_update_reaches_the_daemon(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _install_fake_telegram(monkeypatch)
+    settings = _settings()
+    stop_event = asyncio.Event()
+    stop_event.set()
+
+    await run_telegram_daemon(settings, tmp_path, stop_event=stop_event)
+
+    app = _FakeApplicationBuilder.last_built
+    assert app is not None
+    handler = next(
+        h for h in app.handlers if isinstance(h, _FakeCommandHandler) and h.command == "plan"
+    )
+    update = _FakeUpdate(chat_id=_AUTHORIZED_CHAT_ID, text="/plan")
+    await handler.callback(update, context=types.SimpleNamespace(args=[]))
+
+    expected_text = (
+        "Plan mode enabled: only read-only/exploration tools are available. Use "
+        "/build to exit and allow writes/edits/shell commands again."
+    )
+    assert app.bot.sent_messages == [(_AUTHORIZED_CHAT_ID, expected_text)]
+
 
 
 def test_real_ptb_filters_actually_separate_commands_from_plain_text():
