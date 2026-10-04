@@ -45,3 +45,14 @@ class BotSender:
         # bytes for `photo` directly, and this avoids a blocking open()
         # call sitting in an async function (see ASYNC230).
         await self._bot.send_photo(chat_id=chat_id, photo=Path(path).read_bytes())
+
+    async def send_document(self, chat_id: int, path: Any) -> None:
+        # filename= is required here (unlike send_photo above): PTB infers
+        # a sensible default for an image, but raw document bytes with no
+        # filename show up in the Telegram client as an unnamed/extension-
+        # less file - a real usability problem for e.g. a .pcli-session.json
+        # export, which only makes sense re-imported under its own name.
+        path = Path(path)
+        await self._bot.send_document(
+            chat_id=chat_id, document=path.read_bytes(), filename=path.name
+        )

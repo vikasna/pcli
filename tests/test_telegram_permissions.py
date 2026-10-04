@@ -30,6 +30,9 @@ class _FakeSender:
     async def send_photo(self, chat_id: int, path: Any) -> None:
         raise AssertionError("not used in these tests")
 
+    async def send_document(self, chat_id: int, path: Any) -> None:
+        raise AssertionError("not used in these tests")
+
 
 # --- PendingApprovals ---
 

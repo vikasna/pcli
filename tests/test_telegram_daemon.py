@@ -56,6 +56,7 @@ def _text_response(text: str) -> httpx.Response:
 class _FakeSender:
     def __init__(self) -> None:
         self.sent: list[tuple[int, str, list[tuple[str, str]] | None]] = []
+        self.sent_documents: list[tuple[int, Path]] = []
 
     async def send_message(
         self, chat_id: int, text: str, *, buttons: list[tuple[str, str]] | None = None
@@ -64,6 +65,9 @@ class _FakeSender:
 
     async def send_photo(self, chat_id: int, path: Any) -> None:
         raise AssertionError("not used in these tests")
+
+    async def send_document(self, chat_id: int, path: Any) -> None:
+        self.sent_documents.append((chat_id, Path(path)))
 
 
 async def _make_daemon(tmp_path: Path, settings: Settings) -> tuple[TelegramDaemon, _FakeSender]:
@@ -695,6 +699,7 @@ async def test_handle_help_command_sends_the_command_reference(tmp_path: Path):
     assert "/allowed_roots" in text
     assert "/memory" in text
     assert "/toolbox" in text
+    assert "/export" in text
 
 
 @pytest.mark.asyncio
@@ -1120,6 +1125,57 @@ async def test_handle_sessions_command_switch_with_no_argument_sends_usage(tmp_p
         await daemon._runtime.client.aclose()
 
     assert "Usage: /sessions switch <id>" in sender.sent[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_handle_export_command_is_ignored_from_an_unauthorized_chat(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_export_command(999, None)
+        assert sender.sent == []
+        assert sender.sent_documents == []
+    finally:
+        await daemon._runtime.client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_handle_export_command_with_no_argument_sends_the_default_path_as_a_document(
+    tmp_path: Path,
+):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_export_command(_AUTHORIZED_CHAT_ID, None)
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert sender.sent == []  # the file itself is the reply, no separate confirmation message
+    assert len(sender.sent_documents) == 1
+    chat_id, path = sender.sent_documents[0]
+    assert chat_id == _AUTHORIZED_CHAT_ID
+    assert path.name == f"{daemon._session.id}.pcli-session.json"
+    assert path.exists()
+    envelope = json.loads(path.read_text(encoding="utf-8"))
+    assert envelope["format"] == "pcli-session"
+    assert envelope["session"]["id"] == daemon._session.id
+
+
+@pytest.mark.asyncio
+async def test_handle_export_command_with_an_explicit_path(tmp_path: Path):
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+    out_path = tmp_path / "my-export.json"
+
+    try:
+        await daemon.handle_export_command(_AUTHORIZED_CHAT_ID, str(out_path))
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert sender.sent_documents == [(_AUTHORIZED_CHAT_ID, out_path)]
+    assert out_path.exists()
 
 
 @pytest.mark.asyncio

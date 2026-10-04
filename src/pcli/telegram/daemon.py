@@ -92,6 +92,7 @@ _HELP_TEXT = (
     "/compact - manually summarize the conversation so far to free up context space.\n"
     "/models [name] - set the model, or list what's available from the gateway.\n"
     "/sessions [switch <id>] - list other sessions, or switch to one.\n"
+    "/export [path] - export the current session and send it as a document.\n"
     "\n"
     "!<command> - run a shell command directly, bypassing the agent (!!<command> hides the "
     "output).\n"
@@ -981,6 +982,28 @@ class TelegramDaemon:
             f"Unknown /sessions subcommand: '{sub_command}'. Use /sessions, or /sessions "
             "switch <id>.",
         )
+
+    async def handle_export_command(self, chat_id: int, arg: str | None) -> None:
+        """Mirrors ChatScreen._export_current's path/export_session call,
+        but sends the result back as a Telegram document instead of just
+        reporting a local path. chat.py's version reporting a path is
+        fine for a user sitting at the same machine; a remote Telegram
+        user has no other access to the host's filesystem at all, so a
+        bare path would be useless - the whole point of Telegram here is
+        remote use."""
+        if not self._is_authorized(chat_id):
+            logger.warning("Ignored message from unauthorized chat id %s", chat_id)
+            return
+        from pcli.config.paths import data_dir
+        from pcli.session.export import export_session
+
+        out_path = (
+            Path(arg).expanduser()
+            if arg
+            else data_dir() / "exports" / f"{self._session.id}.pcli-session.json"
+        )
+        export_session(self._session, out_path, store=self._store)
+        await self._sender.send_document(chat_id, out_path)
 
     async def handle_new_command(self, chat_id: int) -> None:
         if not self._is_authorized(chat_id):

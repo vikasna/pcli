@@ -31,12 +31,16 @@ class _FakeBot:
     def __init__(self) -> None:
         self.sent_messages: list[tuple[int, str, object]] = []
         self.sent_photos: list[tuple[int, bytes]] = []
+        self.sent_documents: list[tuple[int, bytes, str]] = []
 
     async def send_message(self, *, chat_id: int, text: str, reply_markup=None) -> None:
         self.sent_messages.append((chat_id, text, reply_markup))
 
     async def send_photo(self, *, chat_id: int, photo: bytes) -> None:
         self.sent_photos.append((chat_id, photo))
+
+    async def send_document(self, *, chat_id: int, document: bytes, filename: str) -> None:
+        self.sent_documents.append((chat_id, document, filename))
 
 
 def _install_fake_telegram(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -109,3 +113,18 @@ async def test_send_photo_reads_the_file_and_sends_its_bytes(
     await sender.send_photo(456, image_path)
 
     assert bot.sent_photos == [(456, b"fake-png-bytes")]
+
+
+@pytest.mark.asyncio
+async def test_send_document_reads_the_file_and_includes_its_filename(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _install_fake_telegram(monkeypatch)
+    bot = _FakeBot()
+    sender = BotSender(bot)  # type: ignore[arg-type]
+    export_path = tmp_path / "abc123.pcli-session.json"
+    export_path.write_bytes(b'{"format": "pcli-session"}')
+
+    await sender.send_document(789, export_path)
+
+    assert bot.sent_documents == [(789, b'{"format": "pcli-session"}', "abc123.pcli-session.json")]

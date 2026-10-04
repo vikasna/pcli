@@ -67,10 +67,14 @@ class _FakeBot:
     def __init__(self, token: str = "") -> None:
         self.token = token
         self.sent_messages: list[tuple[int, str]] = []
+        self.sent_documents: list[tuple[int, bytes, str]] = []
         _FakeBot.last_constructed = self
 
     async def send_message(self, *, chat_id: int, text: str, reply_markup=None) -> None:
         self.sent_messages.append((chat_id, text))
+
+    async def send_document(self, *, chat_id: int, document: bytes, filename: str) -> None:
+        self.sent_documents.append((chat_id, document, filename))
 
     async def __aenter__(self) -> Self:
         return self
@@ -250,7 +254,7 @@ async def test_registers_a_command_a_text_and_a_callback_handler(
     app = _FakeApplicationBuilder.last_built
     assert app is not None
     assert app.token == "test-token"
-    assert len(app.handlers) == 13
+    assert len(app.handlers) == 14
     assert any(isinstance(h, _FakeCommandHandler) and h.command == "new" for h in app.handlers)
     assert any(isinstance(h, _FakeCommandHandler) and h.command == "rename" for h in app.handlers)
     assert any(
@@ -262,6 +266,7 @@ async def test_registers_a_command_a_text_and_a_callback_handler(
     assert any(isinstance(h, _FakeCommandHandler) and h.command == "compact" for h in app.handlers)
     assert any(isinstance(h, _FakeCommandHandler) and h.command == "models" for h in app.handlers)
     assert any(isinstance(h, _FakeCommandHandler) and h.command == "sessions" for h in app.handlers)
+    assert any(isinstance(h, _FakeCommandHandler) and h.command == "export" for h in app.handlers)
     assert any(
         isinstance(h, _FakeCommandHandler) and isinstance(h.command, list) and "timeout" in h.command
         for h in app.handlers
@@ -567,6 +572,32 @@ async def test_a_sessions_command_update_passes_the_joined_argument_through(
     await handler.callback(update, context=types.SimpleNamespace(args=[]))
 
     assert app.bot.sent_messages == [(_AUTHORIZED_CHAT_ID, "No other sessions yet.")]
+
+
+@pytest.mark.asyncio
+async def test_an_export_command_update_sends_the_session_as_a_document(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _install_fake_telegram(monkeypatch)
+    settings = _settings()
+    stop_event = asyncio.Event()
+    stop_event.set()
+
+    await run_telegram_daemon(settings, tmp_path, stop_event=stop_event)
+
+    app = _FakeApplicationBuilder.last_built
+    assert app is not None
+    handler = next(
+        h for h in app.handlers if isinstance(h, _FakeCommandHandler) and h.command == "export"
+    )
+    update = _FakeUpdate(chat_id=_AUTHORIZED_CHAT_ID, text="/export")
+    await handler.callback(update, context=types.SimpleNamespace(args=[]))
+
+    assert len(app.bot.sent_documents) == 1
+    chat_id, document, filename = app.bot.sent_documents[0]
+    assert chat_id == _AUTHORIZED_CHAT_ID
+    assert filename.endswith(".pcli-session.json")
+    assert b'"format"' in document
 
 
 def test_real_ptb_filters_actually_separate_commands_from_plain_text():
