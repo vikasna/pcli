@@ -390,12 +390,65 @@ client — a real problem here, since the whole point of the exported file
 is that it's a `.pcli-session.json` the user can later re-import under
 that name.
 
+### `/plan` and `/build`
+
+`/plan` enters plan mode: a restricted mode where only read-only/
+exploration tools are available to the model — writes, edits, shell
+commands, and other mutating actions are denied if attempted. `/build`
+exits it back to normal ("build") mode, restoring full tool access.
+Sending the command you're already in is a no-op, the same "already
+there" reply `chat.py` gives: "Already in plan mode." / "Already in
+build mode." This is the same restricted mode [`tui-guide.md`](tui-guide.md#plan-mode)
+documents for the TUI — see there for the exact set of tools plan mode
+allows and blocks (`ToolSpec.plan_mode_safe`, `src/pcli/tools/base.py`).
+
+`TelegramDaemon._set_plan_mode` (`daemon.py`) just flips `self._plan_mode`
+and replies with a confirmation; there's no live `AgentLoop` here to push
+the change into immediately, the same simplification the [settings
+commands](#settings-commands) above make — `_process_turn` reads
+`self._plan_mode` fresh on the next incoming message to decide what to
+pass `run_headless_task`.
+
+Three layers enforce the restriction, mirroring `chat.py`'s own plan mode
+exactly:
+
+1. **Primary: tool registry filtering.** When plan mode is active,
+   `TelegramDaemon._process_turn` passes a filtered tool registry
+   (`runtime.tool_registry.filtered(lambda t: t.plan_mode_safe)`) into
+   `run_headless_task`'s new `tool_registry` parameter (`agent/
+   headless.py`) — the model never even sees a disallowed tool in its
+   tool list.
+2. **Backstop: dispatch-time denial.** `run_headless_task`'s new
+   `plan_mode: bool` parameter also threads into `make_tool_context`
+   (`ctx.plan_mode`), which activates an existing dispatch-time check in
+   `agent/loop.py` that denies a non-`plan_mode_safe` tool call even if
+   one somehow still reached the model (a stale registry, a hallucinated
+   call) — "Denied: not available in plan mode."
+3. **Prompt-level reinforcement.** While plan mode is active, each turn
+   gets an ephemeral system-message reminder appended
+   (`PLAN_MODE_REINFORCEMENT`, `agent/prompt.py`) — never persisted to
+   the session, so it can't leak into exports or get "forgotten" via
+   compaction drift.
+
+**Like `/compact` above, `/plan`/`/build` aren't just parity for parity's
+sake — they close a real gap too.** Before this, `run_headless_task`
+(`agent/headless.py`) had no plan-mode concept at all; plan mode existed
+only in the TUI. The `plan_mode` and `tool_registry` parameters this
+command relies on are a real, previously-missing capability for `pcli
+run` (the one-shot headless command) too, not just something bolted on
+for Telegram's benefit.
+
+`PLAN_MODE_REINFORCEMENT` itself moved out of `chat.py`, where it used to
+live as a private constant, into the shared `agent/prompt.py` —
+specifically so the TUI and the Telegram daemon can't drift apart on the
+wording.
+
 ### Other slash commands
 
 `/new`, the ten settings commands, the five commands above, `/compact`,
-`/models`, `/sessions`, and `/export` are the only slash commands
-implemented here — Telegram has no equivalent of the TUI's full command
-set yet (`/plan`, ...).
+`/models`, `/sessions`, `/export`, `/plan`, and `/build` are the only
+slash commands implemented here — the TUI's own `/theme` and `/subagent`
+have no Telegram equivalent yet.
 Sending any other `/`-prefixed message is caught by a fallback
 `MessageHandler(filters.COMMAND, ...)` (`bot.py`) →
 `TelegramDaemon.handle_unsupported_command`, which replies that the
