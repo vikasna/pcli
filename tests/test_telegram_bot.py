@@ -509,6 +509,45 @@ async def test_a_models_command_update_with_an_argument_sets_the_model(
 
 
 @pytest.mark.asyncio
+async def test_a_model_button_callback_query_is_answered_and_clears_the_keyboard(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """Same shape and scope as test_callback_query_handler_answers_and_
+    clears_the_keyboard below, for the "model:" callback_data namespace
+    instead of "perm:" - this file's own scope is handler registration and
+    reaching the daemon, not exhaustive behavior (see the module
+    docstring), so - like that test, whose "perm:aaaa:allow:once" doesn't
+    correspond to a real pending approval either - this uses a token that
+    was never actually handed out by a /models call. The real
+    business-logic round trip (token -> model -> confirmation message) is
+    covered at the daemon level: see test_pressing_a_model_button_sets_
+    the_model in test_telegram_daemon.py."""
+    _install_fake_telegram(monkeypatch)
+    settings = _settings()
+    stop_event = asyncio.Event()
+
+    daemon_task = asyncio.create_task(run_telegram_daemon(settings, tmp_path, stop_event=stop_event))
+    try:
+        for _ in range(50):
+            if _FakeApplicationBuilder.last_built is not None:
+                break
+            await asyncio.sleep(0.01)
+        app = _FakeApplicationBuilder.last_built
+        assert app is not None
+
+        callback_handler = next(h for h in app.handlers if isinstance(h, _FakeCallbackQueryHandler))
+        update = _FakeUpdate(callback_data="model:doesnotexist")
+        await callback_handler.callback(update, context=None)
+
+        assert update.callback_query.answered is True
+        assert update.callback_query.reply_markup_cleared is True
+        assert app.bot.sent_messages == []  # an unknown token is a silent no-op
+    finally:
+        stop_event.set()
+        await daemon_task
+
+
+@pytest.mark.asyncio
 async def test_a_sessions_command_update_passes_the_joined_argument_through(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -58,6 +59,11 @@ from pcli.tools.toolbox.manager import ToolboxDiscoveryError
 from pcli.tui.shell_passthrough import run_passthrough_command
 
 logger = logging.getLogger(__name__)
+
+_MAX_MODEL_BUTTONS = 20
+"""Caps the /models inline-button listing the same way /sessions caps its
+own text listing - a long gateway model list would otherwise produce an
+unwieldy wall of one-button-per-row inline buttons."""
 
 _HELP_TEXT = (
     "Commands:\n"
@@ -100,6 +106,21 @@ class _CommandError(Exception):
     or anything network-related; purely a validation-failure message."""
 
 
+def _encode_model_callback(token: str) -> str:
+    return f"model:{token}"
+
+
+def _decode_model_callback(data: str) -> str | None:
+    """None if data isn't one of ours - mirrors permissions.py's own
+    decode_callback_data (a "perm:"-prefixed payload), a separate,
+    parallel namespace rather than overloading that one, so
+    handle_callback can simply try both."""
+    prefix, _, token = data.partition(":")
+    if prefix != "model" or not token:
+        return None
+    return token
+
+
 class TelegramDaemon:
     def __init__(
         self,
@@ -123,6 +144,7 @@ class TelegramDaemon:
         self._queue: asyncio.Queue[str] = asyncio.Queue()
         self._context_limit_table = ContextLimitTable.load()
         self._turn_in_progress = False
+        self._model_choices: dict[str, str] = {}
 
     @property
     def session_id(self) -> str:
@@ -847,11 +869,19 @@ class TelegramDaemon:
         self._store.save(self._session)
 
     async def handle_models_command(self, chat_id: int, arg: str | None) -> None:
-        """Mirrors ChatScreen._handle_models_command's set-directly path.
-        The no-arg listing is plain text here, not chat.py's interactive
-        ModelListScreen picker - see the plan's note on this; a future
-        change may upgrade it to inline buttons the same way permission
-        prompts already use them."""
+        """Mirrors ChatScreen._handle_models_command: an argument sets the
+        model directly (_set_model, same as chat.py's own); no argument
+        presents an inline-button picker - Telegram's equivalent of
+        chat.py's interactive ModelListScreen, reusing the same
+        callback_data mechanism permission prompts use (see
+        _encode_model_callback/_decode_model_callback and handle_callback
+        below). Model names can exceed Telegram's 64-byte callback_data
+        limit, so buttons carry a short random token instead of the name
+        itself - self._model_choices maps each token back to its model
+        name, rebuilt fresh on every /models call (a button from an older
+        listing silently stops working once a newer one replaces it, the
+        same "stale press is a harmless no-op" precedent
+        PendingApprovals already establishes for permission prompts)."""
         if not self._is_authorized(chat_id):
             logger.warning("Ignored message from unauthorized chat id %s", chat_id)
             return
@@ -871,10 +901,17 @@ class TelegramDaemon:
             return
 
         current = self._settings.default_model or self._session.model or None
-        lines = [f"- {m}{' (active)' if m == current else ''}" for m in models]
-        await self._sender.send_message(
-            chat_id, "Available models:\n" + "\n".join(lines) + "\n\nUsage: /models <name>"
+        shown, omitted = models[:_MAX_MODEL_BUTTONS], models[_MAX_MODEL_BUTTONS:]
+        self._model_choices = {secrets.token_hex(4): model for model in shown}
+        buttons = [
+            (f"{'* ' if model == current else ''}{model}", _encode_model_callback(token))
+            for token, model in self._model_choices.items()
+        ]
+        text = "Choose a model:" if not omitted else (
+            f"Choose a model (showing the first {len(shown)} of {len(models)} - use "
+            "/models <name> directly for one not listed):"
         )
+        await self._sender.send_message(chat_id, text, buttons=buttons)
 
     def _set_model(self, model: str) -> None:
         self._settings.default_model = model
@@ -969,17 +1006,29 @@ class TelegramDaemon:
             "(no leading /) is sent to the agent as a normal message.",
         )
 
-    def handle_callback(self, data: str) -> None:
+    async def handle_callback(self, data: str) -> None:
         """No chat-id check here on purpose: a callback_data payload is
-        meaningless (decode_callback_data returns None) unless it matches
-        an id this exact process handed out via PendingApprovals.register
-        - there's nothing for an unauthorized chat to forge here even if
-        it somehow saw the button."""
+        meaningless unless it matches an id/token this exact process
+        handed out (PendingApprovals.register for a "perm:" payload,
+        self._model_choices for a "model:" one) - there's nothing for an
+        unauthorized chat to forge here even if it somehow saw the
+        button. Tries the permission-decode first since that's the
+        hot path (every tool call needing approval goes through it);
+        the model-decode is just as cheap to try when that one misses."""
         decoded = decode_callback_data(data)
-        if decoded is None:
+        if decoded is not None:
+            request_id, result = decoded
+            self._pending_approvals.resolve(request_id, result)
             return
-        request_id, result = decoded
-        self._pending_approvals.resolve(request_id, result)
+
+        token = _decode_model_callback(data)
+        if token is None:
+            return
+        model = self._model_choices.get(token)
+        if model is None:
+            return
+        self._set_model(model)
+        await self._sender.send_message(self._chat_id, f"Model set to '{model}'.")
 
     async def run_forever(self) -> None:
         """The daemon's single-consumer loop - runs until cancelled (see

@@ -197,7 +197,7 @@ async def run_telegram_daemon(
             return
         await query.answer()
         if query.data:
-            daemon.handle_callback(query.data)
+            await daemon.handle_callback(query.data)
         try:
             # Best-effort - clears the buttons so a decision can't be
             # pressed twice. Not fatal if the message is too old/already

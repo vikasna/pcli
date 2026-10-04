@@ -919,7 +919,7 @@ async def test_handle_models_command_with_an_argument_sets_the_model(tmp_path: P
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_handle_models_command_with_no_argument_lists_models(tmp_path: Path):
+async def test_handle_models_command_with_no_argument_shows_a_button_picker(tmp_path: Path):
     respx.get("http://fake-gateway.test/v1/models").mock(
         return_value=httpx.Response(
             200, json={"data": [{"id": "fake-model"}, {"id": "other-model"}]}
@@ -933,10 +933,83 @@ async def test_handle_models_command_with_no_argument_lists_models(tmp_path: Pat
     finally:
         await daemon._runtime.client.aclose()
 
-    text = sender.sent[-1][1]
-    assert "fake-model (active)" in text
-    assert "other-model" in text
-    assert "other-model (active)" not in text
+    chat_id, text, buttons = sender.sent[-1]
+    assert chat_id == _AUTHORIZED_CHAT_ID
+    assert text == "Choose a model:"
+    assert buttons is not None
+    assert len(buttons) == 2
+    labels = {label for label, _data in buttons}
+    assert "* fake-model" in labels  # the currently active model gets a marker
+    assert "other-model" in labels
+    # Every button's callback_data round-trips through daemon._model_choices.
+    for label, data in buttons:
+        model = label.removeprefix("* ")
+        prefix, _, token = data.partition(":")
+        assert prefix == "model"
+        assert daemon._model_choices[token] == model
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_handle_models_command_caps_the_button_list(tmp_path: Path):
+    many_models = [f"model-{i}" for i in range(25)]
+    respx.get("http://fake-gateway.test/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": m} for m in many_models]})
+    )
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_models_command(_AUTHORIZED_CHAT_ID, None)
+    finally:
+        await daemon._runtime.client.aclose()
+
+    _chat_id, text, buttons = sender.sent[-1]
+    assert buttons is not None
+    assert len(buttons) == 20
+    assert "showing the first 20 of 25" in text
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_pressing_a_model_button_sets_the_model(tmp_path: Path):
+    respx.get("http://fake-gateway.test/v1/models").mock(
+        return_value=httpx.Response(
+            200, json={"data": [{"id": "fake-model"}, {"id": "other-model"}]}
+        )
+    )
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_models_command(_AUTHORIZED_CHAT_ID, None)
+        _chat_id, _text, buttons = sender.sent[-1]
+        assert buttons is not None
+        _label, callback_data = next(b for b in buttons if b[0] == "other-model")
+
+        await daemon.handle_callback(callback_data)
+    finally:
+        await daemon._runtime.client.aclose()
+
+    assert sender.sent[-1] == (_AUTHORIZED_CHAT_ID, "Model set to 'other-model'.", None)
+    assert settings.default_model == "other-model"
+    assert daemon._session.model == "other-model"
+
+
+@pytest.mark.asyncio
+async def test_pressing_a_stale_model_button_is_a_no_op(tmp_path: Path):
+    """A button from a listing that's since been replaced by a newer one
+    (daemon._model_choices is rebuilt fresh each /models call, not
+    accumulated) - same "stale press is a harmless no-op" precedent
+    PendingApprovals already has for permission prompts."""
+    settings = _settings()
+    daemon, sender = await _make_daemon(tmp_path, settings)
+
+    try:
+        await daemon.handle_callback("model:doesnotexist")
+        assert sender.sent == []
+    finally:
+        await daemon._runtime.client.aclose()
 
 
 @pytest.mark.asyncio
@@ -1098,7 +1171,7 @@ async def test_a_permission_requiring_tool_call_round_trips_through_the_daemon(t
         assert "run_shell" in text
         assert buttons is not None
         _label, callback_data = next(b for b in buttons if b[0] == "Allow Once")
-        daemon.handle_callback(callback_data)
+        await daemon.handle_callback(callback_data)
 
     try:
         await daemon.handle_text(_AUTHORIZED_CHAT_ID, "run a command")
@@ -1116,7 +1189,7 @@ async def test_handle_callback_with_unrelated_data_is_a_no_op(tmp_path: Path):
     settings = _settings()
     daemon, _sender = await _make_daemon(tmp_path, settings)
     try:
-        daemon.handle_callback("not-one-of-ours")  # must not raise
+        await daemon.handle_callback("not-one-of-ours")  # must not raise
     finally:
         await daemon._runtime.client.aclose()
 
