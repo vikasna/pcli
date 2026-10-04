@@ -359,12 +359,43 @@ Error/edge replies:
   than one session - use a longer id."** — `switch` with a bad or
   ambiguous suffix.
 
+### `/export`
+
+`/export [path]` exports the current session to a `.pcli-session.json`
+file — `TelegramDaemon.handle_export_command` calls the same pure
+`export_session` (`session/export.py`) that `chat.py`'s own `/export`
+(`ChatScreen._export_current`) does. With no argument, it defaults to the
+same location the TUI uses: `data_dir() / "exports" /
+f"{session.id}.pcli-session.json"`.
+
+**Unlike `chat.py`'s version, which just reports the local path in a
+toast, `/export` here sends the exported file itself back as a Telegram
+document.** Reporting a bare path is fine for `chat.py` — the TUI is
+running right there on the same machine, so the path is directly
+useful. A remote Telegram user has no other way to reach that path at
+all; the whole point of running pcli through Telegram is remote use, so
+reporting a path with nothing to open it with would be useless. Sending
+the file is the only version of this that makes sense here.
+
+This needed one new capability on the sender seam: `send_document`,
+added to both `TelegramSender` (the protocol in `telegram/
+permissions.py`) and `BotSender` (the real PTB-backed implementation in
+`telegram/sender.py`), mirroring the existing `send_photo` — raw bytes
+handed straight to python-telegram-bot. One difference from `send_photo`:
+`send_document` explicitly passes `filename=` (derived from the exported
+file's own name), where `send_photo` doesn't need to. PTB infers a
+sensible default filename for an image, but a raw document with no
+filename would show up unnamed and extension-less in the Telegram
+client — a real problem here, since the whole point of the exported file
+is that it's a `.pcli-session.json` the user can later re-import under
+that name.
+
 ### Other slash commands
 
 `/new`, the ten settings commands, the five commands above, `/compact`,
-`/models`, and `/sessions` are the only slash commands implemented
-here — Telegram has no equivalent of the TUI's full command set yet
-(`/plan`, ...).
+`/models`, `/sessions`, and `/export` are the only slash commands
+implemented here — Telegram has no equivalent of the TUI's full command
+set yet (`/plan`, ...).
 Sending any other `/`-prefixed message is caught by a fallback
 `MessageHandler(filters.COMMAND, ...)` (`bot.py`) →
 `TelegramDaemon.handle_unsupported_command`, which replies that the
