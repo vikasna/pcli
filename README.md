@@ -59,11 +59,27 @@ This is aimed at regulated-industry use — finance, healthcare, government — 
 
 ## Install
 
+If you just want to run pcli, install it from PyPI:
+
+```
+pip install pcli-agent
+```
+
+The distribution is named `pcli-agent` on PyPI (`pcli` was already taken by an unrelated package) — the command you run afterward is still `pcli`. Want one of the optional features below at install time? Add extras the same way (quote the argument — most shells treat `[...]` specially):
+
+```
+pip install "pcli-agent[browser,telegram]"
+```
+
+### Working on pcli itself
+
+Contributing, or want an editable install from a clone of this repo? Install from `pyproject.toml` directly, with the `dev` extra for the test/lint/type-check tooling:
+
 ```
 pip install -e ".[dev,docker,win,browser,telegram,schedule]"
 ```
 
-Pick the extras you actually need — none of them are required for the core TUI/CLI to run:
+Either way, pick the extras you actually need — none of them are required for the core TUI/CLI to run:
 
 | Extra | What it's for |
 |---|---|
