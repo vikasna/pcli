@@ -283,14 +283,36 @@ commands](#settings-commands) above do — there's no persistent
 `AgentLoop` here to push the change into.
 
 `/models` with no argument calls `self._runtime.client.list_models()` and
-replies with a plain-text list of model ids, marking whichever one is
-currently active with `(active)`. This is **not** the same as `chat.py`'s
-interactive `ModelListScreen` picker — it's a deliberate placeholder/first
-step. A future change may upgrade it to an inline-button picker, reusing
-the same `callback_data` mechanism [permission
-prompts](#permission-approval-over-inline-buttons) already use — that's
-its own separate change, since it's a genuinely new mechanism here, not
-just another command to port.
+replies with an inline-button picker, one button per row — Telegram's
+equivalent of `chat.py`'s interactive `ModelListScreen`, rather than a
+plain-text list. The button for whichever model is currently active gets
+a `"* "` label prefix. The listing is capped at `_MAX_MODEL_BUTTONS`
+(20) — if the gateway returns more, the message says "showing the first
+`N` of `M`" and notes that `/models <name>` still works directly for a
+model not shown.
+
+This reuses the same `callback_data` mechanism [permission
+prompts](#permission-approval-over-inline-buttons) already use, but as a
+separate, parallel `"model:"` namespace alongside their existing
+`"perm:"` one (`_encode_model_callback`/`_decode_model_callback` in
+`daemon.py`) rather than overloading it. Model names can exceed
+Telegram's 64-byte `callback_data` limit, so each button carries a short
+random token (`secrets.token_hex(4)`) instead of the model name itself —
+`TelegramDaemon._model_choices` (a `dict[str, str]`) maps each token back
+to its model name. `_model_choices` is rebuilt fresh on every `/models`
+call rather than accumulated, so a button from an older listing silently
+becomes a no-op once a newer `/models` call replaces the dict — the same
+"a stale press is a harmless no-op" behavior `PendingApprovals` already
+has for permission prompts.
+
+`TelegramDaemon.handle_callback` is `async` (needed to send the
+confirmation message below) and tries the permission `callback_data`
+decode first — the hot path, since every tool call needing approval goes
+through it — falling through to the model-callback decode only if that
+misses. Pressing a valid model button calls `_set_model` (the same method
+the `/models <name>` argument path above already uses) and replies
+"Model set to '`<name>`'." — the same confirmation text the argument path
+sends.
 
 Two error replies:
 
