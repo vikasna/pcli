@@ -1147,6 +1147,13 @@ more than one `in_progress` item at a time.
   silently replaced 4 verified-complete items with 3 new pending ones for a
   superficially similar task and redid already-finished work. Also called out
   in the system prompt's `# Tracking work` section (`src/pcli/agent/prompt.py`).
+- **Isolated from a subagent's session.** A subagent's `ToolContext` shares
+  the exact same `Session` object as its parent (`child_ctx` in
+  `src/pcli/tools/_nested_agent.py` never overrides `session`), so when
+  called with `ctx.subagent_depth > 0`, `_write_todos` returns early with a
+  normal-looking `Todo list updated:\n...` confirmation without ever touching
+  `ctx.session` — a subagent's own internal task tracking never clobbers the
+  main conversation's user-visible todo list.
 
 ## ask_user_question
 
@@ -1217,6 +1224,12 @@ does for `write_todos`.
   (`src/pcli/agent/prompt.py`) instructs the model to reserve this for
   consequential decisions (not routine tool calls) and to include the
   evidence behind the decision in the rationale when there is any.
+- **Isolated from a subagent's session, same as `write_todos` above.** A
+  subagent's `ToolContext` shares the exact same `Session` object as its
+  parent, so when called with `ctx.subagent_depth > 0`, `_record_decision`
+  returns early with a normal-looking `Decision recorded: ...` confirmation
+  without ever touching `ctx.session` — a subagent's own internal decisions
+  never get appended to the main conversation's persistent decision log.
 - Like `todos`, `decisions` is a plain `Session` field with no dedicated
   export/import handling — it rides along with the existing whole-session
   JSON dump/roundtrip (`session/export.py`).
