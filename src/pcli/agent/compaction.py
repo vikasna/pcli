@@ -11,11 +11,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from pcli.config.settings import Settings
 from pcli.llm.client import GatewayClient
 from pcli.llm.models import ChatMessage, Usage
 from pcli.session.models import Message, Session
 from pcli.tools.artifacts import ArtifactStore
 from pcli.tools.builtin.todo_tool import render_todos
+
+# Mirrors Settings.auto_compact_keep_recent_turns' own default (previously
+# an independently hardcoded literal with nothing tying the two together).
+_DEFAULT_KEEP_RECENT_TURNS: int = Settings.model_fields["auto_compact_keep_recent_turns"].default
 
 _COMPACTION_SYSTEM_PROMPT = (
     "You are summarizing an in-progress coding-agent conversation so it can continue with "
@@ -160,7 +165,7 @@ async def maybe_compact(
     gateway_client: GatewayClient,
     model: str | None,
     artifact_store: ArtifactStore,
-    keep_recent_turns: int = 2,
+    keep_recent_turns: int = _DEFAULT_KEEP_RECENT_TURNS,
 ) -> CompactionResult | None:
     """Compacts the oldest turns of session.messages in place, returning
     None if there isn't enough history to safely compact yet (fewer than

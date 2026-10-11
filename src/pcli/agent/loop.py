@@ -39,11 +39,17 @@ the model choosing to stop - "length" is the official OpenAI value; "max_
 tokens" covers at least one observed local-gateway variant. Checked
 case-sensitively against the raw value, same as every other finish_reason
 comparison in this codebase (llm/streaming.py's own "tool_calls" check)."""
+from pcli.config.settings import Settings
 from pcli.permissions.manager import AskCallback, PermissionManager
 from pcli.tools.base import ToolContext
 from pcli.tools.registry import ToolRegistry
 
-_DEFAULT_ARTIFACT_THRESHOLD_CHARS = 4000
+# Mirrors Settings' own defaults for the same settings (previously two
+# independently hardcoded literals with nothing tying them together, so a
+# change to one silently drifted from the other) - reading Settings' own
+# field default here means that can't happen.
+_DEFAULT_MAX_TOOL_ITERATIONS: int = Settings.model_fields["max_tool_iterations"].default
+_DEFAULT_ARTIFACT_THRESHOLD_CHARS: int = Settings.model_fields["artifact_threshold_chars"].default
 _ARTIFACT_PREVIEW_CHARS = 2000
 _MAX_IDENTICAL_TOOL_CALL_REPEATS = 3
 """Confirmed against a real debugged session: a heavily-quantized local
@@ -110,7 +116,7 @@ class AgentLoop:
         tool_registry: ToolRegistry | None = None,
         permission_manager: PermissionManager | None = None,
         tool_context_factory: ToolContextFactory | None = None,
-        max_tool_iterations: int | None = 25,
+        max_tool_iterations: int | None = _DEFAULT_MAX_TOOL_ITERATIONS,
         artifact_threshold_chars: int = _DEFAULT_ARTIFACT_THRESHOLD_CHARS,
         max_response_tokens: int | None = None,
         temperature: float | None = None,

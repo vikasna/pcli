@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pcli.agent.activity import ActivityTracker
+from pcli.config.settings import Settings
 from pcli.llm.client import GatewayClient
 from pcli.llm.models import ToolDefinition, Usage
 from pcli.permissions.guardrails import GuardrailsConfig
@@ -15,6 +16,18 @@ from pcli.permissions.manager import AskCallback, PermissionManager
 from pcli.sandbox.base import Sandbox
 from pcli.session.models import Session
 from pcli.tools.artifacts import ArtifactStore
+
+# Several ToolContext fields below default to a literal that's meant to
+# match Settings' own default for the same setting (their docstrings already
+# said so) - these were independently hardcoded, with nothing tying them
+# together, so a future change to one would silently drift from the other.
+# Reading Settings' own field default here means that can't happen: change
+# Settings.max_tool_iterations' default and this one moves with it.
+_DEFAULT_MAX_TOOL_ITERATIONS: int = Settings.model_fields["max_tool_iterations"].default
+_DEFAULT_SUBAGENT_MAX_ITERATIONS: int = Settings.model_fields["subagent_max_iterations"].default
+_DEFAULT_BRAVE_SEARCH_API_KEY: str = Settings.model_fields["brave_search_api_key"].default
+_DEFAULT_MEMORY_ENABLED: bool = Settings.model_fields["memory_enabled"].default
+_DEFAULT_MEMORY_MAX_ENTRIES: int = Settings.model_fields["memory_max_entries"].default
 
 if TYPE_CHECKING:
     from pcli.browser.session import BrowserSession
@@ -46,9 +59,9 @@ class ToolContext:
     separate from `ask` (permission decisions only, a fixed allow/deny/
     remember-scope shape) since this is a free-form question/answer, not a
     permission choice."""
-    max_tool_iterations: int | None = 25
+    max_tool_iterations: int | None = _DEFAULT_MAX_TOOL_ITERATIONS
     """None means unlimited (local-api mode)."""
-    subagent_max_iterations: int = 30
+    subagent_max_iterations: int = _DEFAULT_SUBAGENT_MAX_ITERATIONS
     """Hard ceiling on a nested subagent's own tool-call iterations (see
     Settings.subagent_max_iterations) - unlike max_tool_iterations above,
     this is never None/unlimited, even in local-api mode."""
@@ -86,15 +99,15 @@ class ToolContext:
     dispatch-time backstop (see _dispatch_tool_call) independent of whatever
     registry the caller happened to build, and by spawn_subagent to keep a
     nested subagent from being used as a plan-mode bypass."""
-    brave_search_api_key: str = ""
+    brave_search_api_key: str = _DEFAULT_BRAVE_SEARCH_API_KEY
     """web_search (tools/builtin/web_tools.py) uses this real, supported API
     when configured (non-empty); otherwise it falls back to a best-effort,
     no-API-key scrape of DuckDuckGo's HTML results page."""
-    memory_enabled: bool = True
+    memory_enabled: bool = _DEFAULT_MEMORY_ENABLED
     """Settings.memory_enabled, threaded through so remember
     (tools/builtin/memory_tool.py) and _nested_agent.py's subagent-prompt
     memory injection don't need to reach for get_settings() themselves."""
-    memory_max_entries: int = 40
+    memory_max_entries: int = _DEFAULT_MEMORY_MAX_ENTRIES
     """Settings.memory_max_entries - the cap remember's add_entry() enforces
     (memory/store.py)."""
     browser_session: BrowserSession | None = None

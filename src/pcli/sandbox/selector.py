@@ -8,10 +8,17 @@ import asyncio
 import shutil
 from pathlib import Path
 
+from pcli.config.settings import Settings
 from pcli.sandbox.base import Sandbox
 from pcli.sandbox.docker_backend import DockerSandbox
 from pcli.sandbox.null_backend import NullSandbox
 from pcli.sandbox.subprocess_backend import RestrictedSubprocessSandbox
+
+# Mirrors Settings' own defaults for the same settings (previously
+# independently hardcoded literals with nothing tying them together, so a
+# change to one silently drifted from the other).
+_DEFAULT_SANDBOX_BACKEND: str = Settings.model_fields["sandbox_backend"].default
+_DEFAULT_SANDBOX_CPU_LIMIT_S: int | None = Settings.model_fields["sandbox_cpu_limit_s"].default
 
 
 async def probe_docker_available(*, timeout_s: float = 1.5) -> bool:
@@ -43,9 +50,9 @@ async def probe_docker_available(*, timeout_s: float = 1.5) -> bool:
 
 async def select_sandbox(
     *,
-    backend_override: str = "auto",
+    backend_override: str = _DEFAULT_SANDBOX_BACKEND,
     allowed_roots: list[Path] | None = None,
-    cpu_limit_s: int | None = 30,
+    cpu_limit_s: int | None = _DEFAULT_SANDBOX_CPU_LIMIT_S,
     memory_limit_bytes: int | None = None,
 ) -> Sandbox:
     """cpu_limit_s/memory_limit_bytes only affect RestrictedSubprocessSandbox

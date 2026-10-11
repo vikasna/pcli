@@ -17,6 +17,8 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from pcli.config.settings import Settings
+from pcli.permissions.guardrails import GuardrailsConfig
 from pcli.sandbox.base import (
     ExecRequest,
     ExecResult,
@@ -28,6 +30,11 @@ from pcli.sandbox.limits import is_posix, kill_process_tree, make_posix_preexec_
 
 _MAX_BACKGROUND_JOB_LIFETIME_S = 2 * 60 * 60
 _BACKGROUND_DRAIN_CHUNK_BYTES = 4096
+# Mirror Settings'/GuardrailsConfig's own defaults for the same settings
+# (previously independently hardcoded literals with nothing tying them
+# together).
+_DEFAULT_CPU_SECONDS: int | None = Settings.model_fields["sandbox_cpu_limit_s"].default
+_DEFAULT_MAX_OUTPUT_BYTES: int = GuardrailsConfig.model_fields["max_output_bytes"].default
 
 _ENV_ALLOW_NAMES = {
     "PATH",
@@ -122,8 +129,8 @@ class RestrictedSubprocessSandbox(Sandbox):
         self,
         *,
         allowed_roots: list[Path] | None = None,
-        max_output_bytes: int = 2_000_000,
-        cpu_seconds: int | None = 30,
+        max_output_bytes: int = _DEFAULT_MAX_OUTPUT_BYTES,
+        cpu_seconds: int | None = _DEFAULT_CPU_SECONDS,
         memory_bytes: int | None = None,
     ) -> None:
         # memory_bytes defaults to None (no RLIMIT_AS): confirmed real case

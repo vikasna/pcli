@@ -14,7 +14,12 @@ from __future__ import annotations
 import asyncio
 import os
 
+from pcli.permissions.guardrails import GuardrailsConfig
 from pcli.sandbox.base import ExecRequest, ExecResult, Sandbox, SandboxCapabilities
+
+# Mirrors GuardrailsConfig.max_output_bytes' own default (previously an
+# independently hardcoded literal with nothing tying the two together).
+_DEFAULT_MAX_OUTPUT_BYTES: int = GuardrailsConfig.model_fields["max_output_bytes"].default
 
 
 def _truncate(data: bytes, max_bytes: int) -> str:
@@ -26,7 +31,7 @@ def _truncate(data: bytes, max_bytes: int) -> str:
 class NullSandbox(Sandbox):
     name = "none"
 
-    def __init__(self, *, max_output_bytes: int = 2_000_000) -> None:
+    def __init__(self, *, max_output_bytes: int = _DEFAULT_MAX_OUTPUT_BYTES) -> None:
         self._max_output_bytes = max_output_bytes
 
     def capabilities(self) -> SandboxCapabilities:
