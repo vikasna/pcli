@@ -6,7 +6,7 @@ from pcli.permissions.guardrails import GuardrailsConfig
 from pcli.sandbox.base import ExecRequest, ExecResult, Sandbox, SandboxCapabilities
 from pcli.session.export import export_session
 from pcli.session.importer import import_session
-from pcli.session.models import Message, Session
+from pcli.session.models import Message, Session, TodoItem
 from pcli.session.store import SessionStore
 from pcli.tools.base import ToolContext
 from pcli.tools.builtin.todo_tool import WRITE_TODOS, render_todos
@@ -239,6 +239,71 @@ async def test_write_todos_tolerates_minor_rewording_of_a_completed_item(tmp_pat
 
     assert result.is_error is False
     assert "[pcli] Note" not in result.output
+
+
+# --- subagent isolation ---
+#
+# Regression coverage for a real reported bug: a subagent's ToolContext
+# shares the exact same Session object as its parent (tools/_nested_agent.py's
+# child_ctx never overrides `session`), and write_todos is always let through
+# into a subagent's own tool registry regardless of allowed_tools (see
+# subagent_tool.py) - so a subagent calling it used to silently overwrite the
+# main conversation's user-visible plan with its own, unrelated internal task
+# breakdown. Invisible during a live session (the status pane only refreshes
+# on a top-level write_todos tool_result, never a subagent-internal one), so
+# it only ever surfaced on the next resume, loading the corrupted list fresh
+# from session.json.
+
+
+@pytest.mark.asyncio
+async def test_write_todos_from_a_subagent_does_not_touch_session_todos(tmp_path: Path):
+    session = Session()
+    await WRITE_TODOS.handler(
+        {"todos": [{"content": "Main agent's real plan", "status": "in_progress"}]},
+        _ctx(tmp_path, session),
+    )
+
+    subagent_ctx = ToolContext(
+        sandbox=_NullSandbox(),
+        guardrails=GuardrailsConfig(),
+        cwd=tmp_path,
+        session=session,
+        subagent_depth=1,
+    )
+    result = await WRITE_TODOS.handler(
+        {"todos": [{"content": "Subagent's own unrelated scratch plan", "status": "pending"}]},
+        subagent_ctx,
+    )
+
+    assert result.is_error is False
+    # The subagent still gets a normal-looking confirmation reflecting what
+    # it asked for, so it isn't confused about whether the call "worked".
+    assert "Subagent's own unrelated scratch plan" in result.output
+    # But the main session's actual plan must be completely untouched.
+    assert len(session.todos) == 1
+    assert session.todos[0].content == "Main agent's real plan"
+    assert session.todos[0].status == "in_progress"
+
+
+@pytest.mark.asyncio
+async def test_write_todos_from_a_nested_subagent_depth_is_also_isolated(tmp_path: Path):
+    """Depth 2+ shouldn't actually occur (spawn_subagent always filters
+    itself out of a subagent's own registry - subagents can't nest), but
+    the guard is a simple >0 check, not an == 1 check, so this is covered
+    defensively rather than assumed."""
+    session = Session()
+    session.todos = [TodoItem(content="Untouched", status="pending")]
+
+    deep_ctx = ToolContext(
+        sandbox=_NullSandbox(),
+        guardrails=GuardrailsConfig(),
+        cwd=tmp_path,
+        session=session,
+        subagent_depth=2,
+    )
+    await WRITE_TODOS.handler({"todos": [{"content": "Should not land", "status": "pending"}]}, deep_ctx)
+
+    assert [t.content for t in session.todos] == ["Untouched"]
 
 
 def test_old_session_without_todos_field_still_validates():

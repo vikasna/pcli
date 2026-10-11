@@ -121,6 +121,47 @@ def test_decisions_survive_session_export_import(tmp_path: Path):
     assert imported.decisions[0].rationale == "faster and already tested"
 
 
+# --- subagent isolation ---
+#
+# Regression coverage for the same bug class fixed in todo_tool.py's
+# write_todos: a subagent's ToolContext shares the exact same Session object
+# as its parent (tools/_nested_agent.py's child_ctx never overrides
+# `session`), and record_decision is reachable from a subagent whenever
+# allowed_tools is omitted (full inheritance) or explicitly includes it -
+# unlike write_todos, nothing special-cases it in or out of a subagent's
+# registry. Appending there used to pollute the main conversation's
+# persistent, exportable decision log with a decision about the subagent's
+# own internal sub-task.
+
+
+@pytest.mark.asyncio
+async def test_record_decision_from_a_subagent_does_not_touch_session_decisions(tmp_path: Path):
+    session = Session()
+    await RECORD_DECISION.handler(
+        {"decision": "Main agent's real decision", "rationale": "main reasoning"},
+        _ctx(tmp_path, session),
+    )
+
+    subagent_ctx = ToolContext(
+        sandbox=_NullSandbox(),
+        guardrails=GuardrailsConfig(),
+        cwd=tmp_path,
+        session=session,
+        subagent_depth=1,
+    )
+    result = await RECORD_DECISION.handler(
+        {"decision": "Subagent's own unrelated decision", "rationale": "sub reasoning"},
+        subagent_ctx,
+    )
+
+    assert result.is_error is False
+    # The subagent still gets a normal-looking confirmation.
+    assert "Subagent's own unrelated decision" in result.output
+    # But the main session's actual decision log must be completely untouched.
+    assert len(session.decisions) == 1
+    assert session.decisions[0].decision == "Main agent's real decision"
+
+
 def test_old_session_without_decisions_field_still_validates():
     """A session persisted before this field existed must still load fine."""
     raw = Session(model="fake-model").model_dump(mode="json")

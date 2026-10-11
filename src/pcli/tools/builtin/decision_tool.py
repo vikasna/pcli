@@ -37,6 +37,20 @@ async def _record_decision(arguments: dict, ctx: ToolContext) -> ToolResult:
             is_error=True,
         )
 
+    if ctx.subagent_depth > 0:
+        # Same bug class as todo_tool.py's write_todos: a subagent's
+        # ToolContext shares the exact same Session object as its parent
+        # (tools/_nested_agent.py's child_ctx never overrides `session`),
+        # and record_decision is reachable from a subagent whenever
+        # allowed_tools is omitted (full inheritance) or explicitly
+        # includes it - needs_permission=False, no gate of its own.
+        # Appending here would pollute the MAIN conversation's persistent,
+        # exportable decision log with a decision that's actually about
+        # the subagent's own internal sub-task. A subagent doesn't need
+        # this persisted anywhere - its own conversation already carries
+        # the call and result forward to its own next turn.
+        return ToolResult(output=f"Decision recorded: {decision}")
+
     entry = Decision(decision=decision, rationale=rationale)
     ctx.session.decisions.append(entry)
     return ToolResult(output=f"Decision recorded: {decision}")

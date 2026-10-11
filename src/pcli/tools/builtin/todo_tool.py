@@ -74,6 +74,23 @@ async def _write_todos(arguments: dict, ctx: ToolContext) -> ToolResult:
             is_error=True,
         )
 
+    if ctx.subagent_depth > 0:
+        # A subagent's own ToolContext shares the exact same Session object
+        # as its parent (tools/_nested_agent.py's child_ctx = replace(ctx,
+        # ...) never overrides `session`) - a real, debugged bug: a
+        # subagent calling write_todos (always let through regardless of
+        # allowed_tools, see subagent_tool.py) silently overwrote the MAIN
+        # conversation's user-visible plan with its own unrelated internal
+        # task breakdown. Invisible during a live session (the status pane
+        # only refreshes on a top-level write_todos tool_result, never a
+        # subagent-internal one - chat.py's _refresh_todo_pane call site),
+        # which is exactly why it only ever surfaced on the next resume,
+        # loading the now-corrupted list fresh from session.json. A
+        # subagent doesn't actually need this persisted anywhere - its own
+        # conversation already carries this call and result forward to its
+        # own next turn, which is all "keeping itself on track" requires.
+        return ToolResult(output=f"Todo list updated:\n{render_todos(todos)}")
+
     dropped = _dropped_completed_items(ctx.session.todos, todos)
     ctx.session.todos = todos
     output = f"Todo list updated:\n{render_todos(todos)}"
