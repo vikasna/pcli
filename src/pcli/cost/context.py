@@ -55,14 +55,33 @@ limit = 128000
 # Best-effort starting point; intentionally approximate, user-editable.
 _BUILTIN_LIMITS: dict[str, int] = {
     "gpt-4o*": 128_000,
-    "gpt-4.1*": 1_000_000,
+    "gpt-4.1*": 1_047_576,
     "gpt-4-turbo*": 128_000,
     "gpt-3.5*": 16_385,
     "o1*": 200_000,
     "o3*": 200_000,
-    "claude-opus*": 200_000,
-    "claude-sonnet*": 200_000,
-    "claude-haiku*": 200_000,
+    # gpt-5.x/gpt-6.x family - context limits vary by tier/generation, not
+    # just a single flat number, so the smaller/overridden tiers are listed
+    # explicitly; "gpt-5*"/"gpt-6*" below are the fallback for the rest of
+    # each generation.
+    "gpt-5.2-codex*": 128_000,
+    "gpt-5.4-nano*": 272_000,
+    "gpt-5.4-mini*": 400_000,
+    "gpt-5.4*": 922_000,
+    "gpt-5.6*": 1_050_000,
+    "gpt-5*": 272_000,
+    "gpt-6*": 922_000,
+    "claude-3-5-haiku*": 200_000,
+    "claude-haiku-4-5*": 200_000,
+    "claude-haiku*": 1_000_000,
+    "claude-sonnet-4-6-1m*": 1_000_000,
+    "claude-sonnet-4-6*": 200_000,
+    "claude-sonnet-4-5*": 200_000,
+    "claude-sonnet*": 1_000_000,
+    "claude-opus-4-6-1m*": 1_000_000,
+    "claude-opus-4-6*": 200_000,
+    "claude-opus-4-5*": 200_000,
+    "claude-opus*": 1_000_000,
     "gemini-1.5-pro*": 2_000_000,
     "gemini-1.5-flash*": 1_000_000,
     "llama-3*": 128_000,
