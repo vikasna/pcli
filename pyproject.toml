@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pcli-agent"
-version = "0.1.0"
+version = "0.2.0"
 description = "An opencode-style AI coding agent CLI/TUI for Python, with a Python discovery tool and an OS/software toolbox."
 authors = [{ name = "Vikas NV", email = "vikas.nv@gmail.com" }]
 readme = "README.md"
